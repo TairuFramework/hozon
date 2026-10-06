@@ -167,6 +167,9 @@ catalogs:
     '@kigu/dev':
       specifier: ^0.3.1
       version: 0.3.2
+    '@sozai/log':
+      specifier: ^0.3.1
+      version: 0.3.1
     '@types/node':
       specifier: ^26.6.4
       version: 26.6.4
@@ -197,6 +200,31 @@ importers:
         specifier: 'catalog:'
         version: 0.29.6
     devDependencies:
+      del-cli:
+        specifier: 'catalog:'
+        version: 7.0.0
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.1(@types/node@26.6.4)(@vitest/ui@5.0.3)(vite@8.3.2(@types/node@26.6.4)(esbuild@0.28.2)(tsx@4.23.15))
+
+  packages/db:
+    dependencies:
+      '@hozon/adapter':
+        specifier: workspace:^
+        version: link:../adapter
+      '@sozai/log':
+        specifier: 'catalog:'
+        version: 0.3.1(@logtape/logtape@2.3.11)
+      kysely:
+        specifier: 'catalog:'
+        version: 0.29.6
+    devDependencies:
+      '@hozon/node-sqlite':
+        specifier: workspace:^
+        version: link:../node-sqlite
+      '@types/node':
+        specifier: 'catalog:'
+        version: 26.6.4
       del-cli:
         specifier: 'catalog:'
         version: 7.0.0
@@ -458,6 +486,9 @@ packages:
     resolution: {integrity: sha512-imzXo4LX6knZtpV3WAgaMbZG631+vEtgFATfkntmYIa3aXG6LbKGq4pTlrb5czDL2xj6OwDbS78yYfZE5Wix4g==}
     hasBin: true
 
+  '@logtape/logtape@2.3.11':
+    resolution: {integrity: sha512-T7T+IShQBxofHCs7J1kVMZPLLHYAXAOqPEc/xwzd6/2q8va/D/t/HP7uCeJzTQOywpXF1tbyz15O4VHT8NF2hw==}
+
   '@napi-rs/nice-android-arm-eabi@1.1.1':
     resolution: {integrity: sha512-kjirL3N6TnRPv5iuHw36wnucNqXAO46dzK9oPb0wj076R5Xm8PfUVA9nAFB5ZNMmfJQJVKACAPd/Z2KYMppthw==}
     engines: {node: '>= 10'}
@@ -702,6 +733,11 @@ packages:
   '@sindresorhus/merge-streams@4.0.0':
     resolution: {integrity: sha512-tlqY9xq5ukxTUZBmoOp+m61cqwQD5pHJtFY3Mn8CA8ps6yghLH/Hw8UPdqg4OLmFW3IFlcXnQNmo/dh8HzXYIQ==}
     engines: {node: '>=18'}
+
+  '@sozai/log@0.3.1':
+    resolution: {integrity: sha512-IblWrhbUOd6KCkG+Dzr9ZS+Dgyhqr5W3Zb1CbZUN5r2ybBAN5WL9GTn7L45bLuQOSp0RzjDeqB7OH39InMm0yg==}
+    peerDependencies:
+      '@logtape/logtape': ^2.3.0
 
   '@swc/cli@0.8.1':
     resolution: {integrity: sha512-L+ACCGHCiS0VqHVep/INLVnvRvJ2XooQFLZq4L8snhxw1jsqz+XRcY313UsyPVturPPE1shW3jic7rt3qEQTSQ==}
@@ -1969,6 +2005,8 @@ snapshots:
       - supports-color
       - vite
 
+  '@logtape/logtape@2.3.11': {}
+
   '@napi-rs/nice-android-arm-eabi@1.1.1':
     optional: true
 
@@ -2111,6 +2149,10 @@ snapshots:
   '@sindresorhus/merge-streams@2.3.0': {}
 
   '@sindresorhus/merge-streams@4.0.0': {}
+
+  '@sozai/log@0.3.1(@logtape/logtape@2.3.11)':
+    dependencies:
+      '@logtape/logtape': 2.3.11
 
   '@swc/cli@0.8.1(@swc/core@1.16.13)':
     dependencies:
