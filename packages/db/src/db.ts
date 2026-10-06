@@ -325,7 +325,17 @@ export class HozonDB implements StoreProvider {
 
   #ensurePreflight(): Promise<void> {
     // Snapshot before awaiting so concurrent triggers share one read-only gate.
-    this.#preflight ??= this.#runPreflight(Array.from(this.#stores.values()))
+    // A failed attempt clears the gate so the next caller reruns the read-only checks,
+    // then preparation; a successful attempt stays cached.
+    if (this.#preflight == null) {
+      const attempt: Promise<void> = this.#runPreflight(Array.from(this.#stores.values())).catch(
+        (err) => {
+          if (this.#preflight === attempt) this.#preflight = null
+          throw err
+        },
+      )
+      this.#preflight = attempt
+    }
     return this.#preflight
   }
 

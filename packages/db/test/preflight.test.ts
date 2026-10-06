@@ -116,3 +116,42 @@ test('malformed migration tables fail without prepare or writes', async () => {
     adapter.database.prepare("SELECT name FROM sqlite_master WHERE name = 'data_a'").all(),
   ).toEqual([])
 })
+
+test('a transient check failure is retried on the next call', async () => {
+  const { db, adapter, prepare } = setup()
+  adapter.database.exec('CREATE TABLE hozon_a_migration (wrong_column text)')
+  register(db, 'a')
+  await expect(db.migrate()).rejects.toThrow('no such column: name')
+  adapter.database.exec('DROP TABLE hozon_a_migration')
+  await db.migrate()
+  expect(await db.getStore('a')).toEqual({ ok: true })
+  expect(prepare).toHaveBeenCalledTimes(1)
+})
+
+test('a transient prepare failure is retried, then success stays cached', async () => {
+  const { db, prepare } = setup()
+  register(db, 'a')
+  prepare.mockRejectedValueOnce(new Error('prepare failed'))
+  await expect(db.migrate()).rejects.toThrow('prepare failed')
+  await db.migrate()
+  expect(await db.getStore('a')).toEqual({ ok: true })
+  await db.withTransaction(async () => {})
+  expect(prepare).toHaveBeenCalledTimes(2)
+})
+
+test('concurrent callers share one preflight attempt, including a retry', async () => {
+  const { db, prepare } = setup()
+  register(db, 'a')
+  const failure = new Error('prepare failed')
+  prepare.mockRejectedValueOnce(failure)
+  const failed = await Promise.allSettled([
+    db.migrate(),
+    db.getStore('a'),
+    db.withTransaction(async () => {}),
+  ])
+  expect(failed.map((result) => result.status)).toEqual(['rejected', 'rejected', 'rejected'])
+  for (const result of failed) expect((result as PromiseRejectedResult).reason).toBe(failure)
+  expect(prepare).toHaveBeenCalledTimes(1)
+  await Promise.all([db.migrate(), db.getStore('a'), db.withTransaction(async () => {})])
+  expect(prepare).toHaveBeenCalledTimes(2)
+})
