@@ -18,3 +18,7 @@ Database adapters, stores, and telemetry integrations for the TairuFramework sta
 | `@hozon/otel` | OpenTelemetry integration |
 
 See [the documentation](docs/index.md) for architecture and development guidance.
+
+- [Architecture](docs/agents/architecture.md)
+- [Development](docs/agents/development.md)
+- [API reference](docs/index.md#reference)

@@ -2,6 +2,10 @@
 
 Expo SQLite (`expo-sqlite`) adapter for Hozon on iOS and Android.
 
+```sh
+pnpm add @hozon/expo @hozon/db expo-sqlite
+```
+
 ```ts
 import { HozonDB } from '@hozon/db'
 import { ExpoAdapter } from '@hozon/expo'
@@ -24,3 +28,5 @@ module.exports = withHozonMetroConfig(getDefaultConfig(__dirname))
 ```
 
 Any existing `config.resolver.resolveRequest` is kept and called for every other request.
+
+See the [driver reference](../../docs/reference/drivers.md) for serialization and platform details.
