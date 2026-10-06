@@ -85,13 +85,19 @@ export abstract class AbstractPostgresAdapter<T extends AdapterTypes = PostgresT
     // wire type from a trailing ::jsonb cast and re-encodes the JS string as a jsonb
     // *string scalar* instead of sending it as text for the server to parse, so a
     // direct ::jsonb cast silently never matches. The ::text hop forces text encoding.
-    return sql<boolean>`COALESCE(${expression}, '[]'::jsonb) @> ${JSON.stringify(values)}::text::jsonb`
+    // Duplicates are ignored and an empty list is vacuously true (every array, NULL
+    // included, contains the empty set) — identical on every backend.
+    const distinct = Array.from(new Set(values))
+    if (distinct.length === 0) return sql<boolean>`1 = 1`
+    return sql<boolean>`COALESCE(${expression}, '[]'::jsonb) @> ${JSON.stringify(distinct)}::text::jsonb`
   }
 
   arrayIncludesAnyPredicate(
     expression: Expression<unknown>,
     values: Array<unknown>,
   ): RawBuilder<boolean> {
+    // An empty list matches nothing; never emit `IN ()`, which Postgres rejects.
+    if (values.length === 0) return sql<boolean>`1 = 0`
     // Elements, not `?|`, so numeric arrays are covered too (`?|` only matches string keys).
     return sql<boolean>`EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(${expression}, '[]'::jsonb)) AS _t WHERE _t IN (${sql.join(values.map((v) => sql`${v}`))}))`
   }

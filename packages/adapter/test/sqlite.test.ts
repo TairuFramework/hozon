@@ -41,6 +41,22 @@ describe('AbstractSQLiteAdapter', () => {
     expect(adapter.coerceFilterValue(true)).toBe(1)
   })
 
+  test('array predicates never compile an empty IN list', () => {
+    const any = adapter.arrayIncludesAnyPredicate(sql.ref('x'), []).compile(db)
+    const all = adapter.arrayIncludesAllPredicate(sql.ref('x'), []).compile(db)
+    for (const compiled of [any, all]) {
+      expect(compiled.sql).not.toMatch(/IN \(\s*\)/)
+      expect(compiled.parameters).toEqual([])
+    }
+  })
+
+  test('array includes all binds each distinct value once', () => {
+    const compiled = adapter
+      .arrayIncludesAllPredicate(sql.ref('x'), ['a', 'a', 2, 2, 'b'])
+      .compile(db)
+    expect(compiled.parameters).toEqual(['a', 2, 'b', 3])
+  })
+
   test('has no search or access seams', () => {
     for (const key of [
       'createSearchIndex',

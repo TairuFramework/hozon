@@ -86,15 +86,21 @@ export abstract class AbstractSQLiteAdapter<T extends AdapterTypes = SQLiteTypes
     expression: Expression<unknown>,
     values: Array<unknown>,
   ): RawBuilder<boolean> {
+    // Duplicates are ignored (the count compares against the distinct set size) and an
+    // empty list is vacuously true — identical on every backend.
+    const distinct = Array.from(new Set(values))
+    if (distinct.length === 0) return sql<boolean>`1 = 1`
     // NULL/absent node -> json_each yields zero rows -> COUNT(DISTINCT value) = 0, never
     // equal to a positive set size.
-    return sql<boolean>`(SELECT COUNT(DISTINCT value) FROM json_each(COALESCE(${expression}, '[]')) WHERE value IN (${sql.join(values.map((v) => sql`${v}`))})) = ${values.length}`
+    return sql<boolean>`(SELECT COUNT(DISTINCT value) FROM json_each(COALESCE(${expression}, '[]')) WHERE value IN (${sql.join(distinct.map((v) => sql`${v}`))})) = ${distinct.length}`
   }
 
   arrayIncludesAnyPredicate(
     expression: Expression<unknown>,
     values: Array<unknown>,
   ): RawBuilder<boolean> {
+    // An empty list matches nothing; never emit `IN ()` (portable with Postgres).
+    if (values.length === 0) return sql<boolean>`1 = 0`
     return sql<boolean>`EXISTS (SELECT 1 FROM json_each(COALESCE(${expression}, '[]')) WHERE value IN (${sql.join(values.map((v) => sql`${v}`))}))`
   }
 

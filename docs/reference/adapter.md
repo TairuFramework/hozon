@@ -75,4 +75,10 @@ abstract class AbstractPostgresAdapter<T extends AdapterTypes = PostgresTypes>
 
 `containsPredicate` accepts a SQL `LIKE` pattern, such as `%needle%`. Array inclusion predicates bind one parameter per value. Hozon's own statements stay within the 500-parameter limit, but callers must chunk large value lists passed to these predicates.
 
+Array inclusion semantics are identical on every backend and covered by the shared conformance suite:
+
+- `arrayIncludesAnyPredicate(expression, [])` is always false. No `IN ()` is emitted.
+- `arrayIncludesAllPredicate(expression, [])` is always true (vacuous truth, matching SQL/JSON array containment), including rows whose array is `NULL`.
+- `arrayIncludesAllPredicate` ignores duplicate values: `['a', 'a']` behaves like `['a']`. Values are deduplicated before binding.
+
 See [drivers](drivers.md) for concrete adapters and [database lifecycle](db.md) for preparation order.

@@ -100,6 +100,62 @@ export const seamCases: Array<ConformanceCase> = [
       }
     },
   },
+  {
+    name: 'seams: arrays include any of an empty list matches nothing',
+    async run(ctx) {
+      const query = await setup(ctx)
+      const rows = await query
+        .selectFrom('conformance_seams')
+        .select('id')
+        .where(ctx.adapter.arrayIncludesAnyPredicate(sql.ref('array'), []))
+        .orderBy('id')
+        .execute()
+      assert.deepEqual(
+        rows.map((row) => row.id),
+        [],
+      )
+    },
+  },
+  {
+    name: 'seams: arrays include all of an empty list matches every row',
+    async run(ctx) {
+      const query = await setup(ctx)
+      // Vacuous truth, as in SQL/array containment: every array contains the empty set,
+      // including a NULL node (treated as an empty array).
+      const rows = await query
+        .selectFrom('conformance_seams')
+        .select('id')
+        .where(ctx.adapter.arrayIncludesAllPredicate(sql.ref('array'), []))
+        .orderBy('id')
+        .execute()
+      assert.deepEqual(
+        rows.map((row) => row.id),
+        [1, 2, 3, 4],
+      )
+    },
+  },
+  {
+    name: 'seams: arrays include all ignores duplicate values',
+    async run(ctx) {
+      const query = await setup(ctx)
+      for (const [values, expected] of [
+        [['a', 'a'], [1]],
+        [['b', 'b', 2, 2], [1]],
+        [[3, 3, 'b'], [2]],
+      ] as Array<[Array<unknown>, Array<number>]>) {
+        const rows = await query
+          .selectFrom('conformance_seams')
+          .select('id')
+          .where(ctx.adapter.arrayIncludesAllPredicate(sql.ref('array'), values))
+          .orderBy('id')
+          .execute()
+        assert.deepEqual(
+          rows.map((row) => row.id),
+          expected,
+        )
+      }
+    },
+  },
   ...Object.entries({
     null: [4],
     nonNull: [1, 2, 3],
