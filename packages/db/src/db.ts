@@ -3,6 +3,7 @@ import { getLogger, type Logger } from '@sozai/log'
 import { Kysely, ParseJSONResultsPlugin, sql } from 'kysely'
 import { type Migration, Migrator } from 'kysely/migration'
 
+import { withTransactionalDDL } from './dialect.js'
 import { HozonDBClosedError, InvalidTablePrefixError, SavepointOverlapError } from './errors.js'
 import { checkStore } from './preflight.js'
 
@@ -94,7 +95,11 @@ export class HozonDB implements StoreProvider {
     }
     this.#adapter = params.adapter
     this.#db = new Kysely<Record<string, unknown>>({
-      dialect: this.#adapter.dialect,
+      // SQLite supports transactional DDL, but Kysely's SQLite adapters do not report it.
+      dialect:
+        this.#adapter.kind === 'sqlite'
+          ? withTransactionalDDL(this.#adapter.dialect)
+          : this.#adapter.dialect,
       plugins: [new ParseJSONResultsPlugin()],
     })
     this.#logger = params.logger ?? getLogger(['hozon', 'db'])
