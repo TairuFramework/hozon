@@ -2,6 +2,47 @@
 
 `@hozon/db` exports `HozonDB`, `HozonDBParams`, `MigrationContext`, `StoreDefinition`, and `StoreProvider`. It also exports `HozonDBClosedError`, `InvalidTablePrefixError`, `SavepointOverlapError`, `SchemaVersionError`, `chunk`, `withKeepSet`, and `withStoreTransaction`.
 
+```ts
+type HozonDBParams = { adapter: Adapter; logger?: Logger; tablePrefix?: string }
+type MigrationContext = { kind: Adapter['kind']; types: ColumnTypes; functions: Functions }
+type StoreDefinition<Tables, API> = {
+  name: string
+  migrations: Record<string, Migration> | ((ctx: MigrationContext) => Record<string, Migration>)
+  dependsOn?: Array<string>
+  createAPI: (db: Kysely<Tables>, adapter: Adapter) => API
+}
+type StoreProvider<Stores extends Record<string, unknown> = Record<string, unknown>> = {
+  getStore<S extends keyof Stores & string>(name: S): Promise<Stores[S]>
+  hasStore(name: string): boolean
+  onCommit(fn: () => void): void
+  onRollback(fn: () => void): void
+  withTransaction<NestedStores extends Record<string, unknown>, R>(
+    fn: (tx: StoreProvider<NestedStores>) => Promise<R>,
+  ): Promise<R>
+  withSavepoint?<NestedStores extends Record<string, unknown>, R>(
+    fn: (tx: StoreProvider<NestedStores>) => Promise<R>,
+  ): Promise<R>
+}
+class HozonDB implements StoreProvider {
+  constructor(params: HozonDBParams)
+  get adapter(): Adapter
+  register<Tables, API>(store: StoreDefinition<Tables, API>): void
+  getStore<T>(name: string): Promise<T>
+  hasStore(name: string): boolean
+  onCommit(fn: () => void): void
+  onRollback(fn: () => void): void
+  withTransaction<Stores extends Record<string, unknown>, R>(
+    fn: (tx: StoreProvider<Stores>) => Promise<R>,
+  ): Promise<R>
+  migrate(): Promise<void>
+  close(): Promise<void>
+}
+function withStoreTransaction<DB, R>(db: Kysely<DB>, fn: (trx: Kysely<DB>) => Promise<R>): Promise<R>
+function chunk<T>(items: Array<T>, size?: number): Array<Array<T>>
+```
+
+`withKeepSet` accepts a transaction, `{ table, ids }`, and an async callback receiving a keep-set select builder; it returns the callback's `Promise<R>`.
+
 Create a database with an adapter, register store definitions, then request a store or call `migrate()`:
 
 ```ts
