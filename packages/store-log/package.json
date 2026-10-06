@@ -1,6 +1,6 @@
 {
   "name": "@hozon/store-log",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Portable structured log store for Hozon",
   "repository": {
     "type": "git",

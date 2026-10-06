@@ -1,6 +1,6 @@
 {
   "name": "@hozon/otel",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "OpenTelemetry span exporter for Hozon telemetry stores",
   "repository": {
     "type": "git",
