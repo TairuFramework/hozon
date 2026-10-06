@@ -16,7 +16,8 @@
   },
   "files": [
     "lib/*",
-    "metro/*"
+    "metro/*",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
     "build": "pnpm run build:clean && pnpm run build:js && pnpm run build:types",
