@@ -1,0 +1,50 @@
+name: Web E2E
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    uses: TairuFramework/kigu/.github/workflows/e2e-web.yml@main
+    with:
+      working-directory: tests/e2e-web
+      node-version: '24'
+
+  # WebKit is non-blocking: Playwright's WebKit may not provide OPFS sync access handles.
+  webkit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    permissions:
+      contents: read
+    env:
+      CI: true
+      DO_NOT_TRACK: 1
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup environment
+        uses: TairuFramework/kigu/setup@main
+        with:
+          node-version: '24'
+
+      - name: Install Playwright WebKit
+        working-directory: tests/e2e-web
+        run: pnpm exec playwright install --with-deps webkit
+
+      - name: Build app
+        working-directory: tests/e2e-web
+        run: pnpm run build
+
+      - name: Run WebKit tests
+        working-directory: tests/e2e-web
+        run: pnpm run test:webkit
+
+      - uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          # Distinct from the reusable workflow's `playwright-report` artifact in the same run.
+          name: playwright-report-webkit
+          path: tests/e2e-web/playwright-report/
+          retention-days: 30
