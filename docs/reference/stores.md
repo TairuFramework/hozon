@@ -11,6 +11,7 @@ type StoredLog = {
   traceID?: string; spanID?: string; timestamp: number; level: LogLevel
   category: Array<string>; message: string; properties: Record<string, JSONValue>
 }
+type TracedLog = StoredLog & { traceID: string; spanID: string }
 type QueryLogsParams = {
   from?: number; to?: number; levels?: Array<LogLevel>; categoryPrefix?: Array<string>
   traceID?: string; limit: number; cursor?: string
@@ -22,6 +23,14 @@ type LogStore = {
   deleteByTrace(traceIDs: Array<string>): Promise<number>
   deleteBefore(time: number, params?: { keepTraceIDs?: Array<string> }): Promise<number>
 }
+type LogTables = {
+  hozon_logs: {
+    seq: Generated<number>; timestamp: number; level: LogLevel; category: string
+    trace_id: string | null; span_id: string | null; data: ColumnType<StoredLog, unknown, unknown>
+  }
+}
+const LOG_STORE: 'log'
+const logStoreDefinition: StoreDefinition<LogTables, LogStore>
 function getLogStore(provider: StoreProvider): Promise<LogStore>
 function isTracedLog(log: StoredLog): log is TracedLog
 function encodeCategory(segments: Array<string>): string
@@ -52,6 +61,14 @@ type TelemetryStore = {
   deleteByTrace(traceIDs: Array<string>): Promise<number>
   deleteBefore(time: number, params?: { keepTraceIDs?: Array<string> }): Promise<number>
 }
+type TelemetryTables = {
+  hozon_spans: {
+    seq: Generated<number>; trace_id: string; span_id: string; start_time: number
+    end_time: number; data: ColumnType<StoredSpan, unknown, unknown>
+  }
+}
+const TELEMETRY_STORE: 'telemetry'
+const telemetryStoreDefinition: StoreDefinition<TelemetryTables, TelemetryStore>
 function getTelemetryStore(provider: StoreProvider): Promise<TelemetryStore>
 ```
 

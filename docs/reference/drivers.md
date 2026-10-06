@@ -2,6 +2,47 @@
 
 All drivers implement the `@hozon/adapter` contract. `HozonDB` owns their lifecycle and calls optional `prepare()` and `close()` hooks.
 
+The concrete driver package exports are declared below. Inherited adapter methods are listed in [adapter](adapter.md).
+
+```ts
+type SQLitePragmas = {
+  journalMode?: 'wal' | 'delete' | 'truncate' | 'memory' | 'off'
+  busyTimeout?: number
+  foreignKeys?: boolean
+}
+type NodeSQLiteAdapterParams = { database: string; pragmas?: SQLitePragmas }
+class NodeSQLiteAdapter extends AbstractSQLiteAdapter<SQLiteTypes> {
+  constructor(params: NodeSQLiteAdapterParams)
+  get database(): DatabaseSync
+  get dialect(): Dialect
+  prepare(): Promise<void>
+  close(): Promise<void>
+}
+type PostgresAdapterParams = {
+  url: string; options?: Options<Record<string, PostgresType>>; closeTimeoutSeconds?: number
+}
+class PostgresAdapter extends AbstractPostgresAdapter {
+  constructor(params: PostgresAdapterParams)
+  get dialect(): Dialect
+  coerceFilterValue(value: unknown): unknown
+  close(): Promise<void>
+}
+type ExpoAdapterParams = { database: string }
+class ExpoAdapter extends AbstractSQLiteAdapter<SQLiteTypes> {
+  constructor(params: ExpoAdapterParams)
+  get database(): SQLiteDatabase
+  get dialect(): Dialect
+  close(): Promise<void>
+}
+type SQLocalAdapterParams = { database: string }
+class SQLocalAdapter extends AbstractSQLiteAdapter<SQLiteTypes> {
+  constructor(params: SQLocalAdapterParams)
+  get dialect(): Dialect
+  get sqlocal(): SQLocalKysely
+  close(): Promise<void>
+}
+```
+
 ## Node SQLite
 
 `NodeSQLiteAdapter({ database, pragmas? })` accepts a path or `:memory:`. The `SQLitePragmas` options are `journalMode`, `busyTimeout`, and `foreignKeys`. Defaults are WAL for files, a 5000 ms busy timeout, and foreign keys enabled. Node packages require Node 24 or later. Node's SQLite binding converts booleans to `1` or `0` for all supported Node 24 releases.

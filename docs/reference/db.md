@@ -41,7 +41,19 @@ function withStoreTransaction<DB, R>(db: Kysely<DB>, fn: (trx: Kysely<DB>) => Pr
 function chunk<T>(items: Array<T>, size?: number): Array<Array<T>>
 ```
 
-`withKeepSet` accepts a transaction, `{ table, ids }`, and an async callback receiving a keep-set select builder; it returns the callback's `Promise<R>`.
+The helper and error constructors have these declarations:
+
+```ts
+function withKeepSet<DB, R>(
+  db: Kysely<DB>,
+  params: { table: string; ids: Array<string> },
+  fn: (selectKeep: () => SelectQueryBuilder<{ keep: { trace_id: string } }, 'keep', { trace_id: string }>) => Promise<R>,
+): Promise<R>
+class HozonDBClosedError extends Error { constructor() }
+class InvalidTablePrefixError extends Error { constructor(prefix: string) }
+class SavepointOverlapError extends Error { constructor() }
+class SchemaVersionError extends Error { constructor(store: string, unknown: Array<string>) }
+```
 
 Create a database with an adapter, register store definitions, then request a store or call `migrate()`:
 
