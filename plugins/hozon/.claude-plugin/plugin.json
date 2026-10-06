@@ -1,0 +1,6 @@
+{
+  "name": "hozon",
+  "version": "0.1.0",
+  "description": "Hozon database, driver, and telemetry skills.",
+  "author": { "name": "Paul Le Cam" }
+}

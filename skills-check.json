@@ -1,0 +1,5 @@
+{
+  "cap": 120,
+  "forbidCodeBlocks": true,
+  "allow": ["kigu"]
+}

@@ -10,6 +10,7 @@
     "build:js": "turbo run build:js",
     "build:types": "turbo run build:types",
     "build:types:ci": "pnpm run -r build:types:ci",
+    "check:skills": "kigu-check-skills",
     "format": "biome format --write .",
     "lint": "biome check --write ./packages ./tests",
     "lint:ci": "biome ci .",

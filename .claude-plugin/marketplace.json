@@ -1,0 +1,11 @@
+{
+  "name": "hozon",
+  "owner": { "name": "Paul Le Cam" },
+  "plugins": [
+    {
+      "name": "hozon",
+      "source": "./plugins/hozon",
+      "description": "Hozon database, driver, and telemetry domain skills."
+    }
+  ]
+}

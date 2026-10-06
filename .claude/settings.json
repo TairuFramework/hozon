@@ -13,10 +13,18 @@
         "repo": "TairuFramework/sozai"
       },
       "autoUpdate": true
+    },
+    "hozon": {
+      "source": {
+        "source": "github",
+        "repo": "TairuFramework/hozon"
+      },
+      "autoUpdate": true
     }
   },
   "enabledPlugins": {
     "kigu@kigu": true,
-    "sozai@sozai": true
+    "sozai@sozai": true,
+    "hozon@hozon": true
   }
 }
