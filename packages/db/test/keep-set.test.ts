@@ -82,6 +82,35 @@ test('withKeepSet rejects calls outside a transaction', async () => {
   ).rejects.toThrow('transaction')
 })
 
+test.each([new Error('callback failed'), undefined])(
+  'withKeepSet preserves callback failure %s when cleanup also fails',
+  async (original) => {
+    await setup()
+      .transaction()
+      .execute(async (trx) => {
+        await expect(
+          withKeepSet(trx, { table: 'hozon_keep_log', ids: [] }, async () => {
+            await sql`DROP TABLE ${sql.table('hozon_keep_log')}`.execute(trx)
+            throw original
+          }),
+        ).rejects.toBe(original)
+      })
+  },
+)
+
+test('withKeepSet propagates cleanup failure when the callback succeeds', async () => {
+  await setup()
+    .transaction()
+    .execute(async (trx) => {
+      await expect(
+        withKeepSet(trx, { table: 'hozon_keep_log', ids: [] }, async () => {
+          await sql`DROP TABLE ${sql.table('hozon_keep_log')}`.execute(trx)
+          return 'success'
+        }),
+      ).rejects.toThrow('no such table')
+    })
+})
+
 test.each([0, -1, 1.5, Number.POSITIVE_INFINITY, Number.NaN])(
   'chunk rejects invalid size %s',
   (size) => {

@@ -231,17 +231,7 @@ export class HozonDB implements StoreProvider {
                 } catch (error) {
                   await sql.raw(`ROLLBACK TO SAVEPOINT ${name}`).execute(trx)
                   await sql.raw(`RELEASE SAVEPOINT ${name}`).execute(trx)
-                  for (const [index, hook] of savepointRollbackHooks.entries()) {
-                    try {
-                      hook()
-                    } catch (hookError) {
-                      this.#logger.error('rollback hook {index}/{count} failed', {
-                        index,
-                        count: savepointRollbackHooks.length,
-                        error: hookError,
-                      })
-                    }
-                  }
+                  this.#runHooks(savepointRollbackHooks, 'rollback')
                   throw error
                 }
               } finally {
@@ -261,17 +251,7 @@ export class HozonDB implements StoreProvider {
       // (revert first, then drop the stale cache). Hooks are isolated/logged,
       // never re-thrown; the original error is preserved so callers (e.g. the
       // engine's `MutateGraphWriteRollback` sentinel) still observe it.
-      for (const [index, hook] of rollbackHooks.entries()) {
-        try {
-          hook()
-        } catch (error) {
-          this.#logger.error('rollback hook {index}/{count} failed', {
-            index,
-            count: rollbackHooks.length,
-            error,
-          })
-        }
-      }
+      this.#runHooks(rollbackHooks, 'rollback')
       throw err
     }
 
@@ -279,18 +259,22 @@ export class HozonDB implements StoreProvider {
     // effects (event emission, cache invalidation). A throwing hook must not
     // skip the remaining hooks or make the caller observe a durable write as a
     // failure, so each hook is isolated and its error logged, never re-thrown.
-    for (const [index, hook] of commitHooks.entries()) {
+    this.#runHooks(commitHooks, 'commit')
+    return result
+  }
+
+  #runHooks(hooks: Array<() => void>, phase: 'commit' | 'rollback'): void {
+    for (const [index, hook] of hooks.entries()) {
       try {
         hook()
       } catch (error) {
-        this.#logger.error('commit hook {index}/{count} failed', {
+        this.#logger.error(`${phase} hook {index}/{count} failed`, {
           index,
-          count: commitHooks.length,
+          count: hooks.length,
           error,
         })
       }
     }
-    return result
   }
 
   async migrate(): Promise<void> {

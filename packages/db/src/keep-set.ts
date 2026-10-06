@@ -20,6 +20,7 @@ export async function withKeepSet<DB, R>(
 ): Promise<R> {
   if (!db.isTransaction) throw new Error('withKeepSet requires a transaction')
   await sql`CREATE TEMP TABLE ${sql.table(params.table)} (trace_id text PRIMARY KEY)`.execute(db)
+  let failed = false
   try {
     const keepDB = db as unknown as Kysely<Record<string, { trace_id: string }>>
     for (const ids of chunk(params.ids)) {
@@ -37,7 +38,16 @@ export async function withKeepSet<DB, R>(
           { trace_id: string }
         >,
     )
+  } catch (error) {
+    failed = true
+    throw error
   } finally {
-    await sql`DROP TABLE ${sql.table(params.table)}`.execute(db)
+    try {
+      await sql`DROP TABLE ${sql.table(params.table)}`.execute(db)
+    } catch (error) {
+      // Cleanup must not replace the primary failure, including an aborted transaction.
+      // biome-ignore lint/correctness/noUnsafeFinally: Surface cleanup failure only without a primary failure.
+      if (!failed) throw error
+    }
   }
 }
