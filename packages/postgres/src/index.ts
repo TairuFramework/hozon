@@ -86,6 +86,13 @@ export class PostgresAdapter extends AbstractPostgresAdapter {
     return this.#dialect
   }
 
+  // postgres.js serializes parameters by the server-inferred type, and its boolean
+  // serializer maps anything but `true` (including the string 'true') to 'f', so booleans
+  // stay native here instead of taking the generic text coercion.
+  coerceFilterValue(value: unknown): unknown {
+    return typeof value === 'boolean' ? value : super.coerceFilterValue(value)
+  }
+
   close(): Promise<void> {
     return this.#end()
   }

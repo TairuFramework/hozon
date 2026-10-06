@@ -30,6 +30,14 @@ describe('PostgresAdapter', () => {
     return adapter.close()
   })
 
+  test('keeps boolean filter values native for postgres.js serialization', () => {
+    const adapter = new PostgresAdapter({ url: 'postgres://user:pass@127.0.0.1:1/db' })
+    expect(adapter.coerceFilterValue(true)).toBe(true)
+    expect(adapter.coerceFilterValue(false)).toBe(false)
+    expect(adapter.coerceFilterValue('text')).toBe('text')
+    return adapter.close()
+  })
+
   test('close before use resolves and is idempotent', async () => {
     const adapter = new PostgresAdapter({ url: 'postgres://user:pass@127.0.0.1:1/db' })
     await expect(adapter.close?.()).resolves.toBeUndefined()
