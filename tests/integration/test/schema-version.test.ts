@@ -35,40 +35,39 @@ type Scenario = {
   name: string
   /** Stores migrated by the newer version. */
   newer: Array<StoreDefinition<unknown, unknown>>
-  /** Registers the older version's stores and triggers the refused open. */
-  open(db: HozonDB): Promise<unknown>
-  /** A store opens successfully before the refusal, so the file is legitimately prepared (WAL). */
-  preparesFile?: boolean
+  /** Registers the older version's stores. */
+  register(db: HozonDB): void
+  /** A successful access that legitimately opens and prepares the database first. */
+  prepare?(db: HozonDB): Promise<unknown>
+  /** The access the older version must refuse. */
+  refuse(db: HozonDB): Promise<unknown>
 }
 
 const scenarios: Array<Scenario> = [
   {
     name: 'directly opened store is newer',
     newer: [store('a', ['0-init', '1-next'])],
-    open: async (db) => {
-      db.register(store('a', ['0-init']))
-      return db.getStore('a')
-    },
+    register: (db) => db.register(store('a', ['0-init'])),
+    refuse: (db) => db.getStore('a'),
   },
   {
     name: 'only a dependsOn store is newer',
     newer: [store('base', ['0-init', '1-next']), store('app', ['0-init'], ['base'])],
-    open: async (db) => {
+    register: (db) => {
       db.register(store('app', ['0-init'], ['base']))
       db.register(store('base', ['0-init']))
-      return db.getStore('app')
     },
+    refuse: (db) => db.getStore('app'),
   },
   {
     name: 'only a later-registered store is newer',
     newer: [store('first', ['0-init']), store('late', ['0-init', '1-next'])],
-    open: async (db) => {
-      db.register(store('first', ['0-init']))
-      await db.getStore('first')
+    register: (db) => db.register(store('first', ['0-init'])),
+    prepare: (db) => db.getStore('first'),
+    refuse: (db) => {
       db.register(store('late', ['0-init']))
       return db.getStore('late')
     },
-    preparesFile: true,
   },
 ]
 
@@ -110,16 +109,25 @@ describe.each(backends())('$name', (backend) => {
       await newer.migrate()
       await newer.close()
 
+      // Default pragmas when nothing opens successfully: preparing would switch the file to
+      // WAL, so the refusal must happen before it. A scenario with a successful first access
+      // keeps `delete` explicitly, so its own preparation leaves the journal mode as it was.
+      const older = new HozonDB({
+        adapter: await backend.reopen(
+          scenario.prepare ? { pragmas: { journalMode: 'delete' } } : undefined,
+        ),
+      })
+      scenario.register(older)
+      await scenario.prepare?.(older)
+
+      // Snapshot after any successful preparation, immediately before the refused access.
       const rowsBefore = await migrationRows(backend, scenario)
       const bytesBefore =
         backend.name === 'node-sqlite' ? await readFile(backend.location()) : undefined
-
-      // Default pragmas: a successful open would switch the file to WAL.
-      const older = new HozonDB({ adapter: await backend.reopen() })
-      await expect(scenario.open(older)).rejects.toThrow(SchemaVersionError)
+      await expect(scenario.refuse(older)).rejects.toThrow(SchemaVersionError)
       await older.close()
 
-      if (bytesBefore !== undefined && !scenario.preparesFile) {
+      if (bytesBefore !== undefined) {
         expect(Buffer.compare(await readFile(backend.location()), bytesBefore)).toBe(0)
         const file = new DatabaseSync(backend.location(), { readOnly: true })
         try {

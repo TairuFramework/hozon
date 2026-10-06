@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto'
 import { summarize } from '@hozon/conformance'
 import { HozonDB } from '@hozon/db'
 import { createLogStoreSink } from '@hozon/logtape'
-import { getLogStore, logStoreDefinition } from '@hozon/store-log'
+import { getLogStore, type LogStore, logStoreDefinition } from '@hozon/store-log'
 import { getTelemetryStore } from '@hozon/store-telemetry'
-import { configure, getLogger } from '@logtape/logtape'
+import { configure, getLogger, type LogRecord, reset } from '@logtape/logtape'
 import { trace } from '@opentelemetry/api'
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks'
 import { runStoreScenario, setupTelemetry } from 'hozon-test-scenarios'
@@ -90,6 +90,45 @@ describe.each(backends())('$name', (backend) => {
       expect(new Set(logs.map((log) => log.traceID)).size).toBe(1)
     } finally {
       await telemetry.teardown()
+    }
+  })
+
+  test('logtape sink reports a failed store write and keeps draining later records', async () => {
+    const closed = await open()
+    closed.register(logStoreDefinition)
+    const closedStore = await getLogStore(closed)
+    await closed.close()
+    const live = await open(true)
+    live.register(logStoreDefinition)
+    const liveStore = await getLogStore(live)
+    // The first batch goes to the closed database (a real driver failure), later ones succeed.
+    let target: LogStore = closedStore
+    const store: LogStore = { ...liveStore, addLogs: (logs) => target.addLogs(logs) }
+
+    const reported: Array<LogRecord> = []
+    const sink = createLogStoreSink(store)
+    await configure({
+      sinks: { hozon: sink, capture: (record: LogRecord) => reported.push(record) },
+      loggers: [
+        { category: ['app'], sinks: ['hozon'], lowestLevel: 'debug' },
+        { category: ['hozon', 'logtape'], sinks: ['capture'], lowestLevel: 'error' },
+        { category: ['logtape', 'meta'], sinks: [], lowestLevel: 'warning' },
+      ],
+      reset: true,
+    })
+    try {
+      getLogger(['app']).info('lost with the closed store')
+      await sink.flush()
+      expect(reported.map((record) => record.rawMessage)).toEqual(['Failed to store log batch'])
+
+      target = liveStore
+      getLogger(['app']).info('drained after the failure')
+      await sink.flush()
+      expect((await liveStore.queryLogs({ limit: 10 })).logs.map((log) => log.message)).toEqual([
+        'drained after the failure',
+      ])
+    } finally {
+      await reset()
     }
   })
 

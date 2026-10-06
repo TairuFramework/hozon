@@ -149,13 +149,8 @@ describe.each(backends())('$name', (backend) => {
         '0-init': {
           async up(db) {
             attempts++
-            // `ifNotExists`: SQLite DDL is not transactional in Kysely's migrator, so a
-            // failed attempt may leave the table behind there (Postgres rolls it back).
-            await db.schema
-              .createTable('lc_flaky')
-              .ifNotExists()
-              .addColumn('id', 'integer')
-              .execute()
+            // No `ifNotExists`: a table left behind by the failed attempt would break the retry.
+            await db.schema.createTable('lc_flaky').addColumn('id', 'integer').execute()
             if (attempts === 1) throw new Error('migration failed on first open')
           },
         },
@@ -168,9 +163,7 @@ describe.each(backends())('$name', (backend) => {
     await expect(first.getStore('flaky')).rejects.toThrow('migration failed on first open')
     const raw = await first.getStore<RawDB>('raw')
     expect(await raw.selectFrom('hozon_flaky_migration').select('name').execute()).toEqual([])
-    if (backend.name === 'postgres') {
-      expect(await tableNames(raw)).not.toContain('lc_flaky')
-    }
+    expect(await tableNames(raw)).not.toContain('lc_flaky')
     await first.close()
 
     const second = await open({ reopen: true })
