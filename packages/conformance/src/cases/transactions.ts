@@ -36,6 +36,35 @@ function setup(ctx: CaseContext) {
   return db
 }
 
+function setupHookTiming(ctx: CaseContext) {
+  const boundary: { completed?: 'commit' | 'rollback' } = {}
+  const dialect = ctx.adapter.dialect
+  const createDriver = dialect.createDriver
+  // Observe driver completion synchronously in hooks; queued reads can hide early hooks.
+  dialect.createDriver = function () {
+    const driver = createDriver.call(this)
+    const begin = driver.beginTransaction.bind(driver)
+    driver.beginTransaction = async (...args) => {
+      boundary.completed = undefined
+      await begin(...args)
+    }
+    for (const phase of ['commit', 'rollback'] as const) {
+      const method = phase === 'commit' ? 'commitTransaction' : 'rollbackTransaction'
+      const complete = driver[method].bind(driver)
+      driver[method] = async (...args) => {
+        await complete(...args)
+        boundary.completed = phase
+      }
+    }
+    return driver
+  }
+  try {
+    return { db: setup(ctx), boundary }
+  } finally {
+    dialect.createDriver = createDriver
+  }
+}
+
 export const transactionCases: Array<ConformanceCase> = [
   {
     name: 'transactions: cross-store commit',
@@ -155,12 +184,14 @@ export const transactionCases: Array<ConformanceCase> = [
   {
     name: 'transactions: onCommit runs after committed writes',
     async run(ctx) {
-      const db = setup(ctx)
+      const { db, boundary } = setupHookTiming(ctx)
       const hooks: Array<string> = []
+      let completedAtHook: typeof boundary.completed
       let read: Promise<Array<string>> | undefined
       await db.withTransaction<Stores, void>(async (tx) => {
         tx.onCommit(() => {
           hooks.push('commit')
+          completedAtHook = boundary.completed
           read = db.getStore<RowsAPI>('first').then((store) => store.list())
         })
         tx.onRollback(() => hooks.push('unexpected-rollback'))
@@ -169,19 +200,22 @@ export const transactionCases: Array<ConformanceCase> = [
       })
       assert.deepEqual(hooks, ['commit'])
       assert.deepEqual(await read, ['committed'])
+      assert.equal(completedAtHook, 'commit')
     },
   },
   {
     name: 'transactions: onRollback runs after reverted writes',
     async run(ctx) {
-      const db = setup(ctx)
+      const { db, boundary } = setupHookTiming(ctx)
       const hooks: Array<string> = []
+      let completedAtHook: typeof boundary.completed
       let read: Promise<Array<string>> | undefined
       await assert.rejects(
         () =>
           db.withTransaction<Stores, void>(async (tx) => {
             tx.onRollback(() => {
               hooks.push('rollback')
+              completedAtHook = boundary.completed
               read = db.getStore<RowsAPI>('first').then((store) => store.list())
             })
             tx.onCommit(() => hooks.push('unexpected-commit'))
@@ -193,6 +227,7 @@ export const transactionCases: Array<ConformanceCase> = [
       )
       assert.deepEqual(hooks, ['rollback'])
       assert.deepEqual(await read, [])
+      assert.equal(completedAtHook, 'rollback')
     },
   },
   {
