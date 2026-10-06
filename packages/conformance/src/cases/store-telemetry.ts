@@ -81,4 +81,75 @@ export const storeTelemetryCases: Array<ConformanceCase> = [
       assert.deepEqual(await store.getSpans('delete'), [])
     },
   },
+  {
+    name: 'telemetry store: concurrent keep-set retention in one transaction',
+    async run(ctx: CaseContext) {
+      const db = ctx.db()
+      db.register(telemetryStoreDefinition)
+      const store = await getTelemetryStore(db)
+      await store.addSpans([
+        span('a', 'a', 1),
+        span('b', 'b', 1),
+        span('c', 'c', 1),
+        span('d', 'd', 5),
+      ])
+      // Keep-set calls in one transaction are serialized in call order.
+      const counts = await db.withTransaction(async (tx) => {
+        const txStore = await getTelemetryStore(tx)
+        return Promise.all([
+          txStore.deleteBefore(3, { keepTraceIDs: ['a', 'b'] }),
+          txStore.deleteBefore(3, { keepTraceIDs: ['a'] }),
+        ])
+      })
+      assert.deepEqual(counts, [1, 1])
+      for (const [traceID, length] of [
+        ['a', 1],
+        ['b', 0],
+        ['c', 0],
+        ['d', 1],
+      ] as const) {
+        assert.equal((await store.getSpans(traceID)).length, length)
+      }
+    },
+  },
+  {
+    name: 'telemetry store: concurrent keep-set retention rolls back, then succeeds again',
+    async run(ctx: CaseContext) {
+      const db = ctx.db()
+      db.register(telemetryStoreDefinition)
+      const store = await getTelemetryStore(db)
+      await store.addSpans([span('a', 'a', 1), span('b', 'b', 1), span('c', 'c', 1)])
+      const failure = new Error('abort retention')
+      let counts: Array<number> = []
+      let rejected: unknown
+      try {
+        await db.withTransaction(async (tx) => {
+          const txStore = await getTelemetryStore(tx)
+          counts = await Promise.all([
+            txStore.deleteBefore(3, { keepTraceIDs: ['a', 'b'] }),
+            txStore.deleteBefore(3, { keepTraceIDs: ['a'] }),
+          ])
+          throw failure
+        })
+      } catch (error) {
+        rejected = error
+      }
+      assert.equal(rejected, failure)
+      assert.deepEqual(counts, [1, 1])
+      for (const traceID of ['a', 'b', 'c']) {
+        assert.equal((await store.getSpans(traceID)).length, 1)
+      }
+      const retried = await db.withTransaction(async (tx) => {
+        const txStore = await getTelemetryStore(tx)
+        return Promise.all([
+          txStore.deleteBefore(3, { keepTraceIDs: ['a'] }),
+          txStore.deleteBefore(3, { keepTraceIDs: ['b'] }),
+        ])
+      })
+      assert.deepEqual(retried, [2, 1])
+      for (const traceID of ['a', 'b', 'c']) {
+        assert.equal((await store.getSpans(traceID)).length, 0)
+      }
+    },
+  },
 ]

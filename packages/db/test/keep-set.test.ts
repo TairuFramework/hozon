@@ -131,3 +131,60 @@ test('selectKeep can be used as a deletion subquery', async () => {
     { trace_id: 'keep' },
   ])
 })
+
+test('withKeepSet serializes concurrent calls per transaction and table', async () => {
+  await setup()
+    .transaction()
+    .execute(async (trx) => {
+      const order: Array<string> = []
+      const results = await Promise.all(
+        [['a'], ['b', 'c']].map((ids, index) =>
+          withKeepSet(trx, { table: 'hozon_keep_log', ids }, async (selectKeep) => {
+            order.push(`start-${index}`)
+            const rows = await selectKeep().execute()
+            order.push(`end-${index}`)
+            return rows.map((row) => row.trace_id).sort()
+          }),
+        ),
+      )
+      expect(results).toEqual([['a'], ['b', 'c']])
+      expect(order).toEqual(['start-0', 'end-0', 'start-1', 'end-1'])
+    })
+})
+
+test('withKeepSet releases the table to a queued call after a failure', async () => {
+  await setup()
+    .transaction()
+    .execute(async (trx) => {
+      const [first, second] = await Promise.allSettled([
+        withKeepSet(trx, { table: 'hozon_keep_log', ids: ['a'] }, async () => {
+          throw new Error('callback failed')
+        }),
+        withKeepSet(trx, { table: 'hozon_keep_log', ids: ['b'] }, async (selectKeep) =>
+          selectKeep().execute(),
+        ),
+      ])
+      expect(first).toMatchObject({ status: 'rejected', reason: new Error('callback failed') })
+      expect(second).toEqual({ status: 'fulfilled', value: [{ trace_id: 'b' }] })
+      await expect(sql`SELECT * FROM ${sql.table('hozon_keep_log')}`.execute(trx)).rejects.toThrow(
+        'no such table',
+      )
+    })
+})
+
+test('withKeepSet runs different tables independently', async () => {
+  await setup()
+    .transaction()
+    .execute(async (trx) => {
+      const [log, telemetry] = await Promise.all([
+        withKeepSet(trx, { table: 'hozon_keep_log', ids: ['a'] }, async (selectKeep) =>
+          selectKeep().execute(),
+        ),
+        withKeepSet(trx, { table: 'hozon_keep_telemetry', ids: ['b'] }, async (selectKeep) =>
+          selectKeep().execute(),
+        ),
+      ])
+      expect(log).toEqual([{ trace_id: 'a' }])
+      expect(telemetry).toEqual([{ trace_id: 'b' }])
+    })
+})

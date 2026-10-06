@@ -111,4 +111,62 @@ export const storeLogCases: Array<ConformanceCase> = [
       assert.deepEqual(await store.getTraceLogs('delete'), [])
     },
   },
+  {
+    name: 'log store: concurrent keep-set retention in one transaction',
+    async run(ctx: CaseContext) {
+      const db = ctx.db()
+      db.register(logStoreDefinition)
+      const store = await getLogStore(db)
+      await store.addLogs([log(1, 'a', 'a'), log(1, 'b', 'b'), log(1, 'c', 'c'), log(5, 'd', 'd')])
+      // Keep-set calls in one transaction are serialized in call order.
+      const counts = await db.withTransaction(async (tx) => {
+        const txStore = await getLogStore(tx)
+        return Promise.all([
+          txStore.deleteBefore(2, { keepTraceIDs: ['a', 'b'] }),
+          txStore.deleteBefore(2, { keepTraceIDs: ['a'] }),
+        ])
+      })
+      assert.deepEqual(counts, [1, 1])
+      assert.deepEqual(
+        (await store.queryLogs({ limit: 10 })).logs.map((entry) => entry.message),
+        ['a', 'd'],
+      )
+    },
+  },
+  {
+    name: 'log store: concurrent keep-set retention rolls back, then succeeds again',
+    async run(ctx: CaseContext) {
+      const db = ctx.db()
+      db.register(logStoreDefinition)
+      const store = await getLogStore(db)
+      await store.addLogs([log(1, 'a', 'a'), log(1, 'b', 'b'), log(1, 'c', 'c')])
+      const failure = new Error('abort retention')
+      let counts: Array<number> = []
+      let rejected: unknown
+      try {
+        await db.withTransaction(async (tx) => {
+          const txStore = await getLogStore(tx)
+          counts = await Promise.all([
+            txStore.deleteBefore(2, { keepTraceIDs: ['a', 'b'] }),
+            txStore.deleteBefore(2, { keepTraceIDs: ['a'] }),
+          ])
+          throw failure
+        })
+      } catch (error) {
+        rejected = error
+      }
+      assert.equal(rejected, failure)
+      assert.deepEqual(counts, [1, 1])
+      assert.equal((await store.queryLogs({ limit: 10 })).logs.length, 3)
+      const retried = await db.withTransaction(async (tx) => {
+        const txStore = await getLogStore(tx)
+        return Promise.all([
+          txStore.deleteBefore(2, { keepTraceIDs: ['a'] }),
+          txStore.deleteBefore(2, { keepTraceIDs: ['b'] }),
+        ])
+      })
+      assert.deepEqual(retried, [2, 1])
+      assert.equal((await store.queryLogs({ limit: 10 })).logs.length, 0)
+    },
+  },
 ]
