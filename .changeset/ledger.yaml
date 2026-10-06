@@ -1,1 +1,48 @@
-{}
+"@hozon/adapter@0.1.0":
+  dir: packages/adapter
+  intents:
+    - initial-adapter
+"@hozon/conformance@0.1.0":
+  dir: packages/conformance
+  intents:
+    - initial-conformance
+"@hozon/db@0.1.0":
+  dir: packages/db
+  intents:
+    - initial-db
+"@hozon/expo@0.1.0":
+  dir: packages/expo
+  intents:
+    - initial-expo
+"@hozon/logtape@0.1.0":
+  dir: packages/logtape
+  intents:
+    - initial-logtape
+"@hozon/node-sqlite@0.1.0":
+  dir: packages/node-sqlite
+  intents:
+    - initial-node-sqlite
+"@hozon/otel@0.1.0":
+  dir: packages/otel
+  intents:
+    - initial-otel
+"@hozon/postgres@0.1.0":
+  dir: packages/postgres
+  intents:
+    - initial-postgres
+"@hozon/provider@0.1.0":
+  dir: packages/provider
+  intents:
+    - initial-provider
+"@hozon/sqlocal@0.1.0":
+  dir: packages/sqlocal
+  intents:
+    - initial-sqlocal
+"@hozon/store-log@0.1.0":
+  dir: packages/store-log
+  intents:
+    - initial-store-log
+"@hozon/store-telemetry@0.1.0":
+  dir: packages/store-telemetry
+  intents:
+    - initial-store-telemetry
