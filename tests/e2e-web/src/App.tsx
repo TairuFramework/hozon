@@ -39,7 +39,7 @@ async function runPhase(phase: ScenarioPhase): Promise<Report> {
     await adapter.close()
     return { storage: info.storageType ?? 'unknown', conformance: [], stores: [], error: null }
   }
-  const conformance = phase === 'write' ? await runConformancePhase() : []
+  const conformance = await runConformancePhase()
   const db = new HozonDB({ adapter })
   const telemetry = await setupTelemetry({ contextManager: new StackContextManager(), db })
   try {

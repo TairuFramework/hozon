@@ -8,5 +8,6 @@ test('store data persists across page reload', async ({ page }) => {
 
   await page.reload()
   await page.getByRole('button', { name: 'Run verify phase' }).click()
-  await expect(page.getByText('Stores: OK')).toBeVisible({ timeout: 60_000 })
+  await expect(page.getByText('Conformance: OK')).toBeVisible({ timeout: 120_000 })
+  await expect(page.getByText('Stores: OK')).toBeVisible()
 })
