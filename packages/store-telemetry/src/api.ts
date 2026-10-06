@@ -72,11 +72,17 @@ export function createTelemetryStoreAPI(
       })
     },
     async deleteBefore(time, params) {
-      if (params?.keepTraceIDs?.length === 0) return 0
       return withStoreTransaction(db, async (trx) => {
+        if (params?.keepTraceIDs === undefined || params.keepTraceIDs.length === 0) {
+          const result = await trx
+            .deleteFrom('hozon_spans')
+            .where('end_time', '<', time)
+            .executeTakeFirstOrThrow()
+          return Number(result.numDeletedRows)
+        }
         return withKeepSet(
           trx,
-          { table: 'hozon_keep_telemetry', ids: params?.keepTraceIDs ?? [] },
+          { table: 'hozon_keep_telemetry', ids: params.keepTraceIDs },
           async (selectKeep) => {
             const result = await trx
               .deleteFrom('hozon_spans')

@@ -28,5 +28,6 @@ export type LogStore = {
   queryLogs(params: QueryLogsParams): Promise<{ logs: Array<StoredLog>; cursor?: string }>
   getTraceLogs(traceID: string): Promise<Array<TracedLog>>
   deleteByTrace(traceIDs: Array<string>): Promise<number>
+  /** An empty or omitted keepTraceIDs keeps nothing. */
   deleteBefore(time: number, params?: { keepTraceIDs?: Array<string> }): Promise<number>
 }

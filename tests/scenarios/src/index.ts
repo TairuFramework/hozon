@@ -298,9 +298,8 @@ async function verifyPhase(db: HozonDB, runID: string): Promise<Array<Conformanc
       {
         name: 'retention: deleteBefore empties both stores',
         async run() {
-          // `keepTraceIDs: []` is a documented no-op, so retention without keep IDs omits it.
-          await stores.log.deleteBefore(Number.POSITIVE_INFINITY)
-          await stores.telemetry.deleteBefore(Number.POSITIVE_INFINITY)
+          await stores.log.deleteBefore(Number.POSITIVE_INFINITY, { keepTraceIDs: [] })
+          await stores.telemetry.deleteBefore(Number.POSITIVE_INFINITY, { keepTraceIDs: [] })
           expectEqual((await stores.log.queryLogs({ limit: 1 })).logs, [], 'remaining logs')
           expectEqual(
             await stores.telemetry.getSpans(traceID ?? fail('No trace ID')),

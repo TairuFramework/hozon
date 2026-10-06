@@ -118,11 +118,17 @@ export function createLogStoreAPI(db: Kysely<LogTables>, adapter: Adapter): LogS
       })
     },
     async deleteBefore(time, params) {
-      if (params?.keepTraceIDs?.length === 0) return 0
       return withStoreTransaction(db, async (trx) => {
+        if (params?.keepTraceIDs === undefined || params.keepTraceIDs.length === 0) {
+          const result = await trx
+            .deleteFrom('hozon_logs')
+            .where('timestamp', '<', time)
+            .executeTakeFirstOrThrow()
+          return Number(result.numDeletedRows)
+        }
         return withKeepSet(
           trx,
-          { table: 'hozon_keep_log', ids: params?.keepTraceIDs ?? [] },
+          { table: 'hozon_keep_log', ids: params.keepTraceIDs },
           async (selectKeep) => {
             const result = await trx
               .deleteFrom('hozon_logs')

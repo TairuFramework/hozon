@@ -35,10 +35,14 @@ test('empty inputs are no-ops without executing SQL', async () => {
   const prepare = vi.spyOn(adapter.database, 'prepare')
   await store.addLogs([])
   expect(await store.deleteByTrace([])).toBe(0)
-  expect(await store.deleteBefore(10, { keepTraceIDs: [] })).toBe(0)
   expect(prepare).not.toHaveBeenCalled()
   prepare.mockRestore()
   expect((await store.queryLogs({ limit: 10 })).logs).toEqual([log(1)])
+})
+test('deleteBefore with an empty keep list deletes all older logs, including untraced logs', async () => {
+  await store.addLogs([log(1, 'traced', 'trace'), log(2), log(10)])
+  expect(await store.deleteBefore(10, { keepTraceIDs: [] })).toBe(2)
+  expect((await store.queryLogs({ limit: 10 })).logs).toEqual([log(10)])
 })
 test.each([{ traceID: 'trace' }, { spanID: 'span' }])(
   'rejects unpaired IDs %s and writes nothing',

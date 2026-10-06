@@ -104,8 +104,8 @@ describe.each(backends())('$name', (backend) => {
     expect(await store.getSpans('drop')).toEqual([])
     expect(await store.getSpans('recent')).toHaveLength(1)
     expect(await store.getSpans('keep-39999')).toHaveLength(1)
-    expect(await store.deleteBefore(5, { keepTraceIDs: [] })).toBe(0)
-    expect(await store.deleteBefore(5)).toBe(kept.length)
+    expect(await store.deleteBefore(5, { keepTraceIDs: [] })).toBe(kept.length)
+    expect(await store.deleteBefore(5)).toBe(0)
   })
 
   test('spans persist across reopen', async () => {

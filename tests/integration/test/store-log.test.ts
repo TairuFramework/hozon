@@ -186,8 +186,8 @@ describe.each(backends())('$name', (backend) => {
     expect(await store.deleteBefore(5, { keepTraceIDs })).toBe(2)
     const messages = (await allLogs(store)).map((log) => log.message)
     expect(messages).toEqual([...kept, 'new traced', 'new untraced'])
-    expect(await store.deleteBefore(5, { keepTraceIDs: [] })).toBe(0)
-    expect(await store.deleteBefore(5)).toBe(kept.length)
+    expect(await store.deleteBefore(5, { keepTraceIDs: [] })).toBe(kept.length)
+    expect(await store.deleteBefore(5)).toBe(0)
   })
 
   test('logs persist across reopen', async () => {

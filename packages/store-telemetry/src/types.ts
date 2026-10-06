@@ -17,5 +17,6 @@ export type TelemetryStore = {
   addSpans(spans: Array<StoredSpan>): Promise<void>
   getSpans(traceID: string): Promise<Array<StoredSpan>>
   deleteByTrace(traceIDs: Array<string>): Promise<number>
+  /** An empty or omitted keepTraceIDs keeps nothing. */
   deleteBefore(time: number, params?: { keepTraceIDs?: Array<string> }): Promise<number>
 }
