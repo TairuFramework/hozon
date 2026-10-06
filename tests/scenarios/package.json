@@ -1,0 +1,37 @@
+{
+  "name": "hozon-test-scenarios",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Shared Hozon store scenario for integration and e2e harnesses",
+  "license": "MIT",
+  "sideEffects": false,
+  "type": "module",
+  "exports": {
+    ".": "./lib/index.js"
+  },
+  "files": [
+    "lib/*"
+  ],
+  "scripts": {
+    "build": "pnpm run build:clean && pnpm run build:js && pnpm run build:types",
+    "build:clean": "del-cli lib",
+    "build:js": "del-cli \"lib/**/*.js\" && swc src -d ./lib --config-file ../../node_modules/@kigu/dev/swc.json --strip-leading-paths",
+    "build:types": "del-cli \"lib/**/*.d.ts\" \"lib/**/*.d.ts.map\" && tsc --emitDeclarationOnly --skipLibCheck",
+    "build:types:ci": "tsc --emitDeclarationOnly --skipLibCheck --declarationMap false",
+    "test:types": "tsc --noEmit --skipLibCheck"
+  },
+  "dependencies": {
+    "@hozon/conformance": "workspace:^",
+    "@hozon/db": "workspace:^",
+    "@hozon/logtape": "workspace:^",
+    "@hozon/otel": "workspace:^",
+    "@hozon/store-log": "workspace:^",
+    "@hozon/store-telemetry": "workspace:^",
+    "@logtape/logtape": "catalog:",
+    "@opentelemetry/api": "catalog:",
+    "@opentelemetry/sdk-trace-base": "catalog:"
+  },
+  "devDependencies": {
+    "del-cli": "catalog:"
+  }
+}

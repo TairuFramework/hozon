@@ -4,8 +4,11 @@ packages:
 
 allowBuilds:
   '@swc/core': true
+  cpu-features: false
   electron: false
   esbuild: false
+  protobufjs: false
+  ssh2: false
 
 nodeLinker: hoisted
 

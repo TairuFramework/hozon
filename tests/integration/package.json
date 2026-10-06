@@ -1,0 +1,37 @@
+{
+  "name": "integration-tests",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Hozon integration tests on real node:sqlite files and Postgres",
+  "license": "MIT",
+  "sideEffects": false,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run",
+    "test:types": "tsc --noEmit --skipLibCheck"
+  },
+  "dependencies": {
+    "@hozon/adapter": "workspace:^",
+    "@hozon/conformance": "workspace:^",
+    "@hozon/db": "workspace:^",
+    "@hozon/logtape": "workspace:^",
+    "@hozon/node-sqlite": "workspace:^",
+    "@hozon/otel": "workspace:^",
+    "@hozon/postgres": "workspace:^",
+    "@hozon/provider": "workspace:^",
+    "@hozon/store-log": "workspace:^",
+    "@hozon/store-telemetry": "workspace:^",
+    "@logtape/logtape": "catalog:",
+    "@opentelemetry/api": "catalog:",
+    "@opentelemetry/context-async-hooks": "catalog:",
+    "@opentelemetry/sdk-trace-base": "catalog:",
+    "hozon-test-scenarios": "workspace:^",
+    "kysely": "catalog:",
+    "postgres": "catalog:"
+  },
+  "devDependencies": {
+    "@testcontainers/postgresql": "catalog:",
+    "@types/node": "catalog:",
+    "vitest": "catalog:"
+  }
+}

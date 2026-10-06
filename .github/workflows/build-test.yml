@@ -9,4 +9,4 @@ jobs:
     with:
       node-versions: '[24, 26]'
       ts-readiness-check: true
-      # integration-tests-dir: tests/integration # enabled in Task 12
+      integration-tests-dir: tests/integration

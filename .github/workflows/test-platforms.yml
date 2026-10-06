@@ -1,0 +1,43 @@
+name: Test on platforms
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: true
+  DO_NOT_TRACK: 1
+
+jobs:
+  test:
+    name: on ${{ matrix.os }} / Node ${{ matrix.node }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [24, 26]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      # Installs dependencies and builds every package.
+      - name: Setup environment
+        uses: TairuFramework/kigu/setup@main
+        with:
+          node-version: ${{ matrix.node }}
+
+      # Only ubuntu runners have Docker, so macOS and Windows run node-sqlite alone.
+      - name: Integration tests
+        run: pnpm run test:integration
+        env:
+          HOZON_INTEGRATION_BACKENDS: ${{ matrix.os == 'ubuntu-latest' && 'node-sqlite,postgres' || 'node-sqlite' }}
