@@ -1,0 +1,12 @@
+appId: dev.hozon.e2e
+---
+- launchApp:
+    clearState: true
+- tapOn:
+    id: "write"
+- extendedWaitUntil:
+    visible:
+      id: "done"
+    timeout: 120000
+- assertVisible: "Conformance: OK.*"
+- assertVisible: "Stores: OK.*"
