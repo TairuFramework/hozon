@@ -31,6 +31,8 @@
   "dependencies": {
     "@hozon/adapter": "workspace:^",
     "@hozon/db": "workspace:^",
+    "@hozon/store-log": "workspace:^",
+    "@hozon/store-telemetry": "workspace:^",
     "kysely": "catalog:"
   },
   "devDependencies": {

@@ -7,6 +7,6 @@ export function encodeCategory(segments: Array<string>): string {
 }
 export function categoryRange(prefix: Array<string>): { gte: string; lt: string } {
   const gte = encodeCategory(prefix)
-  // Advance the final separator, so every descendant sorts below the upper bound.
-  return { gte, lt: `${gte.slice(0, -1)} ` }
+  // U+10FFFF sorts above supplementary-plane descendants such as emoji.
+  return { gte, lt: `${gte.slice(0, -1)}\u{10ffff}` }
 }

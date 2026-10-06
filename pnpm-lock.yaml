@@ -218,6 +218,12 @@ importers:
       '@hozon/db':
         specifier: workspace:^
         version: link:../db
+      '@hozon/store-log':
+        specifier: workspace:^
+        version: link:../store-log
+      '@hozon/store-telemetry':
+        specifier: workspace:^
+        version: link:../store-telemetry
       kysely:
         specifier: 'catalog:'
         version: 0.29.6

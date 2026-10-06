@@ -1,10 +1,13 @@
 import type { Adapter } from '@hozon/adapter'
 import { HozonDB, type HozonDBParams } from '@hozon/db'
 
+import { atomicityCases } from './cases/atomicity.js'
 import { encodingCases } from './cases/encoding.js'
 import { lifecycleCases } from './cases/lifecycle.js'
 import { migrationCases } from './cases/migrations.js'
 import { seamCases } from './cases/seams.js'
+import { storeLogCases } from './cases/store-log.js'
+import { storeTelemetryCases } from './cases/store-telemetry.js'
 import { transactionCases } from './cases/transactions.js'
 
 export type ConformanceContext = {
@@ -23,6 +26,9 @@ export const allCases: Array<ConformanceCase> = [
   ...seamCases,
   ...migrationCases,
   ...transactionCases,
+  ...storeLogCases,
+  ...storeTelemetryCases,
+  ...atomicityCases,
   ...lifecycleCases,
 ]
 
