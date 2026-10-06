@@ -81,6 +81,17 @@ test('upserts span pairs preserving sequence and orders timestamp ties', async (
   expect(result[0]).toEqual(span({ spanID: 'first', startTime: 1, endTime: 9, name: 'updated' }))
   expect(await store.getSpans('other')).toEqual([span({ traceID: 'other', spanID: 'first' })])
 })
+test('upserts duplicate span pairs within one addSpans call in input order', async () => {
+  await store.addSpans([
+    span({ spanID: 'repeated', name: 'first occurrence' }),
+    span({ spanID: 'unrelated', name: 'unrelated' }),
+    span({ spanID: 'repeated', name: 'last occurrence' }),
+    span({ spanID: 'after', name: 'after duplicate' }),
+  ])
+  const spans = await store.getSpans('trace-one')
+  expect(spans.map((value) => value.spanID)).toEqual(['repeated', 'unrelated', 'after'])
+  expect(spans[0]).toEqual(span({ spanID: 'repeated', name: 'last occurrence' }))
+})
 test('uses strict end-time cutoff, keeps traces and reports actual counts', async () => {
   await store.addSpans([
     span({ traceID: 'old', endTime: 4 }),

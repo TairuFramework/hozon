@@ -20,7 +20,10 @@ export function createTelemetryStoreAPI(
         data: adapter.encodeJSON(span),
       }))
       await withStoreTransaction(db, async (trx) => {
-        for (const batch of chunk(rows, 100)) {
+        let batch: typeof rows = []
+        let pairs = new Set<string>()
+        const insertBatch = async () => {
+          if (batch.length === 0) return
           await trx
             .insertInto('hozon_spans')
             .values(batch)
@@ -32,7 +35,16 @@ export function createTelemetryStoreAPI(
               })),
             )
             .execute()
+          batch = []
+          pairs = new Set()
         }
+        for (const row of rows) {
+          const pair = JSON.stringify([row.trace_id, row.span_id])
+          if (pairs.has(pair) || batch.length === 100) await insertBatch()
+          batch.push(row)
+          pairs.add(pair)
+        }
+        await insertBatch()
       })
     },
     async getSpans(traceID) {
