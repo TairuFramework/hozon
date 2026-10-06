@@ -9,7 +9,11 @@ if (path === undefined || count === undefined) {
   throw new Error('Usage: writer.ts <path> <count>')
 }
 
-const db = new HozonDB({ adapter: new NodeSQLiteAdapter({ database: path }) })
+// Two writers committing back to back can starve each other past the default 5 s busy
+// timeout on slow CI disks (Windows fsync), so the fixture waits longer.
+const db = new HozonDB({
+  adapter: new NodeSQLiteAdapter({ database: path, pragmas: { busyTimeout: 30_000 } }),
+})
 try {
   db.register(logStoreDefinition)
   const store = await getLogStore(db)
