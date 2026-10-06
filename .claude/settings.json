@@ -1,0 +1,22 @@
+{
+  "extraKnownMarketplaces": {
+    "kigu": {
+      "source": {
+        "source": "github",
+        "repo": "TairuFramework/kigu"
+      },
+      "autoUpdate": true
+    },
+    "sozai": {
+      "source": {
+        "source": "github",
+        "repo": "TairuFramework/sozai"
+      },
+      "autoUpdate": true
+    }
+  },
+  "enabledPlugins": {
+    "kigu@kigu": true,
+    "sozai@sozai": true
+  }
+}

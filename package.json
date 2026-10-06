@@ -1,0 +1,26 @@
+{
+  "name": "hozon-repo",
+  "version": "0.0.0",
+  "private": true,
+  "author": "Paul Le Cam",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm run build:types && pnpm run build:js",
+    "build:ci": "pnpm run build:types:ci && pnpm run build:js",
+    "build:js": "turbo run build:js",
+    "build:types": "turbo run build:types",
+    "build:types:ci": "pnpm run -r build:types:ci",
+    "format": "biome format --write .",
+    "lint": "biome check --write ./packages ./tests",
+    "lint:ci": "biome ci .",
+    "prepare": "git config core.hooksPath .githooks",
+    "release": "pnpm run build:ci && pnpm publish -r",
+    "test": "turbo run test:types test:unit",
+    "test:integration": "pnpm run --filter integration-tests test",
+    "test:types": "turbo run test:types"
+  },
+  "devDependencies": {
+    "@kigu/dev": "catalog:"
+  },
+  "packageManager": "pnpm@12.9.1"
+}

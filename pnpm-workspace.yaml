@@ -1,0 +1,82 @@
+packages:
+  - packages/*
+  - tests/*
+
+allowBuilds:
+  '@swc/core': true
+  electron: false
+  esbuild: false
+
+nodeLinker: hoisted
+
+versioning:
+  changelog:
+    storage: repository
+  ignore:
+    - e2e-electron
+    - e2e-expo
+    - e2e-web
+    - integration-tests
+    - hozon-test-scenarios
+
+catalog:
+  '@electron-forge/cli': ^8.0.1
+  '@electron-forge/plugin-vite': ^8.0.1
+  '@logtape/logtape': ^2.3.11
+  '@opentelemetry/api': ^1.9.1
+  '@opentelemetry/context-async-hooks': ^2.11.0
+  '@opentelemetry/core': ^2.11.0
+  '@opentelemetry/sdk-trace-base': ^2.11.0
+  '@opentelemetry/sdk-trace-web': ^2.11.0
+  '@playwright/test': 1.63.0
+  '@sozai/json': ^0.2.0
+  '@sozai/log': ^0.3.1
+  '@testcontainers/postgresql': ^12.1.0
+  '@types/node': ^26.6.4
+  '@types/react': ~19.3.0
+  '@types/react-dom': ~19.3.0
+  '@vitejs/plugin-react': ^6.1.1
+  del-cli: ^7.0.0
+  electron: ^44.5.1
+  expo: ^57.0.26
+  expo-sqlite: ~57.0.3
+  expo-status-bar: ^57.0.1
+  kysely: ^0.29.6
+  kysely-postgres-js: ^5.0.0
+  postgres: ^3.4.8
+  react: 19.3.0
+  react-dom: 19.3.0
+  react-native: 0.86.0
+  react-native-web: 0.21.3
+  sqlocal: ^0.18.0
+  testcontainers: ^12.1.0
+  typescript: ^6.0.3
+  vite: ^8.3.2
+  vitest: 5.0.1
+  '@kigu/dev': ^0.3.1
+
+catalogMode: prefer
+
+overrides:
+  # extract-zip 2.0.1 pulls yauzl 2.10.0, which can let Node exit during extraction.
+  yauzl: ^3.4.0
+
+minimumReleaseAgeExclude:
+  - '@kigu/*'
+  - '@sozai/*'
+  - '@expo/cli@57.0.2'
+  - '@expo/fingerprint@0.20.1'
+  - '@expo/inline-modules@0.1.1'
+  - '@expo/local-build-cache-provider@57.0.1'
+  - '@expo/metro-config@57.0.2'
+  - '@expo/prebuild-config@57.0.2'
+  - '@expo/router-server@57.0.1'
+  - babel-preset-expo@57.0.1
+  - expo-asset@57.0.2
+  - expo-constants@57.0.2
+  - expo-modules-autolinking@57.0.2
+  - expo@57.0.0
+
+supportedArchitectures:
+  cpu: [ current ]
+  os: [ current ]
