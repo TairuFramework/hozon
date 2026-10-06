@@ -64,7 +64,7 @@ export function createLogStoreAPI(db: Kysely<LogTables>, adapter: Adapter): LogS
         if (params.levels.length === 0) return { logs: [] }
         query = query.where('level', 'in', [...new Set(params.levels)])
       }
-      if (params.categoryPrefix !== undefined) {
+      if (params.categoryPrefix !== undefined && params.categoryPrefix.length > 0) {
         const { gte, lt } = categoryRange(params.categoryPrefix)
         query = query.where('category', '>=', gte).where('category', '<', lt)
       }

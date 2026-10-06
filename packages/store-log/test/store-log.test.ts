@@ -1,9 +1,11 @@
 import { HozonDB } from '@hozon/db'
 import { NodeSQLiteAdapter } from '@hozon/node-sqlite'
+import { DummyDriver, Kysely, PostgresDialect } from 'kysely'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
 import type { LogStore, StoredLog } from '../src/index.js'
 import { getLogStore, isTracedLog, logStoreDefinition } from '../src/index.js'
+import { logStoreMigrations } from '../src/migrations.js'
 
 let db: HozonDB
 let store: LogStore
@@ -106,6 +108,24 @@ test('filters inclusive time bounds, levels, category segments and trace', async
   ).toEqual([matching, { ...matching, timestamp: 3 }])
   expect((await store.queryLogs({ levels: [], limit: 10 })).logs).toEqual([])
   expect((await store.queryLogs({ categoryPrefix: [], limit: 10 })).logs).toHaveLength(8)
+})
+test('category prefix includes Unicode descendants and only whole segments', async () => {
+  const matching = [['a'], ['a', '😀'], ['a', '\uffff'], ['a', 'b', 'c']].map((category, i) => ({
+    ...log(i),
+    category,
+  }))
+  await store.addLogs([
+    ...matching,
+    ...[['ab'], ['a.b'], ['b'], [], ['😀'], ['\uffff']].map((category, i) => ({
+      ...log(i + 4),
+      category,
+    })),
+  ])
+  expect((await store.queryLogs({ categoryPrefix: ['a'], limit: 10 })).logs).toEqual(matching)
+  expect((await store.queryLogs({ categoryPrefix: [], limit: 10 })).logs).toEqual(
+    (await store.queryLogs({ limit: 10 })).logs,
+  )
+  expect((await store.queryLogs({ categoryPrefix: [], limit: 10 })).logs).toHaveLength(10)
 })
 test('getTraceLogs returns all trace logs in chronological order', async () => {
   const logs = [log(2, 'late', 'trace'), log(1, 'first', 'trace'), log(1, 'second', 'trace')]
@@ -227,5 +247,36 @@ test('migration creates the table columns and required indexes', () => {
   ] as const) {
     const columns = adapter.database.prepare(`PRAGMA index_info(${name})`).all()
     expect(columns.map((column) => column.name)).toEqual(expected)
+  }
+})
+test('Postgres migration gives categories bytewise collation', async () => {
+  class CompilationDialect extends PostgresDialect {
+    createDriver() {
+      return new DummyDriver()
+    }
+  }
+  const queries: Array<string> = []
+  const postgres = new Kysely<Record<string, unknown>>({
+    dialect: new CompilationDialect({
+      pool: async () => {
+        throw new Error('No connection')
+      },
+    }),
+    log(event) {
+      if (event.level === 'query') queries.push(event.query.sql)
+    },
+  })
+  try {
+    const migrations = logStoreMigrations({
+      kind: 'postgres',
+      types: { ...adapter.types, serial: 'serial', double: 'double precision', json: 'jsonb' },
+      functions: adapter.functions,
+    })
+    const migration = migrations['0-init']
+    if (migration === undefined) throw new Error('Expected initial migration')
+    await migration.up(postgres)
+    expect(queries[0]).toContain('"category" text collate "C" not null')
+  } finally {
+    await postgres.destroy()
   }
 })
