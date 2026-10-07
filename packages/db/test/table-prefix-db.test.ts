@@ -2,12 +2,11 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { NodeSQLiteAdapter } from '@hozon/node-sqlite'
-import { sql } from 'kysely'
 import { Migrator } from 'kysely/migration'
 import { afterEach, expect, test, vi } from 'vitest'
 
 import type { MigrationContext, StoreDefinition } from '../src/index.js'
-import { HozonDB, withKeepSet, withStoreTransaction } from '../src/index.js'
+import { HozonDB, TablePrefixPlugin, withKeepSet, withStoreTransaction } from '../src/index.js'
 
 type WidgetsAPI = {
   add(id: string): Promise<void>
@@ -24,13 +23,12 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })))
 })
 
-function setup(params: { database?: string; tablePrefix?: string } = {}) {
+function setup(params: { database?: string; tablePrefix?: string; onKeep?: () => void } = {}) {
   const adapter = new NodeSQLiteAdapter({ database: params.database ?? ':memory:' })
   const db = new HozonDB({ adapter, tablePrefix: params.tablePrefix })
   instances.push(db)
   let context: MigrationContext | undefined
   let migrationRuns = 0
-  const keepNames: Array<string> = []
   const keepOrder: Array<string> = []
   const store: StoreDefinition<{ widgets: { id: string } }, WidgetsAPI> = {
     name: 'widgets',
@@ -68,11 +66,7 @@ function setup(params: { database?: string; tablePrefix?: string } = {}) {
         return withStoreTransaction(query, (trx) => {
           return withKeepSet(trx, { table: 'keep_widgets', ids }, async (selectKeep) => {
             keepOrder.push(`start-${ids.join(',')}`)
-            // Raw system-table SQL bypasses table rewriting while using the same transaction.
-            const names = await sql<{ name: string }>`SELECT name FROM sqlite_temp_master`.execute(
-              trx,
-            )
-            keepNames.push(...names.rows.map((row) => row.name))
+            params.onKeep?.()
             const rows = await selectKeep().orderBy('trace_id').execute()
             keepOrder.push(`end-${ids.join(',')}`)
             return rows.map((row) => row.trace_id)
@@ -92,7 +86,6 @@ function setup(params: { database?: string; tablePrefix?: string } = {}) {
     db,
     adapter,
     names,
-    keepNames,
     keepOrder,
     context: () => context,
     runs: () => migrationRuns,
@@ -143,7 +136,23 @@ test('store API in withTransaction uses the prefix', async () => {
 })
 
 test('keep-set temp table is prefixed and calls serialize', async () => {
-  const { db, keepNames, keepOrder } = setup({ tablePrefix: 'kubun' })
+  const transformQuery = TablePrefixPlugin.prototype.transformQuery
+  vi.spyOn(TablePrefixPlugin.prototype, 'transformQuery').mockImplementation(function (
+    this: TablePrefixPlugin,
+    args,
+  ) {
+    expect(JSON.stringify(args.node)).not.toMatch(/\bsqlite_(?:temp_)?master\b/)
+    return transformQuery.call(this, args)
+  })
+  const keepNames: Array<string> = []
+  const { db, adapter, keepOrder } = setup({
+    tablePrefix: 'kubun',
+    onKeep: () => {
+      // The adapter owns the transaction's connection, including its temporary tables.
+      const names = adapter.database.prepare('SELECT name FROM sqlite_temp_master').all()
+      keepNames.push(...names.map((row) => String(row.name)))
+    },
+  })
   await db.withTransaction<{ widgets: WidgetsAPI }, void>(async (tx) => {
     const widgets = await tx.getStore('widgets')
     expect(await Promise.all([widgets.keep(['a']), widgets.keep(['b', 'c'])])).toEqual([
