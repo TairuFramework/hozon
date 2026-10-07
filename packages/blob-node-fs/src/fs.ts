@@ -48,6 +48,9 @@ export class FSBlobBackend implements BlobBackend {
     const nodeStream = createWriteStream(this.#stagingPath(stagingID))
     const writer = (Writable.toWeb(nodeStream) as WritableStream<Uint8Array>).getWriter()
     return new WritableStream<Uint8Array>({
+      start(controller) {
+        void writer.closed.catch((error) => controller.error(error))
+      },
       write(chunk) {
         // Node may retain the chunk after the Web write resolves.
         return writer.write(new Uint8Array(chunk))

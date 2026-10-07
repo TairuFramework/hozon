@@ -175,6 +175,19 @@ describe.each(backends)('$name', ({ create }) => {
   })
 })
 
+test('staging writer.closed rejects opening failures without another operation', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'hozon-blob-'))
+  const backend = new FSBlobBackend(root)
+  try {
+    await writeBlob(backend, 'initial-staging', BLOB)
+    await rm(join(root, 'staging'), { recursive: true })
+    const writer = (await backend.createStaging('missing-directory')).getWriter()
+    await expect(writer.closed).rejects.toMatchObject({ code: 'ENOENT' })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 describe('FSBlobBackend key validation', () => {
   let root: string
   let backend: FSBlobBackend
@@ -219,20 +232,26 @@ describe('FSBlobBackend key validation', () => {
     expect(await backend.getURL('missing')).toBeNull()
   })
 
-  test('permission failures propagate from has and getURL', async () => {
-    const contentDir = join(root, 'content')
-    await chmod(contentDir, 0)
-    try {
-      await expect(backend.has('existing-key')).rejects.toMatchObject({ code: 'EACCES' })
-      await expect(backend.getURL('existing-key')).rejects.toMatchObject({ code: 'EACCES' })
-    } finally {
-      await chmod(contentDir, 0o700)
-    }
-  })
+  test.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'permission failures propagate from has and getURL',
+    async () => {
+      const contentDir = join(root, 'content')
+      await chmod(contentDir, 0)
+      try {
+        await expect(backend.has('existing-key')).rejects.toMatchObject({ code: 'EACCES' })
+        await expect(backend.getURL('existing-key')).rejects.toMatchObject({ code: 'EACCES' })
+      } finally {
+        await chmod(contentDir, 0o700)
+      }
+    },
+  )
 
-  test('symlink loop failures propagate from has and getURL', async () => {
-    await symlink('loop', join(root, 'content', 'loop'))
-    await expect(backend.has('loop')).rejects.toMatchObject({ code: 'ELOOP' })
-    await expect(backend.getURL('loop')).rejects.toMatchObject({ code: 'ELOOP' })
-  })
+  test.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
+    'symlink loop failures propagate from has and getURL',
+    async () => {
+      await symlink('loop', join(root, 'content', 'loop'))
+      await expect(backend.has('loop')).rejects.toMatchObject({ code: 'ELOOP' })
+      await expect(backend.getURL('loop')).rejects.toMatchObject({ code: 'ELOOP' })
+    },
+  )
 })
