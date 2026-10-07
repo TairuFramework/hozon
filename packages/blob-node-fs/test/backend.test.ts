@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { chmod, mkdtemp, readFile, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { BlobBackend } from '@hozon/blob-backend'
@@ -124,15 +124,17 @@ describe.each(backends)('$name', ({ create }) => {
     expect(Array.from(read)).toEqual(Array.from(BLOB))
   })
 
-  test('closed staging stream owns its written bytes', async () => {
+  test('staging stream accepts reused buffers after each awaited write', async () => {
     const bytes = new Uint8Array([1, 2, 3])
     const writer = (await backend.createStaging('stg-reused-stream')).getWriter()
     await writer.write(bytes)
-    await writer.close()
+    bytes.fill(4)
+    await writer.write(bytes)
     bytes.fill(9)
+    await writer.close()
     await backend.commit('stg-reused-stream', 'reused-stream')
     expect(Array.from(await drain(await backend.createReadStream('reused-stream')))).toEqual([
-      1, 2, 3,
+      1, 2, 3, 4, 4, 4,
     ])
   })
 
@@ -210,5 +212,27 @@ describe('FSBlobBackend key validation', () => {
     await backend.commit('inside-root', 'abc')
     expect(Array.from(await readFile(join(root, 'content', 'abc')))).toEqual(Array.from(BLOB))
     expect(await backend.getURL('abc')).toBe(new URL(`file://${join(root, 'content', 'abc')}`).href)
+  })
+
+  test('missing content returns false and a null URL', async () => {
+    expect(await backend.has('missing')).toBe(false)
+    expect(await backend.getURL('missing')).toBeNull()
+  })
+
+  test('permission failures propagate from has and getURL', async () => {
+    const contentDir = join(root, 'content')
+    await chmod(contentDir, 0)
+    try {
+      await expect(backend.has('existing-key')).rejects.toMatchObject({ code: 'EACCES' })
+      await expect(backend.getURL('existing-key')).rejects.toMatchObject({ code: 'EACCES' })
+    } finally {
+      await chmod(contentDir, 0o700)
+    }
+  })
+
+  test('symlink loop failures propagate from has and getURL', async () => {
+    await symlink('loop', join(root, 'content', 'loop'))
+    await expect(backend.has('loop')).rejects.toMatchObject({ code: 'ELOOP' })
+    await expect(backend.getURL('loop')).rejects.toMatchObject({ code: 'ELOOP' })
   })
 })

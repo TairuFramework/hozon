@@ -46,7 +46,19 @@ export class FSBlobBackend implements BlobBackend {
   async createStaging(stagingID: string): Promise<WritableStream<Uint8Array>> {
     await this.#ensureDirs()
     const nodeStream = createWriteStream(this.#stagingPath(stagingID))
-    return Writable.toWeb(nodeStream) as WritableStream<Uint8Array>
+    const writer = (Writable.toWeb(nodeStream) as WritableStream<Uint8Array>).getWriter()
+    return new WritableStream<Uint8Array>({
+      write(chunk) {
+        // Node may retain the chunk after the Web write resolves.
+        return writer.write(new Uint8Array(chunk))
+      },
+      close() {
+        return writer.close()
+      },
+      abort(reason) {
+        return writer.abort(reason)
+      },
+    })
   }
 
   async writeChunk(stagingID: string, offset: number, bytes: Uint8Array): Promise<void> {
@@ -86,8 +98,9 @@ export class FSBlobBackend implements BlobBackend {
     try {
       await stat(path)
       return true
-    } catch {
-      return false
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return false
+      throw error
     }
   }
 
