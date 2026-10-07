@@ -1,10 +1,11 @@
 import { readFile } from 'node:fs/promises'
 import { DatabaseSync } from 'node:sqlite'
 import { HozonDB, SchemaVersionError, type StoreDefinition } from '@hozon/db'
+import { Kysely } from 'kysely'
 import { afterEach, describe, expect, test } from 'vitest'
 
 import { type Backend, backends } from '../src/backends.js'
-import { type RawDB, rawStore } from '../src/helpers.js'
+import type { RawDB } from '../src/helpers.js'
 
 function store(
   name: string,
@@ -75,10 +76,8 @@ const scenarios: Array<Scenario> = [
 async function migrationRows(backend: Backend, scenario: Scenario) {
   // `delete` journal mode keeps the inspection itself from switching the file to WAL.
   const adapter = await backend.reopen({ pragmas: { journalMode: 'delete' } })
-  const db = new HozonDB({ adapter, tablePrefix: 'inspect' })
-  db.register(rawStore)
+  const raw: RawDB = new Kysely({ dialect: adapter.dialect })
   try {
-    const raw = await db.getStore<RawDB>('raw')
     const rows: Record<string, unknown> = {}
     for (const { name } of scenario.newer) {
       rows[name] = await raw
@@ -93,7 +92,8 @@ async function migrationRows(backend: Backend, scenario: Scenario) {
     }
     return rows
   } finally {
-    await db.close()
+    await raw.destroy()
+    await adapter.close?.()
   }
 }
 

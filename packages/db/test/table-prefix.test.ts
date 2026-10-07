@@ -115,6 +115,30 @@ test('prefixes joins', () => {
   expect(query).toContain('"kubun_a"."id" = "kubun_b"."id"')
 })
 
+test.each(['plugged', 'unplugged'] as const)(
+  'prefixes a where/in subquery from a %s builder once',
+  (source) => {
+    const db = setup()
+    const builder = source === 'plugged' ? db : db.withoutPlugins()
+    const subquery = builder.selectFrom('logs').select('logs.seq')
+    expect(db.selectFrom('logs').selectAll().where('seq', 'in', subquery).compile().sql).toBe(
+      'select * from "kubun_logs" where "seq" in (select "kubun_logs"."seq" from "kubun_logs")',
+    )
+  },
+)
+
+test.each(['plugged', 'unplugged'] as const)(
+  'prefixes a from-subquery from a %s builder once',
+  (source) => {
+    const db = setup()
+    const builder = source === 'plugged' ? db : db.withoutPlugins()
+    const subquery = builder.selectFrom('logs').select('logs.seq').as('nested')
+    expect(db.selectFrom(subquery).select('nested.seq').compile().sql).toBe(
+      'select "nested"."seq" from (select "kubun_logs"."seq" from "kubun_logs") as "nested"',
+    )
+  },
+)
+
 test('prefixes sql.table in raw templates', () => {
   const db = setup()
   expect(sql`DROP TABLE ${sql.table('keep_log')}`.compile(db).sql).toContain('"kubun_keep_log"')

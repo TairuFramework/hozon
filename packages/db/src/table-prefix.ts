@@ -55,6 +55,7 @@ class TablePrefixTransformer extends OperationNodeTransformer {
   #tables = new Set<string>()
   #ctes = new Set<string>()
   #aliases = new Set<string>()
+  #transformedNodes = new WeakSet<OperationNode>()
 
   constructor(prefix: string) {
     super()
@@ -62,7 +63,13 @@ class TablePrefixTransformer extends OperationNodeTransformer {
   }
 
   override transformNodeImpl<TNode extends OperationNode>(node: TNode, queryId?: QueryId): TNode {
-    if (!isRootOperationNode(node)) return super.transformNodeImpl(node, queryId)
+    // Plugged builders transform subqueries before embedding them in another plugged query.
+    if (this.#transformedNodes.has(node)) return node
+    if (!isRootOperationNode(node)) {
+      const transformed = super.transformNodeImpl(node, queryId)
+      if (TableNode.is(transformed)) this.#transformedNodes.add(transformed)
+      return transformed
+    }
 
     const previousTables = this.#tables
     const previousCTEs = this.#ctes
@@ -77,7 +84,9 @@ class TablePrefixTransformer extends OperationNodeTransformer {
         }
       }
       this.#collectTables(node)
-      return super.transformNodeImpl(node, queryId)
+      const transformed = super.transformNodeImpl(node, queryId)
+      this.#transformedNodes.add(transformed)
+      return transformed
     } finally {
       // Nested queries inherit visible names without leaking them back into the outer query.
       this.#tables = previousTables

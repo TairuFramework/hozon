@@ -1,5 +1,5 @@
 import { SchemaVersionError } from '@hozon/db'
-import type { Kysely } from 'kysely'
+import { Kysely } from 'kysely'
 
 import * as assert from '../assert.js'
 import type { ConformanceCase } from '../runner.js'
@@ -84,12 +84,7 @@ export const migrationCases: Array<ConformanceCase> = [
     async run(ctx) {
       const db = ctx.db()
       type Tables = { hozon_s_migration: { name: string; timestamp: string } }
-      db.register<Tables, Kysely<Tables>>({
-        name: 'seed',
-        migrations: {},
-        createAPI: (query) => query,
-      })
-      const seed = await db.getStore<Kysely<Tables>>('seed')
+      const seed = new Kysely<Tables>({ dialect: ctx.adapter.dialect })
       await seed.schema
         .createTable('hozon_s_migration')
         .addColumn('name', 'varchar(255)', (column) => column.primaryKey())
@@ -107,15 +102,15 @@ export const migrationCases: Array<ConformanceCase> = [
     name: 'migrations: custom prefix names migration tables',
     async run(ctx) {
       const db = ctx.db({ tablePrefix: 'custom' })
-      db.register<
-        { custom_s_migration: { name: string } },
-        Kysely<{ custom_s_migration: { name: string } }>
-      >({
+      db.register({
         name: 's',
         migrations: { '0-init': { async up() {} } },
-        createAPI: (query) => query,
+        createAPI: () => ({}),
       })
-      const query = await db.getStore<Kysely<{ custom_s_migration: { name: string } }>>('s')
+      await db.getStore('s')
+      const query = new Kysely<{ custom_s_migration: { name: string } }>({
+        dialect: ctx.adapter.dialect,
+      })
       const rows = await query.selectFrom('custom_s_migration').select('name').execute()
       assert.deepEqual(rows, [{ name: '0-init' }])
       const tables = await query.introspection.getTables()
