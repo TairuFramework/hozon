@@ -5,7 +5,8 @@ import { afterEach, expect, test } from 'vitest'
 import { TablePrefixPlugin } from '../src/table-prefix.js'
 
 type Tables = {
-  logs: { a: number; seq: Generated<number> }
+  logs: { a: number; seq: Generated<number>; trace_id?: string }
+  spans: { trace_id: string }
   a: { id: number }
   b: { id: number }
   items: { id: number; value: string }
@@ -123,6 +124,27 @@ test.each(['plugged', 'unplugged'] as const)(
     const subquery = builder.selectFrom('logs').select('logs.seq')
     expect(db.selectFrom('logs').selectAll().where('seq', 'in', subquery).compile().sql).toBe(
       'select * from "kubun_logs" where "seq" in (select "kubun_logs"."seq" from "kubun_logs")',
+    )
+  },
+)
+
+test.each(['plugged', 'unplugged'] as const)(
+  'resolves outer references in a correlated subquery from a %s builder',
+  (source) => {
+    const db = setup()
+    const builder = source === 'plugged' ? db : db.withoutPlugins()
+    const subquery = builder
+      .selectFrom('spans')
+      .select('spans.trace_id')
+      .where('spans.trace_id', '=', sql.ref<string>('logs.trace_id'))
+    expect(
+      db
+        .selectFrom('logs')
+        .selectAll()
+        .where((eb) => eb.exists(subquery))
+        .compile().sql,
+    ).toBe(
+      'select * from "kubun_logs" where exists (select "kubun_spans"."trace_id" from "kubun_spans" where "kubun_spans"."trace_id" = "kubun_logs"."trace_id")',
     )
   },
 )

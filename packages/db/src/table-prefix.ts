@@ -55,7 +55,7 @@ class TablePrefixTransformer extends OperationNodeTransformer {
   #tables = new Set<string>()
   #ctes = new Set<string>()
   #aliases = new Set<string>()
-  #transformedNodes = new WeakSet<OperationNode>()
+  #prefixedTables = new WeakSet<TableNode>()
 
   constructor(prefix: string) {
     super()
@@ -63,12 +63,8 @@ class TablePrefixTransformer extends OperationNodeTransformer {
   }
 
   override transformNodeImpl<TNode extends OperationNode>(node: TNode, queryId?: QueryId): TNode {
-    // Plugged builders transform subqueries before embedding them in another plugged query.
-    if (this.#transformedNodes.has(node)) return node
     if (!isRootOperationNode(node)) {
-      const transformed = super.transformNodeImpl(node, queryId)
-      if (TableNode.is(transformed)) this.#transformedNodes.add(transformed)
-      return transformed
+      return super.transformNodeImpl(node, queryId)
     }
 
     const previousTables = this.#tables
@@ -84,9 +80,7 @@ class TablePrefixTransformer extends OperationNodeTransformer {
         }
       }
       this.#collectTables(node)
-      const transformed = super.transformNodeImpl(node, queryId)
-      this.#transformedNodes.add(transformed)
-      return transformed
+      return super.transformNodeImpl(node, queryId)
     } finally {
       // Nested queries inherit visible names without leaking them back into the outer query.
       this.#tables = previousTables
@@ -96,11 +90,15 @@ class TablePrefixTransformer extends OperationNodeTransformer {
   }
 
   override transformTable(node: TableNode, queryId?: QueryId): TableNode {
+    // Revisit plugged subqueries for correlated references, but keep their physical tables.
+    if (this.#prefixedTables.has(node)) return node
     const name = node.table.identifier.name
     if (node.table.schema !== undefined || this.#ctes.has(name)) {
       return super.transformTable(node, queryId)
     }
-    return TableNode.create(`${this.#prefix}_${name}`)
+    const transformed = TableNode.create(`${this.#prefix}_${name}`)
+    this.#prefixedTables.add(transformed)
+    return transformed
   }
 
   override transformReference(node: ReferenceNode, queryId?: QueryId): ReferenceNode {
