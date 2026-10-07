@@ -43,6 +43,32 @@ function mutateNested(value: unknown): void {
   }
 }
 
+test('uses a custom table prefix', async () => {
+  await db.close()
+  adapter = new NodeSQLiteAdapter({ database: ':memory:' })
+  db = new HozonDB({ adapter, tablePrefix: 'kubun' })
+  db.register(telemetryStoreDefinition)
+  store = await getTelemetryStore(db)
+  const input = span()
+  await store.addSpans([input])
+  expect(await store.getSpans('trace-one')).toEqual([input])
+  const names = adapter.database
+    .prepare('SELECT name FROM sqlite_master ORDER BY name')
+    .all()
+    .map((row) => row.name)
+  expect(names).toEqual(
+    expect.arrayContaining(['kubun_spans', 'kubun_spans_trace_start_seq', 'kubun_spans_end_time']),
+  )
+  const table = adapter.database
+    .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'kubun_spans'")
+    .get()
+  expect(table?.sql).toContain('kubun_spans_trace_span')
+  expect(await store.deleteBefore(3, { keepTraceIDs: ['trace-one'] })).toBe(0)
+  expect(await store.getSpans('trace-one')).toEqual([input])
+  expect(await store.deleteBefore(3, { keepTraceIDs: ['other'] })).toBe(1)
+  expect(await store.getSpans('trace-one')).toEqual([])
+})
+
 test('round-trips fractional times and isolates every nested boundary', async () => {
   const spans = [span()]
   await store.addSpans(spans)

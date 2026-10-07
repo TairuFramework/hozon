@@ -7,7 +7,7 @@ export function logStoreMigrations(ctx: MigrationContext): Record<string, Migrat
     '0-init': {
       async up(db) {
         await db.schema
-          .createTable('hozon_logs')
+          .createTable('logs')
           .addColumn('seq', ctx.types.serial, (column) => {
             const primary = column.primaryKey()
             return ctx.kind === 'sqlite' ? primary.autoIncrement() : primary
@@ -23,23 +23,23 @@ export function logStoreMigrations(ctx: MigrationContext): Record<string, Migrat
           .addColumn('data', ctx.types.json, (column) => column.notNull())
           .execute()
         await db.schema
-          .createIndex('hozon_logs_timestamp')
-          .on('hozon_logs')
+          .createIndex(`${ctx.tablePrefix}_logs_timestamp`)
+          .on('logs')
           .column('timestamp')
           .execute()
         await db.schema
-          .createIndex('hozon_logs_trace_timestamp_seq')
-          .on('hozon_logs')
+          .createIndex(`${ctx.tablePrefix}_logs_trace_timestamp_seq`)
+          .on('logs')
           .columns(['trace_id', 'timestamp', 'seq'])
           .execute()
         await db.schema
-          .createIndex('hozon_logs_level_timestamp')
-          .on('hozon_logs')
+          .createIndex(`${ctx.tablePrefix}_logs_level_timestamp`)
+          .on('logs')
           .columns(['level', 'timestamp'])
           .execute()
       },
       async down(db) {
-        await db.schema.dropTable('hozon_logs').execute()
+        await db.schema.dropTable('logs').execute()
       },
     },
   }

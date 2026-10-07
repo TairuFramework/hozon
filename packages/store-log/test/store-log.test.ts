@@ -30,6 +30,33 @@ function log(timestamp: number, message = `${timestamp}`, traceID?: string): Sto
   }
 }
 
+test('uses a custom table prefix', async () => {
+  await db.close()
+  adapter = new NodeSQLiteAdapter({ database: ':memory:' })
+  db = new HozonDB({ adapter, tablePrefix: 'kubun' })
+  db.register(logStoreDefinition)
+  store = await getLogStore(db)
+  const input = log(1, 'kept', 'keep')
+  await store.addLogs([input])
+  expect((await store.queryLogs({ limit: 10 })).logs).toEqual([input])
+  const names = adapter.database
+    .prepare('SELECT name FROM sqlite_master ORDER BY name')
+    .all()
+    .map((row) => row.name)
+  expect(names).toEqual(
+    expect.arrayContaining([
+      'kubun_logs',
+      'kubun_logs_timestamp',
+      'kubun_logs_trace_timestamp_seq',
+      'kubun_logs_level_timestamp',
+    ]),
+  )
+  expect(await store.deleteBefore(2, { keepTraceIDs: ['keep'] })).toBe(0)
+  expect((await store.queryLogs({ limit: 10 })).logs).toEqual([input])
+  expect(await store.deleteBefore(2, { keepTraceIDs: ['other'] })).toBe(1)
+  expect((await store.queryLogs({ limit: 10 })).logs).toEqual([])
+})
+
 test('empty inputs are no-ops without executing SQL', async () => {
   await store.addLogs([log(1)])
   const prepare = vi.spyOn(adapter.database, 'prepare')

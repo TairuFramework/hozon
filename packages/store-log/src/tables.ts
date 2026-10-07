@@ -3,7 +3,7 @@ import type { ColumnType, Generated } from 'kysely'
 import type { LogLevel, StoredLog } from './types.js'
 
 export type LogTables = {
-  hozon_logs: {
+  logs: {
     seq: Generated<number>
     timestamp: number
     level: LogLevel

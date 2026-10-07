@@ -25,7 +25,7 @@ export function createTelemetryStoreAPI(
         const insertBatch = async () => {
           if (batch.length === 0) return
           await trx
-            .insertInto('hozon_spans')
+            .insertInto('spans')
             .values(batch)
             .onConflict((conflict) =>
               conflict.columns(['trace_id', 'span_id']).doUpdateSet((eb) => ({
@@ -49,7 +49,7 @@ export function createTelemetryStoreAPI(
     },
     async getSpans(traceID) {
       const rows = await db
-        .selectFrom('hozon_spans')
+        .selectFrom('spans')
         .select('data')
         .where('trace_id', '=', traceID)
         .orderBy('start_time')
@@ -63,7 +63,7 @@ export function createTelemetryStoreAPI(
         let count = 0
         for (const ids of chunk(traceIDs)) {
           const result = await trx
-            .deleteFrom('hozon_spans')
+            .deleteFrom('spans')
             .where('trace_id', 'in', ids)
             .executeTakeFirstOrThrow()
           count += Number(result.numDeletedRows)
@@ -75,17 +75,17 @@ export function createTelemetryStoreAPI(
       return withStoreTransaction(db, async (trx) => {
         if (params?.keepTraceIDs === undefined || params.keepTraceIDs.length === 0) {
           const result = await trx
-            .deleteFrom('hozon_spans')
+            .deleteFrom('spans')
             .where('end_time', '<', time)
             .executeTakeFirstOrThrow()
           return Number(result.numDeletedRows)
         }
         return withKeepSet(
           trx,
-          { table: 'hozon_keep_telemetry', ids: params.keepTraceIDs },
+          { table: 'keep_telemetry', ids: params.keepTraceIDs },
           async (selectKeep) => {
             const result = await trx
-              .deleteFrom('hozon_spans')
+              .deleteFrom('spans')
               .where('end_time', '<', time)
               .where('trace_id', 'not in', selectKeep())
               .executeTakeFirstOrThrow()

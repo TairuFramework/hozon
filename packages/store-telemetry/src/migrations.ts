@@ -6,7 +6,7 @@ export function telemetryStoreMigrations(ctx: MigrationContext): Record<string, 
     '0-init': {
       async up(db) {
         await db.schema
-          .createTable('hozon_spans')
+          .createTable('spans')
           .addColumn('seq', ctx.types.serial, (column) => {
             const primary = column.primaryKey()
             return ctx.kind === 'sqlite' ? primary.autoIncrement() : primary
@@ -16,21 +16,21 @@ export function telemetryStoreMigrations(ctx: MigrationContext): Record<string, 
           .addColumn('start_time', ctx.types.double, (column) => column.notNull())
           .addColumn('end_time', ctx.types.double, (column) => column.notNull())
           .addColumn('data', ctx.types.json, (column) => column.notNull())
-          .addUniqueConstraint('hozon_spans_trace_span', ['trace_id', 'span_id'])
+          .addUniqueConstraint(`${ctx.tablePrefix}_spans_trace_span`, ['trace_id', 'span_id'])
           .execute()
         await db.schema
-          .createIndex('hozon_spans_trace_start_seq')
-          .on('hozon_spans')
+          .createIndex(`${ctx.tablePrefix}_spans_trace_start_seq`)
+          .on('spans')
           .columns(['trace_id', 'start_time', 'seq'])
           .execute()
         await db.schema
-          .createIndex('hozon_spans_end_time')
-          .on('hozon_spans')
+          .createIndex(`${ctx.tablePrefix}_spans_end_time`)
+          .on('spans')
           .column('end_time')
           .execute()
       },
       async down(db) {
-        await db.schema.dropTable('hozon_spans').execute()
+        await db.schema.dropTable('spans').execute()
       },
     },
   }
