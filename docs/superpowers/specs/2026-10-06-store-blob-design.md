@@ -52,8 +52,7 @@ rewritten too; this covers the keep-set temp tables.
 - `MigrationContext` gains `tablePrefix: string`. Migrations use it for names
   that are not table references: index names and constraint names, for example
   `${ctx.tablePrefix}_logs_timestamp`.
-- Keep-set lock keys use the physical (prefixed) table name, so two prefixes on
-  one database do not share a lock.
+- All stores in one transaction share one plugged Kysely instance, so `withKeepSet`'s per-instance locks behave as before.
 
 ### Rules for store authors
 

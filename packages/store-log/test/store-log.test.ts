@@ -272,6 +272,7 @@ test('Postgres migration gives categories bytewise collation', async () => {
   })
   try {
     const migrations = logStoreMigrations({
+      tablePrefix: 'hozon',
       kind: 'postgres',
       types: { ...adapter.types, serial: 'serial', double: 'double precision', json: 'jsonb' },
       functions: adapter.functions,

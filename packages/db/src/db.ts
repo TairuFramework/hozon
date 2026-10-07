@@ -6,8 +6,10 @@ import { type Migration, Migrator } from 'kysely/migration'
 import { withTransactionalDDL } from './dialect.js'
 import { HozonDBClosedError, InvalidTablePrefixError, SavepointOverlapError } from './errors.js'
 import { checkStore } from './preflight.js'
+import { TablePrefixPlugin } from './table-prefix.js'
 
 export type MigrationContext = {
+  tablePrefix: string
   kind: Adapter['kind']
   types: ColumnTypes
   functions: Functions
@@ -83,6 +85,7 @@ export class HozonDB implements StoreProvider {
   #migrations = new Map<string, Record<string, Migration>>()
   #adapter: Adapter
   #db: Kysely<Record<string, unknown>>
+  #storeDB: Kysely<Record<string, unknown>>
   #logger: Logger
   #migrated: Map<string, Promise<void>> = new Map()
   #storeAPIs: Map<string, unknown> = new Map()
@@ -102,6 +105,7 @@ export class HozonDB implements StoreProvider {
           : this.#adapter.dialect,
       plugins: [new ParseJSONResultsPlugin()],
     })
+    this.#storeDB = this.#db.withPlugin(new TablePrefixPlugin(this.#tablePrefix))
     this.#logger = params.logger ?? getLogger(['hozon', 'db'])
   }
 
@@ -132,7 +136,7 @@ export class HozonDB implements StoreProvider {
       if (store == null) {
         throw new Error(`Store "${name}" is not registered`)
       }
-      this.#storeAPIs.set(name, store.createAPI(this.#db, this.#adapter))
+      this.#storeAPIs.set(name, store.createAPI(this.#storeDB, this.#adapter))
     }
     return this.#storeAPIs.get(name) as T
   }
@@ -173,7 +177,7 @@ export class HozonDB implements StoreProvider {
     let result: R
     let savepointID = 0
     try {
-      result = await this.#db.transaction().execute(async (trx) => {
+      result = await this.#storeDB.transaction().execute(async (trx) => {
         const txKysely = trx as unknown as Kysely<Record<string, unknown>>
         const txStoreAPIs = new Map<string, unknown>()
 
@@ -310,14 +314,28 @@ export class HozonDB implements StoreProvider {
   #getMigrations(store: StoredDefinition): Record<string, Migration> {
     let migrations = this.#migrations.get(store.name)
     if (migrations == null) {
-      migrations =
+      const storeMigrations =
         typeof store.migrations === 'function'
           ? store.migrations({
+              tablePrefix: this.#tablePrefix,
               kind: this.#adapter.kind,
               types: this.#adapter.types,
               functions: this.#adapter.functions,
             })
           : store.migrations
+      const plugin = new TablePrefixPlugin(this.#tablePrefix)
+      migrations = Object.fromEntries(
+        Object.entries(storeMigrations).map(([name, migration]) => {
+          const down = migration.down
+          return [
+            name,
+            {
+              up: (db) => migration.up(db.withPlugin(plugin)),
+              down: down && ((db) => down.call(migration, db.withPlugin(plugin))),
+            } satisfies Migration,
+          ]
+        }),
+      )
       this.#migrations.set(store.name, migrations)
     }
     return migrations
