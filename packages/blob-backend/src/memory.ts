@@ -24,14 +24,14 @@ export class MemoryBlobBackend implements BlobBackend {
     let offset = 0
     return new WritableStream<Uint8Array>({
       write(chunk) {
-        segments.push({ offset, bytes: chunk })
+        segments.push({ offset, bytes: new Uint8Array(chunk) })
         offset += chunk.length
       },
     })
   }
 
   async writeChunk(stagingID: string, offset: number, bytes: Uint8Array): Promise<void> {
-    this.#segments(stagingID).push({ offset, bytes })
+    this.#segments(stagingID).push({ offset, bytes: new Uint8Array(bytes) })
   }
 
   async commit(stagingID: string, key: string): Promise<void> {
@@ -56,7 +56,7 @@ export class MemoryBlobBackend implements BlobBackend {
     if (bytes == null) {
       throw new Error(`No blob for key ${key}`)
     }
-    const slice = range == null ? bytes : bytes.subarray(range.start, range.end + 1)
+    const slice = range == null ? bytes.slice() : bytes.slice(range.start, range.end + 1)
     return new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(slice)

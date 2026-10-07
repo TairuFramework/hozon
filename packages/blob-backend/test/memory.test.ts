@@ -35,6 +35,56 @@ test('out-of-order writeChunk assembles by offset', async () => {
   expect(await readBytes(await backend.createReadStream('k'))).toEqual([0, 1, 2, 3, 4, 5, 6, 7])
 })
 
+test('sequential staging preserves accepted bytes when the upload buffer is reused', async () => {
+  const backend = new MemoryBlobBackend()
+  const writer = (await backend.createStaging('s1')).getWriter()
+  const bytes = new Uint8Array([0, 1])
+  await writer.write(bytes)
+  bytes.set([2, 3])
+  await writer.write(bytes)
+  bytes.fill(9)
+  await writer.close()
+  await backend.commit('s1', 'k')
+  bytes.fill(8)
+  expect(await readBytes(await backend.createReadStream('k'))).toEqual([0, 1, 2, 3])
+})
+
+test('writeChunk preserves accepted bytes when the upload buffer is reused', async () => {
+  const backend = new MemoryBlobBackend()
+  const bytes = new Uint8Array([2, 3])
+  await backend.writeChunk('s1', 2, bytes)
+  bytes.set([0, 1])
+  await backend.writeChunk('s1', 0, bytes)
+  bytes.fill(9)
+  await backend.commit('s1', 'k')
+  bytes.fill(8)
+  expect(await readBytes(await backend.createReadStream('k'))).toEqual([0, 1, 2, 3])
+})
+
+test.each([
+  { name: 'full', range: undefined, expected: [0, 1, 2, 3, 4] },
+  { name: 'ranged', range: { start: 1, end: 3 }, expected: [1, 2, 3] },
+])(
+  '$name read output can be mutated without changing committed bytes',
+  async ({ range, expected }) => {
+    const backend = new MemoryBlobBackend()
+    await backend.writeChunk('s1', 0, new Uint8Array([0, 1, 2, 3, 4]))
+    await backend.commit('s1', 'k')
+    const reader = (await backend.createReadStream('k', range)).getReader()
+    const { value } = await reader.read()
+    expect(value).toEqual(new Uint8Array(expected))
+    if (value == null) {
+      throw new Error('Expected read output')
+    }
+    value.fill(9)
+    expect((await reader.read()).done).toBe(true)
+    expect(await readBytes(await backend.createReadStream('k'))).toEqual([0, 1, 2, 3, 4])
+    expect(await readBytes(await backend.createReadStream('k', { start: 1, end: 3 }))).toEqual([
+      1, 2, 3,
+    ])
+  },
+)
+
 test('commit is idempotent for an existing key and drops the staging area', async () => {
   const backend = new MemoryBlobBackend()
   await backend.writeChunk('s1', 0, new Uint8Array([1, 2]))
