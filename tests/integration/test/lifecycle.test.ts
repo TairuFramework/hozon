@@ -3,10 +3,11 @@ import { rm } from 'node:fs/promises'
 import { HozonDB, SchemaVersionError, type StoreDefinition } from '@hozon/db'
 import { getLogStore, logStoreDefinition } from '@hozon/store-log'
 import { getTelemetryStore, telemetryStoreDefinition } from '@hozon/store-telemetry'
+import { Kysely } from 'kysely'
 import { afterEach, describe, expect, test } from 'vitest'
 
 import { backends, backendsNamed } from '../src/backends.js'
-import { type RawDB, rawStore, sampleSpan, tableNames, tracedLog } from '../src/helpers.js'
+import { type RawDB, sampleSpan, tableNames, tracedLog } from '../src/helpers.js'
 
 function itemsStore(table: string): StoreDefinition<unknown, RawDB> {
   return {
@@ -114,14 +115,15 @@ describe.each(backends())('$name', (backend) => {
   test('two table prefixes on one database keep disjoint stores', async () => {
     const alpha = await open({ tablePrefix: 'alpha' })
     const beta = await open({ reopen: true, tablePrefix: 'beta' })
-    alpha.register(itemsStore('alpha_items'))
-    beta.register(itemsStore('beta_items'))
+    alpha.register(itemsStore('items'))
+    beta.register(itemsStore('items'))
     const alphaItems = await alpha.getStore<RawDB>('items')
     const betaItems = await beta.getStore<RawDB>('items')
-    await alphaItems.insertInto('alpha_items').values({ id: 1 }).execute()
-    await betaItems.insertInto('beta_items').values({ id: 2 }).execute()
+    await alphaItems.insertInto('items').values({ id: 1 }).execute()
+    await betaItems.insertInto('items').values({ id: 2 }).execute()
 
-    const tables = await tableNames(alphaItems)
+    const raw: RawDB = new Kysely({ dialect: (await backend.reopen()).dialect })
+    const tables = await tableNames(raw)
     expect(tables).toEqual(
       expect.arrayContaining([
         'alpha_items',
@@ -134,11 +136,11 @@ describe.each(backends())('$name', (backend) => {
     )
     expect(tables).not.toContain('hozon_items_migration')
     for (const prefix of ['alpha', 'beta']) {
-      const rows = await alphaItems.selectFrom(`${prefix}_items_migration`).select('name').execute()
+      const rows = await raw.selectFrom(`${prefix}_items_migration`).select('name').execute()
       expect(rows).toEqual([{ name: '0-init' }])
     }
-    expect(await alphaItems.selectFrom('alpha_items').selectAll().execute()).toEqual([{ id: 1 }])
-    expect(await betaItems.selectFrom('beta_items').selectAll().execute()).toEqual([{ id: 2 }])
+    expect(await alphaItems.selectFrom('items').selectAll().execute()).toEqual([{ id: 1 }])
+    expect(await betaItems.selectFrom('items').selectAll().execute()).toEqual([{ id: 2 }])
   })
 
   test('failed migration rolls back and retries on next open', async () => {
@@ -159,21 +161,21 @@ describe.each(backends())('$name', (backend) => {
     }
     const first = await open()
     first.register(flaky)
-    first.register(rawStore)
     await expect(first.getStore('flaky')).rejects.toThrow('migration failed on first open')
-    const raw = await first.getStore<RawDB>('raw')
+    const raw: RawDB = new Kysely({ dialect: (await backend.reopen()).dialect })
     expect(await raw.selectFrom('hozon_flaky_migration').select('name').execute()).toEqual([])
-    expect(await tableNames(raw)).not.toContain('lc_flaky')
+    expect(await tableNames(raw)).not.toContain('hozon_lc_flaky')
     await first.close()
 
     const second = await open({ reopen: true })
     second.register(flaky)
-    const query = await second.getStore<RawDB>('flaky')
+    await second.getStore('flaky')
+    const query: RawDB = new Kysely({ dialect: (await backend.reopen()).dialect })
     expect(attempts).toBe(2)
     expect(await query.selectFrom('hozon_flaky_migration').select('name').execute()).toEqual([
       { name: '0-init' },
     ])
-    expect(await tableNames(query)).toContain('lc_flaky')
+    expect(await tableNames(query)).toContain('hozon_lc_flaky')
   })
 })
 

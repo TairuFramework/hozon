@@ -10,4 +10,13 @@
 - [Database lifecycle](reference/db.md)
 - [Drivers](reference/drivers.md)
 - [Stores](reference/stores.md)
+- [Blob backends](reference/blob-backends.md)
 - [Telemetry integrations](reference/telemetry.md)
+
+## Blob packages
+
+- [@hozon/blob-backend](../packages/blob-backend/README.md) -- byte storage contract and in-memory backend
+- [@hozon/blob-node-fs](../packages/blob-node-fs/README.md) -- Node filesystem backend
+- [@hozon/store-blob](../packages/store-blob/README.md) -- metadata, manifests, and resumable transfers
+
+The [blob store reference](reference/stores/blob.md) documents blob APIs and transfer lifecycle; the [blob backend reference](reference/blob-backends.md) documents backend key rules.

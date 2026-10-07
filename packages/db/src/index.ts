@@ -8,3 +8,4 @@ export {
 } from './errors.js'
 export { chunk, withKeepSet } from './keep-set.js'
 export { withStoreTransaction } from './store-transaction.js'
+export { TablePrefixPlugin } from './table-prefix.js'

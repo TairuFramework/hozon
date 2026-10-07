@@ -14,4 +14,4 @@ const logs = await getLogStore(db)
 await logs.addLogs([])
 ```
 
-See the [store reference](../../docs/reference/stores.md).
+See the [store reference](../../docs/reference/stores/log.md).

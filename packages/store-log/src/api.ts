@@ -49,7 +49,7 @@ export function createLogStoreAPI(db: Kysely<LogTables>, adapter: Adapter): LogS
       })
       await withStoreTransaction(db, async (trx) => {
         for (const batch of chunk(rows, 71)) {
-          await trx.insertInto('hozon_logs').values(batch).execute()
+          await trx.insertInto('logs').values(batch).execute()
         }
       })
     },
@@ -57,7 +57,7 @@ export function createLogStoreAPI(db: Kysely<LogTables>, adapter: Adapter): LogS
       if (!Number.isInteger(params.limit) || params.limit <= 0)
         throw new RangeError('Log limit must be a positive integer')
       const limit = Math.min(params.limit, 1000)
-      let query = db.selectFrom('hozon_logs').select(['timestamp', 'seq', 'data'])
+      let query = db.selectFrom('logs').select(['timestamp', 'seq', 'data'])
       if (params.from !== undefined) query = query.where('timestamp', '>=', params.from)
       if (params.to !== undefined) query = query.where('timestamp', '<=', params.to)
       if (params.levels !== undefined) {
@@ -94,7 +94,7 @@ export function createLogStoreAPI(db: Kysely<LogTables>, adapter: Adapter): LogS
     },
     async getTraceLogs(traceID) {
       const rows = await db
-        .selectFrom('hozon_logs')
+        .selectFrom('logs')
         .select('data')
         .where('trace_id', '=', traceID)
         .orderBy('timestamp')
@@ -109,7 +109,7 @@ export function createLogStoreAPI(db: Kysely<LogTables>, adapter: Adapter): LogS
         let count = 0
         for (const ids of chunk(traceIDs)) {
           const result = await trx
-            .deleteFrom('hozon_logs')
+            .deleteFrom('logs')
             .where('trace_id', 'in', ids)
             .executeTakeFirstOrThrow()
           count += Number(result.numDeletedRows)
@@ -121,17 +121,17 @@ export function createLogStoreAPI(db: Kysely<LogTables>, adapter: Adapter): LogS
       return withStoreTransaction(db, async (trx) => {
         if (params?.keepTraceIDs === undefined || params.keepTraceIDs.length === 0) {
           const result = await trx
-            .deleteFrom('hozon_logs')
+            .deleteFrom('logs')
             .where('timestamp', '<', time)
             .executeTakeFirstOrThrow()
           return Number(result.numDeletedRows)
         }
         return withKeepSet(
           trx,
-          { table: 'hozon_keep_log', ids: params.keepTraceIDs },
+          { table: 'keep_log', ids: params.keepTraceIDs },
           async (selectKeep) => {
             const result = await trx
-              .deleteFrom('hozon_logs')
+              .deleteFrom('logs')
               .where('timestamp', '<', time)
               .where((eb) =>
                 eb.or([eb('trace_id', 'is', null), eb('trace_id', 'not in', selectKeep())]),

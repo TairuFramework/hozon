@@ -206,7 +206,7 @@ describe.each(backends())('$name', (backend) => {
     await db.migrate()
     const failure = db.withTransaction<{ raw: RawDB }, void>(async (tx) => {
       const trx = await tx.getStore('raw')
-      return withKeepSet(trx, { table: 'hozon_keep_failure', ids: ['a', 'b'] }, async () => {
+      return withKeepSet(trx, { table: 'keep_failure', ids: ['a', 'b'] }, async () => {
         // On Postgres this aborts the transaction, so the keep table DROP fails as well.
         await sql`SELECT * FROM missing_table_for_keep_set`.execute(trx)
       })

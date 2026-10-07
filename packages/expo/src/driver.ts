@@ -1,4 +1,4 @@
-// Adapted from https://github.com/mphill/kysely-expo/blob/main/src/driver.ts via @kubun/db-expo
+// Adapted from https://github.com/mphill/kysely-expo/blob/main/src/driver.ts
 // Copyright (c) 2023 mphill, MIT License. See ../THIRD_PARTY_NOTICES.md for the full notice.
 import type { SQLiteDatabase } from 'expo-sqlite'
 import {

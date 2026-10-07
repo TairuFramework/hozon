@@ -1,0 +1,38 @@
+{
+  "name": "@hozon/blob-backend",
+  "version": "0.1.0",
+  "description": "Byte storage interface and in-memory backend for Hozon blobs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TairuFramework/hozon.git",
+    "directory": "packages/blob-backend"
+  },
+  "license": "MIT",
+  "sideEffects": false,
+  "type": "module",
+  "exports": {
+    ".": "./lib/index.js"
+  },
+  "files": [
+    "lib/*"
+  ],
+  "scripts": {
+    "build": "pnpm run build:clean && pnpm run build:js && pnpm run build:types",
+    "build:clean": "del-cli lib",
+    "build:js": "del-cli \"lib/**/*.js\" && swc src -d ./lib --config-file ../../node_modules/@kigu/dev/swc.json --strip-leading-paths",
+    "build:types": "del-cli \"lib/**/*.d.ts\" \"lib/**/*.d.ts.map\" && tsc --emitDeclarationOnly --skipLibCheck",
+    "build:types:ci": "tsc --emitDeclarationOnly --skipLibCheck --declarationMap false",
+    "prepack": "pnpm run build:clean && pnpm run build:js && pnpm run build:types:ci",
+    "test": "pnpm run test:types && pnpm run test:unit",
+    "test:types": "tsc --noEmit --skipLibCheck -p tsconfig.test.json",
+    "test:unit": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "del-cli": "catalog:",
+    "vitest": "catalog:"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

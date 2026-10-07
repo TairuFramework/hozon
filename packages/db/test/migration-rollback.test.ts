@@ -7,7 +7,8 @@ import { HozonDB } from '../src/index.js'
 type Tables = Record<string, unknown>
 
 test('a failed SQLite migration rolls back its DDL and retries cleanly', async () => {
-  const db = new HozonDB({ adapter: new NodeSQLiteAdapter({ database: ':memory:' }) })
+  const adapter = new NodeSQLiteAdapter({ database: ':memory:' })
+  const db = new HozonDB({ adapter })
   let attempts = 0
   db.register<Tables, Kysely<Tables>>({
     name: 'flaky',
@@ -28,15 +29,14 @@ test('a failed SQLite migration rolls back its DDL and retries cleanly', async (
     await expect(db.getStore('flaky')).rejects.toThrow('migration failed after DDL')
     const raw = await db.getStore<Kysely<Tables>>('raw')
     const tables = (await raw.introspection.getTables()).map((table) => table.name)
-    expect(tables).not.toContain('flaky_items')
+    expect(tables).not.toContain('hozon_flaky_items')
 
     const query = await db.getStore<Kysely<Tables>>('flaky')
     expect(attempts).toBe(2)
     expect((await query.introspection.getTables()).map((table) => table.name)).toContain(
-      'flaky_items',
+      'hozon_flaky_items',
     )
-    const migrations = query as unknown as Kysely<{ hozon_flaky_migration: { name: string } }>
-    expect(await migrations.selectFrom('hozon_flaky_migration').select('name').execute()).toEqual([
+    expect(adapter.database.prepare('SELECT name FROM hozon_flaky_migration').all()).toEqual([
       { name: '0-init' },
     ])
   } finally {

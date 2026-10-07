@@ -19,6 +19,7 @@
     "@hozon/otel": "workspace:^",
     "@hozon/postgres": "workspace:^",
     "@hozon/provider": "workspace:^",
+    "@hozon/store-blob": "workspace:^",
     "@hozon/store-log": "workspace:^",
     "@hozon/store-telemetry": "workspace:^",
     "@logtape/logtape": "catalog:",
