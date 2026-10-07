@@ -51,7 +51,7 @@ Electron applications can use `node:sqlite` in the main process. Mark `node:sqli
 
 ## PostgreSQL
 
-`PostgresAdapter({ url, options?, closeTimeoutSeconds? })` accepts postgres.js options and a close deadline. Int8/bigint columns parse to JavaScript `Number` by default, matching kubun. Values above 2^53 may lose precision. Caller-provided type parsers take precedence. Boolean filter values remain native booleans for postgres.js.
+`PostgresAdapter({ url, options?, closeTimeoutSeconds? })` accepts postgres.js options and a close deadline. Int8/bigint columns parse to JavaScript `Number` by default. Values above 2^53 may lose precision. Caller-provided type parsers take precedence. Boolean filter values remain native booleans for postgres.js.
 
 ## Expo SQLite
 

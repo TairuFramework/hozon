@@ -21,3 +21,7 @@ Requires Node.js 24 or later. Staging files live under `<root>/staging`, and com
 Keys and staging IDs must be nonempty, differ from `.`, and contain no `..`, `/`, `\`, `:`, or NUL bytes.
 Invalid names reject with `Invalid blob key: <JSON.stringify(value)>`.
 `getURL` returns a file URL for existing content, or `null` when absent.
+`has` returns `false` only for `ENOENT` and propagates other filesystem errors.
+Sequential staging copies chunks before passing them to Node streams.
+
+See the [store reference](../../docs/reference/stores.md#fsblobbackend).

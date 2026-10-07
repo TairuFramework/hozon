@@ -31,6 +31,8 @@ Repeated entry and manifest inserts preserve existing rows.
 For a known remote entry, `beginTransfer` records its manifest and sets its state to `partial`.
 Record each verified chunk with `recordTransferChunk`, then call `finalizeTransfer` when all chunks are present.
 Finalisation preserves the manifest, clears transfer progress, and sets the entry state to `local`.
+`beginTransfer` and `finalizeTransfer` reject absent entries with `Blob entry <blobID> not found`.
+Finalisation rejects missing chunks with `Cannot finalize transfer <blobID>: <count> chunk(s) missing`.
 `deleteEntry` removes the entry, manifest, and transfer progress together.
 
 Tables follow the database's configured prefix, which defaults to `hozon`.

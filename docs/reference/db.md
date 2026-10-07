@@ -1,10 +1,12 @@
 # Database
 
-`@hozon/db` exports `HozonDB`, `HozonDBParams`, `MigrationContext`, `StoreDefinition`, and `StoreProvider`. It also exports `HozonDBClosedError`, `InvalidTablePrefixError`, `SavepointOverlapError`, `SchemaVersionError`, `chunk`, `withKeepSet`, and `withStoreTransaction`.
+`@hozon/db` exports `HozonDB`, `HozonDBParams`, `MigrationContext`, `StoreDefinition`, `StoreProvider`, and `TablePrefixPlugin`. It also exports `HozonDBClosedError`, `InvalidTablePrefixError`, `SavepointOverlapError`, `SchemaVersionError`, `chunk`, `withKeepSet`, and `withStoreTransaction`.
 
 ```ts
 type HozonDBParams = { adapter: Adapter; logger?: Logger; tablePrefix?: string }
-type MigrationContext = { kind: Adapter['kind']; types: ColumnTypes; functions: Functions }
+type MigrationContext = {
+  kind: Adapter['kind']; types: ColumnTypes; functions: Functions; tablePrefix: string
+}
 type StoreDefinition<Tables, API> = {
   name: string
   migrations: Record<string, Migration> | ((ctx: MigrationContext) => Record<string, Migration>)
@@ -53,6 +55,11 @@ class HozonDBClosedError extends Error { constructor() }
 class InvalidTablePrefixError extends Error { constructor(prefix: string) }
 class SavepointOverlapError extends Error { constructor() }
 class SchemaVersionError extends Error { constructor(store: string, unknown: Array<string>) }
+class TablePrefixPlugin implements KyselyPlugin {
+  constructor(prefix: string)
+  transformQuery(args: PluginTransformQueryArgs): RootOperationNode
+  transformResult(args: PluginTransformResultArgs): Promise<QueryResult<UnknownRow>>
+}
 ```
 
 Create a database with an adapter, register store definitions, then request a store or call `migrate()`:
@@ -68,6 +75,29 @@ const logs = await getLogStore(db)
 await db.close()
 ```
 
-The default migration prefix is `hozon`, validated against `^[a-z][a-z0-9_]{0,30}$`. Migration tables are `<prefix>_<store>_migration` and `<prefix>_<store>_migration_lock`; savepoints use `<prefix>_sp_N`. Stores use fixed table names and cannot be duplicated by changing this prefix.
+## Table prefixes
+
+`tablePrefix` configures store tables and migration tables for the whole database.
+The default is `hozon`, validated against `^[a-z][a-z0-9_]{0,30}$`.
+Migration tables are `<prefix>_<store>_migration` and `<prefix>_<store>_migration_lock`.
+Savepoints use `<prefix>_sp_N`.
+
+`HozonDB` applies the exported `TablePrefixPlugin` to store `createAPI` instances and store migrations, including transaction-scoped APIs.
+The Kysely `Migrator` uses an instance without the plugin, preventing double prefixes on migration tables.
+The plugin prefixes unqualified table names once, including subqueries, joins, schema builders, and raw `sql.table()` references.
+Aliases, CTE names, and schema-qualified names stay unchanged.
+Literal table names embedded in raw SQL strings are not rewritten.
+
+Store APIs, migrations, and `Tables` type keys use logical, unprefixed names.
+For example, `logs` becomes `hozon_logs` by default or `app_logs` with `tablePrefix: 'app'`.
+The default physical names for existing stores remain unchanged.
+Keep-set tables use logical names `keep_log` and `keep_telemetry`.
+Index and constraint names use `ctx.tablePrefix`, for example `${ctx.tablePrefix}_logs_timestamp`.
+The plugin does not rewrite index or constraint names.
+
+WARNING: never reference system tables through the store instance.
+The plugin would prefix unqualified names such as `sqlite_master` or `information_schema`.
+
+## Transactions and lifecycle
 
 Preflight checks schema versions before adapter preparation and migrations. Concurrent callers share one preflight attempt. A successful preflight is cached for the instance; a failed one (a check or `prepare()` rejection) is not, so the next `migrate()`, `getStore()` or `withTransaction()` reruns the read-only checks and then preparation. Every SQLite dialect is wrapped so migrations run in a transaction. A failed migration rolls back and retries on the next open. There is no per-driver opt-out. `withTransaction` passes a scoped provider to the callback. Store methods needing atomicity use `withStoreTransaction`; they do not call `.transaction()` directly. `withKeepSet` requires a transaction and serializes concurrent calls that share one transaction and keep-table name, in call order, so concurrent `deleteBefore` calls with keep lists inside one `withTransaction` both succeed. Its callback must not call `withKeepSet` for the same table.

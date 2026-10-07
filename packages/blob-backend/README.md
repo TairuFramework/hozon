@@ -23,3 +23,6 @@ Implement `BlobBackend` for other byte storage systems. `BlobRange` uses inclusi
 `commit` preserves an existing key and discards the staging area. `abortStaging` discards abandoned uploads.
 
 `MemoryBlobBackend` keeps bytes in memory without persistence. Its `getURL` method always returns `null`.
+It copies buffers on write and read, isolating stored bytes from caller mutations.
+
+See the [store reference](../../docs/reference/stores.md#blob-backends).

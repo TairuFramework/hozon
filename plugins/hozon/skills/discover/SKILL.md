@@ -15,6 +15,15 @@ Load the domain skill matching your task:
 - `/hozon:drivers` -- choosing and configuring a database driver across platforms
 - `/hozon:telemetry` -- log and span stores, LogTape sink, OTel exporter, and retention
 
+## Blob packages
+
+- `@hozon/blob-backend` -- `BlobBackend`, inclusive `BlobRange`, and `MemoryBlobBackend`
+- `@hozon/blob-node-fs` -- `FSBlobBackend` for Node filesystem byte storage
+- `@hozon/store-blob` -- metadata, chunk manifests, and resumable transfer progress
+
+Load `/hozon:database` for blob store registration, migrations, and table prefixes.
+Read `../../../../docs/reference/stores.md` for blob APIs, transfer lifecycle, and filesystem key rules.
+
 For an overview of the driver contract, start with `../../../../docs/reference/adapter.md`.
 
 ## Conventions
