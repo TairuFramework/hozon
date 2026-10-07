@@ -9,7 +9,7 @@ Use these references for telemetry schemas, integrations, and retention behaviou
 
 ## References
 
-- Log and span stores, schemas, queries, and retention: `../../../../docs/reference/stores.md`
+- Log and span stores, schemas, queries, and retention: `../../../../docs/reference/stores/log.md`, `../../../../docs/reference/stores/telemetry.md`, and shared retention in `../../../../docs/reference/stores.md`
 - LogTape sink and OpenTelemetry exporter: `../../../../docs/reference/telemetry.md`
 - Log store package API: `../../../../packages/store-log/README.md`
 - Telemetry store package API: `../../../../packages/store-telemetry/README.md`

@@ -28,4 +28,4 @@ Reopening `createStaging` truncates previous bytes. Positioned `writeChunk` call
 Concurrent competing uploads preserve the first published bytes. Duplicate commits of the same staging area are idempotent.
 Staging and content directories must share a filesystem that supports hard links, including NTFS on Windows.
 
-See the [store reference](../../docs/reference/stores.md#fsblobbackend).
+See the [blob backend reference](../../docs/reference/blob-backends.md#fsblobbackend).

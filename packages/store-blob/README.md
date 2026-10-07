@@ -43,4 +43,4 @@ Tables follow the database's configured prefix, which defaults to `hozon`.
 Multi-statement mutations are atomic and reuse a provider transaction.
 Manifest inserts use batches of 166 rows to stay below 500 bound parameters.
 
-See the [store reference](../../docs/reference/stores.md).
+See the [store reference](../../docs/reference/stores/blob.md).

@@ -27,4 +27,4 @@ Concurrent duplicate commits preserve the first published bytes, even when compe
 `MemoryBlobBackend` keeps bytes in memory without persistence. Its `getURL` method always returns `null`.
 It copies buffers on write and read, isolating stored bytes from caller mutations.
 
-See the [store reference](../../docs/reference/stores.md#blob-backends).
+See the [blob backend reference](../../docs/reference/blob-backends.md).

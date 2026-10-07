@@ -13,4 +13,4 @@ db.register(telemetryStoreDefinition)
 const telemetry = await getTelemetryStore(db)
 ```
 
-See the [store reference](../../docs/reference/stores.md).
+See the [store reference](../../docs/reference/stores/telemetry.md).

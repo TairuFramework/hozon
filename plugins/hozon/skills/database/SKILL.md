@@ -20,5 +20,5 @@ The plugin prefixes unqualified table names.
 
 - Database runtime, store registration, migrations, transactions, and savepoints: `../../../../docs/reference/db.md`
 - Adapter contract used by HozonDB: `../../../../docs/reference/adapter.md`
-- Store APIs and transaction behaviour: `../../../../docs/reference/stores.md`
+- Store APIs and transaction behaviour: `../../../../docs/reference/stores.md` (index), one file per store under `../../../../docs/reference/stores/`
 - Package entry points and examples: `../../../../packages/db/README.md`
