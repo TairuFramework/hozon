@@ -1,4 +1,6 @@
 import type {
+  AggregateFunctionNode,
+  FunctionNode,
   KyselyPlugin,
   OperationNode,
   PluginTransformQueryArgs,
@@ -7,6 +9,7 @@ import type {
   QueryResult,
   ReferenceNode,
   RootOperationNode,
+  SelectModifierNode,
   UnknownRow,
 } from 'kysely'
 import {
@@ -102,6 +105,52 @@ class TablePrefixTransformer extends OperationNodeTransformer {
           ? this.transformNode(node.table, queryId)
           : node.table,
     }
+  }
+
+  override transformSelectModifier(
+    node: SelectModifierNode,
+    queryId?: QueryId,
+  ): SelectModifierNode {
+    return {
+      ...super.transformSelectModifier({ ...node, of: undefined }, queryId),
+      of: node.of?.map((item) => this.#transformTableReference(item, queryId)),
+    }
+  }
+
+  override transformAggregateFunction(
+    node: AggregateFunctionNode,
+    queryId?: QueryId,
+  ): AggregateFunctionNode {
+    return {
+      ...super.transformAggregateFunction({ ...node, aggregated: [] }, queryId),
+      aggregated: this.#transformTableArgs(node.func, node.aggregated, queryId),
+    }
+  }
+
+  override transformFunction(node: FunctionNode, queryId?: QueryId): FunctionNode {
+    return {
+      ...super.transformFunction({ ...node, arguments: [] }, queryId),
+      arguments: this.#transformTableArgs(node.func, node.arguments, queryId),
+    }
+  }
+
+  #transformTableArgs(
+    func: string,
+    args: ReadonlyArray<OperationNode>,
+    queryId?: QueryId,
+  ): ReadonlyArray<OperationNode> {
+    return func === 'json_agg' || func === 'to_json'
+      ? args.map((arg) => this.#transformTableReference(arg, queryId))
+      : this.transformNodeList(args, queryId)
+  }
+
+  #transformTableReference(node: OperationNode, queryId?: QueryId): OperationNode {
+    // Only direct table references can be aliases; raw sql.table() nodes still name physical tables.
+    return TableNode.is(node) &&
+      node.table.schema === undefined &&
+      this.#aliases.has(node.table.identifier.name)
+      ? node
+      : this.transformNode(node, queryId)
   }
 
   #collectTables(node: RootOperationNode): void {

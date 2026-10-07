@@ -57,6 +57,58 @@ test('keeps aliases that match a real table name in the current or outer query',
   expect(query).toContain('"kubun_logs"."seq" from "kubun_logs"')
 })
 
+test.each(['l', 'logs'] as const)('keeps lock target alias %s', (alias) => {
+  const db = setup()
+  expect(db.selectFrom(`logs as ${alias}`).selectAll().forUpdate(alias).compile().sql).toBe(
+    `select * from "kubun_logs" as "${alias}" for update of "${alias}"`,
+  )
+  expect(db.selectFrom('logs').selectAll().forUpdate('logs').compile().sql).toBe(
+    'select * from "kubun_logs" for update of "kubun_logs"',
+  )
+})
+
+test.each(['l', 'logs'] as const)('keeps jsonAgg table alias %s', (alias) => {
+  const db = setup()
+  expect(
+    db
+      .selectFrom(`logs as ${alias}`)
+      .select((eb) => eb.fn.jsonAgg(alias).as('rows'))
+      .compile().sql,
+  ).toBe(`select json_agg("${alias}") as "rows" from "kubun_logs" as "${alias}"`)
+  expect(
+    db
+      .selectFrom('logs')
+      .select((eb) => eb.fn.jsonAgg('logs').as('rows'))
+      .compile().sql,
+  ).toBe('select json_agg("kubun_logs") as "rows" from "kubun_logs"')
+})
+
+test.each(['l', 'logs'] as const)('keeps toJson table alias %s', (alias) => {
+  const db = setup()
+  expect(
+    db
+      .selectFrom(`logs as ${alias}`)
+      .select((eb) => eb.fn.toJson(alias).as('row'))
+      .compile().sql,
+  ).toBe(`select to_json("${alias}") as "row" from "kubun_logs" as "${alias}"`)
+  expect(
+    db
+      .selectFrom('logs')
+      .select((eb) => eb.fn.toJson('logs').as('row'))
+      .compile().sql,
+  ).toBe('select to_json("kubun_logs") as "row" from "kubun_logs"')
+})
+
+test('prefixes raw table nodes even when their names match aliases', () => {
+  const db = setup()
+  expect(
+    db
+      .selectFrom('logs as l')
+      .select(sql`to_json(${sql.table('l')})`.as('row'))
+      .compile().sql,
+  ).toBe('select to_json("kubun_l") as "row" from "kubun_logs" as "l"')
+})
+
 test('prefixes joins', () => {
   const query = setup().selectFrom('a').innerJoin('b', 'a.id', 'b.id').selectAll().compile().sql
   expect(query).toContain('from "kubun_a" inner join "kubun_b"')
