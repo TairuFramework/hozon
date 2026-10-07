@@ -3,9 +3,29 @@ import { chunk, withStoreTransaction } from '@hozon/db'
 import type { Kysely } from 'kysely'
 
 import type { BlobTables } from './tables.js'
-import type { BlobStoreAPI } from './types.js'
+import type { BlobChunkInput, BlobStoreAPI } from './types.js'
 
 export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): BlobStoreAPI {
+  async function insertManifest(
+    trx: Kysely<BlobTables>,
+    blobID: string,
+    chunks: Array<BlobChunkInput>,
+  ): Promise<void> {
+    const rows = chunks.map((item) => ({
+      blob_id: blobID,
+      index: item.index,
+      digest: adapter.encodeBinary(item.digest) as Uint8Array,
+    }))
+    // Three bindings per row leave each statement below 500 parameters.
+    for (const batch of chunk(rows, 166)) {
+      await trx
+        .insertInto('blob_chunks')
+        .values(batch)
+        .onConflict((oc) => oc.columns(['blob_id', 'index']).doNothing())
+        .execute()
+    }
+  }
+
   return {
     async insertEntry(entry, chunks) {
       await withStoreTransaction(db, async (trx) => {
@@ -23,19 +43,7 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
           })
           .onConflict((oc) => oc.column('blob_id').doNothing())
           .execute()
-        const rows = chunks.map((item) => ({
-          blob_id: entry.blobID,
-          index: item.index,
-          digest: adapter.encodeBinary(item.digest) as Uint8Array,
-        }))
-        // Three bindings per row leave each statement below 500 parameters.
-        for (const batch of chunk(rows, 166)) {
-          await trx
-            .insertInto('blob_chunks')
-            .values(batch)
-            .onConflict((oc) => oc.columns(['blob_id', 'index']).doNothing())
-            .execute()
-        }
+        await insertManifest(trx, entry.blobID, chunks)
       })
     },
     async getEntry(blobID) {
@@ -93,18 +101,7 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
           .set({ chunk_size: chunkSize, state: 'partial' })
           .where('blob_id', '=', blobID)
           .execute()
-        const rows = chunks.map((item) => ({
-          blob_id: blobID,
-          index: item.index,
-          digest: adapter.encodeBinary(item.digest) as Uint8Array,
-        }))
-        for (const batch of chunk(rows, 166)) {
-          await trx
-            .insertInto('blob_chunks')
-            .values(batch)
-            .onConflict((oc) => oc.columns(['blob_id', 'index']).doNothing())
-            .execute()
-        }
+        await insertManifest(trx, blobID, chunks)
       })
     },
     async recordTransferChunk(blobID, index) {

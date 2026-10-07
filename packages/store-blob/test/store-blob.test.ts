@@ -68,6 +68,25 @@ test('getChunkDigests returns digests ordered by index', async () => {
   await store.insertEntry(entry(), manifest().reverse())
   expect(bytes(await store.getChunkDigests('b1'))).toEqual(bytes(manifest().map((c) => c.digest)))
 })
+test.each(['insertEntry', 'beginTransfer'] as const)(
+  '%s preserves existing manifest digests while adding missing chunks',
+  async (method) => {
+    await store.insertEntry(entry(), [{ index: 0, digest: new Uint8Array([0, 255]) }])
+    const chunks = [
+      { index: 0, digest: new Uint8Array([99]) },
+      { index: 1, digest: new Uint8Array([128, 0]) },
+    ]
+    if (method === 'insertEntry') {
+      await store.insertEntry(entry(), chunks)
+    } else {
+      await store.beginTransfer('b1', 4, chunks)
+    }
+    expect(bytes(await store.getChunkDigests('b1'))).toEqual([
+      [0, 255],
+      [128, 0],
+    ])
+  },
+)
 test('stores a manifest of 600 chunks', async () => {
   const chunks = manifest(600)
   await store.insertEntry(entry(), chunks)
