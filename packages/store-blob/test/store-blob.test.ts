@@ -216,3 +216,68 @@ test('store mutations reuse the provider transaction and roll back together', as
   expect(await store.getChunkDigests('b1')).toHaveLength(1)
   expect(await store.getEntry('b2')).toBeNull()
 })
+
+test('beginTransfer rejects changing chunk size with an existing manifest without changing progress', async () => {
+  await store.insertEntry(entry({ state: 'remote-only', contentLength: 8, chunkSize: 0 }), [])
+  await store.beginTransfer('b1', 4, manifest(2))
+  await store.recordTransferChunk('b1', 0)
+  await store.recordTransferChunk('b1', 1)
+  await expect(
+    store.beginTransfer('b1', 8, [{ index: 0, digest: new Uint8Array([99]) }]),
+  ).rejects.toThrow('Cannot change chunk size for blob b1: manifest already exists')
+  expect(await store.getEntry('b1')).toMatchObject({ state: 'partial', chunkSize: 4 })
+  expect(bytes(await store.getChunkDigests('b1'))).toEqual([
+    [0, 0, 0, 255],
+    [1, 0, 0, 255],
+  ])
+  expect(await store.getPresentChunkIndexes('b1')).toEqual([0, 1])
+  await store.beginTransfer('b1', 4, manifest(2))
+  expect(await store.getPresentChunkIndexes('b1')).toEqual([0, 1])
+  await store.finalizeTransfer('b1')
+  expect((await store.getEntry('b1'))?.state).toBe('local')
+})
+
+test('recordTransferChunk rejects an unknown blob without writing progress', async () => {
+  await expect(store.recordTransferChunk('missing', 0)).rejects.toThrow(
+    'Blob entry missing not found',
+  )
+  expect(await store.getPresentChunkIndexes('missing')).toEqual([])
+})
+
+test('recordTransferChunk rejects indexes absent from the manifest', async () => {
+  await store.insertEntry(entry({ state: 'remote-only' }), [])
+  await expect(store.recordTransferChunk('b1', 0)).rejects.toThrow(
+    'Blob chunk b1 at index 0 not found',
+  )
+  await store.beginTransfer('b1', 4, manifest(1))
+  await expect(store.recordTransferChunk('b1', 1)).rejects.toThrow(
+    'Blob chunk b1 at index 1 not found',
+  )
+  expect(await store.getPresentChunkIndexes('b1')).toEqual([])
+})
+
+test('late transfer callbacks cannot recreate progress after deletion or reinsertion', async () => {
+  await store.insertEntry(entry({ state: 'partial' }), manifest(1))
+  await store.recordTransferChunk('b1', 0)
+  await store.deleteEntry('b1')
+  await expect(store.recordTransferChunk('b1', 0)).rejects.toThrow('Blob entry b1 not found')
+  expect(await store.getPresentChunkIndexes('b1')).toEqual([])
+  await store.insertEntry(entry({ state: 'remote-only' }), [])
+  await expect(store.recordTransferChunk('b1', 0)).rejects.toThrow(
+    'Blob chunk b1 at index 0 not found',
+  )
+  expect(await store.getPresentChunkIndexes('b1')).toEqual([])
+})
+
+test('foreign keys prevent orphan progress and cascade manifest deletion', async () => {
+  expect(() =>
+    adapter.database
+      .prepare('INSERT INTO hozon_blob_transfers (blob_id, "index") VALUES (?, ?)')
+      .run('missing', 0),
+  ).toThrow()
+  await store.insertEntry(entry(), manifest(1))
+  await store.recordTransferChunk('b1', 0)
+  adapter.database.prepare('DELETE FROM hozon_blob_entries WHERE blob_id = ?').run('b1')
+  expect(await store.getChunkDigests('b1')).toEqual([])
+  expect(await store.getPresentChunkIndexes('b1')).toEqual([])
+})

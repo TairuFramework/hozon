@@ -11,14 +11,14 @@ export type BlobRange = {
 
 export type BlobBackend = {
   // Open a writable sink for an in-progress upload. The caller pumps bytes in
-  // order and closes the stream, then calls `commit`.
+  // order and closes the stream, then calls `commit`. Reopening resets staging.
   createStaging(stagingID: string): Promise<WritableStream<Uint8Array>>
   // Write bytes at an absolute offset into a staging area, creating it if
   // absent. For resumable range downloads: chunks may arrive out of order, so
   // the caller places each at `index * chunkSize`. Then `commit` promotes it.
   writeChunk(stagingID: string, offset: number, bytes: Uint8Array): Promise<void>
   // Promote fully-staged bytes to the content-addressed key. Idempotent: a
-  // no-op if `key` already exists (content-addressed, so bytes are identical).
+  // preserves existing bytes and discards redundant staging, even for concurrent commits.
   commit(stagingID: string, key: string): Promise<void>
   // Discard an abandoned staging area.
   abortStaging(stagingID: string): Promise<void>

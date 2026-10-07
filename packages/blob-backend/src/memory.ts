@@ -20,7 +20,8 @@ export class MemoryBlobBackend implements BlobBackend {
   }
 
   async createStaging(stagingID: string): Promise<WritableStream<Uint8Array>> {
-    const segments = this.#segments(stagingID)
+    const segments: Array<StagingSegment> = []
+    this.#staging.set(stagingID, segments)
     let offset = 0
     return new WritableStream<Uint8Array>({
       write(chunk) {

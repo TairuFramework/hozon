@@ -23,7 +23,14 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })))
 })
 
-function setup(params: { database?: string; tablePrefix?: string; onKeep?: () => void } = {}) {
+function setup(
+  params: {
+    database?: string
+    tablePrefix?: string
+    onKeep?: () => void
+    secondStore?: boolean
+  } = {},
+) {
   const adapter = new NodeSQLiteAdapter({ database: params.database ?? ':memory:' })
   const db = new HozonDB({ adapter, tablePrefix: params.tablePrefix })
   instances.push(db)
@@ -76,6 +83,9 @@ function setup(params: { database?: string; tablePrefix?: string; onKeep?: () =>
     }),
   }
   db.register(store)
+  if (params.secondStore) {
+    db.register({ ...store, name: 'widget-reader', dependsOn: ['widgets'], migrations: {} })
+  }
   const names = () => {
     return adapter.database
       .prepare('SELECT name FROM sqlite_master ORDER BY name')
@@ -175,6 +185,23 @@ test('default prefix keeps hozon_ names', async () => {
     expect.arrayContaining(['hozon_widgets', 'hozon_widgets_id', 'hozon_widgets_migration']),
   )
   expect(context()?.tablePrefix).toBe('hozon')
+})
+
+test('two stores sharing a keep-table serialize concurrent calls in one transaction', async () => {
+  const { db, adapter, keepOrder } = setup({ tablePrefix: 'app', secondStore: true })
+  await db.withTransaction<{ widgets: WidgetsAPI; 'widget-reader': WidgetsAPI }, void>(
+    async (tx) => {
+      const first = await tx.getStore('widgets')
+      const second = await tx.getStore('widget-reader')
+      expect(first).not.toBe(second)
+      expect(await Promise.all([first.keep(['a']), second.keep(['b', 'c'])])).toEqual([
+        ['a'],
+        ['b', 'c'],
+      ])
+    },
+  )
+  expect(keepOrder).toEqual(['start-a', 'end-a', 'start-b,c', 'end-b,c'])
+  expect(adapter.database.prepare('SELECT name FROM sqlite_temp_master').all()).toEqual([])
 })
 
 test('migration down drops prefixed tables', async () => {

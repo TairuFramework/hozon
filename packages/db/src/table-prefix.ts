@@ -1,5 +1,6 @@
 import type {
   AggregateFunctionNode,
+  CommonTableExpressionNode,
   FunctionNode,
   KyselyPlugin,
   OperationNode,
@@ -7,10 +8,12 @@ import type {
   PluginTransformResultArgs,
   QueryId,
   QueryResult,
+  RawNode,
   ReferenceNode,
   RootOperationNode,
   SelectModifierNode,
   UnknownRow,
+  WithNode,
 } from 'kysely'
 import {
   AliasNode,
@@ -55,7 +58,9 @@ class TablePrefixTransformer extends OperationNodeTransformer {
   #tables = new Set<string>()
   #ctes = new Set<string>()
   #aliases = new Set<string>()
-  #prefixedTables = new WeakSet<TableNode>()
+  #writeTargets = new Set<IdentifierNode>()
+  #writeNames = new Set<string>()
+  #prefixedIdentifiers = new WeakSet<IdentifierNode>()
 
   constructor(prefix: string) {
     super()
@@ -63,41 +68,62 @@ class TablePrefixTransformer extends OperationNodeTransformer {
   }
 
   override transformNodeImpl<TNode extends OperationNode>(node: TNode, queryId?: QueryId): TNode {
-    if (!isRootOperationNode(node)) {
+    if (!isRootOperationNode(node) || (node.kind === 'RawNode' && this.nodeStack.length > 1)) {
       return super.transformNodeImpl(node, queryId)
     }
+    return this.#transformScope(node, queryId)
+  }
 
+  #transformScope<TNode extends RootOperationNode>(node: TNode, queryId?: QueryId): TNode {
     const previousTables = this.#tables
     const previousCTEs = this.#ctes
     const previousAliases = this.#aliases
+    const previousWriteTargets = this.#writeTargets
+    const previousWriteNames = this.#writeNames
     this.#tables = new Set(previousTables)
     this.#ctes = new Set(previousCTEs)
     this.#aliases = new Set(previousAliases)
+    this.#writeTargets = new Set()
+    this.#writeNames = new Set(previousWriteNames)
     try {
+      let withNode: WithNode | undefined
       if ('with' in node && node.with) {
-        for (const expression of node.with.expressions) {
-          this.#ctes.add(expression.name.table.table.identifier.name)
-        }
+        withNode = this.#transformWithScope(node.with, queryId)
       }
       this.#collectTables(node)
-      return super.transformNodeImpl(node, queryId)
+      this.#collectWriteTargets(node)
+      const transformed = super.transformNodeImpl(
+        withNode ? { ...node, with: undefined } : node,
+        queryId,
+      )
+      return withNode ? { ...transformed, with: withNode } : transformed
     } finally {
       // Nested queries inherit visible names without leaking them back into the outer query.
       this.#tables = previousTables
       this.#ctes = previousCTEs
       this.#aliases = previousAliases
+      this.#writeTargets = previousWriteTargets
+      this.#writeNames = previousWriteNames
     }
   }
 
   override transformTable(node: TableNode, queryId?: QueryId): TableNode {
     // Revisit plugged subqueries for correlated references, but keep their physical tables.
-    if (this.#prefixedTables.has(node)) return node
+    // Kysely transformers clone containers but retain immutable identifier leaves.
+    if (this.#prefixedIdentifiers.has(node.table.identifier)) return node
     const name = node.table.identifier.name
-    if (node.table.schema !== undefined || this.#ctes.has(name)) {
+    if (this.#ctes.has(name) && !this.#writeTargets.has(node.table.identifier)) {
       return super.transformTable(node, queryId)
     }
+    return this.#prefixTable(node)
+  }
+
+  #prefixTable(node: TableNode): TableNode {
+    if (node.table.schema !== undefined || this.#prefixedIdentifiers.has(node.table.identifier))
+      return node
+    const name = node.table.identifier.name
     const transformed = TableNode.create(`${this.#prefix}_${name}`)
-    this.#prefixedTables.add(transformed)
+    this.#prefixedIdentifiers.add(transformed.table.identifier)
     return transformed
   }
 
@@ -109,7 +135,9 @@ class TablePrefixTransformer extends OperationNodeTransformer {
         node.table &&
         this.#tables.has(node.table.table.identifier.name) &&
         !this.#aliases.has(node.table.table.identifier.name)
-          ? this.transformNode(node.table, queryId)
+          ? this.#writeNames.has(node.table.table.identifier.name)
+            ? this.#prefixTable(node.table)
+            : this.transformNode(node.table, queryId)
           : node.table,
     }
   }
@@ -161,6 +189,7 @@ class TablePrefixTransformer extends OperationNodeTransformer {
   }
 
   #collectTables(node: RootOperationNode): void {
+    this.#collectRawTables(node)
     if ('name' in node && node.name && SchemableIdentifierNode.is(node.name)) {
       this.#tables.add(node.name.identifier.name)
     }
@@ -177,10 +206,80 @@ class TablePrefixTransformer extends OperationNodeTransformer {
     }
   }
 
+  #transformWithScope(node: WithNode, queryId?: QueryId): WithNode {
+    // Nonrecursive definitions see preceding CTEs, not their own name or later names.
+    if (node.recursive) {
+      for (const expression of node.expressions) {
+        this.#ctes.add(expression.name.table.table.identifier.name)
+      }
+    }
+    const expressions: Array<CommonTableExpressionNode> = []
+    for (const expression of node.expressions) {
+      expressions.push({
+        ...expression,
+        expression:
+          expression.expression.kind === 'RawNode'
+            ? Object.freeze(this.#transformScope(expression.expression as RawNode, queryId))
+            : this.transformNode(expression.expression, queryId),
+      })
+      this.#ctes.add(expression.name.table.table.identifier.name)
+    }
+    return { ...node, expressions }
+  }
+
+  #collectWriteTargets(node: RootOperationNode): void {
+    const collect = (table: OperationNode): void => {
+      if (TableNode.is(table)) {
+        this.#writeTargets.add(table.table.identifier)
+        this.#writeNames.add(table.table.identifier.name)
+      } else if (AliasNode.is(table)) {
+        collect(table.node)
+      } else if (ListNode.is(table)) {
+        for (const item of table.items) collect(item)
+      }
+    }
+    if (node.kind === 'InsertQueryNode' || node.kind === 'MergeQueryNode') {
+      if (node.into) collect(node.into)
+    } else if (node.kind === 'UpdateQueryNode') {
+      if (node.table) collect(node.table)
+    } else if (node.kind === 'DeleteQueryNode') {
+      for (const table of node.from.froms) collect(table)
+    }
+  }
+
+  #collectRawTables(node: OperationNode): void {
+    // Qualifiers are references, not declarations. Nested queries collect their own scope.
+    if (node.kind === 'ReferenceNode' || node.kind === 'WithNode') return
+    if (node.kind === 'RawNode') {
+      for (const parameter of (node as RawNode).parameters) {
+        if (AliasNode.is(parameter)) {
+          this.#collectRawTables(parameter.node)
+          this.#collectTableExpression(parameter)
+          continue
+        }
+        this.#collectTableExpression(parameter)
+        if (!isRootOperationNode(parameter) || parameter.kind === 'RawNode')
+          this.#collectRawTables(parameter)
+      }
+      return
+    }
+    for (const value of Object.values(node)) {
+      for (const child of Array.isArray(value) ? value : [value]) {
+        if (child && typeof child === 'object' && 'kind' in child) {
+          const operation = child as OperationNode
+          if (!isRootOperationNode(operation) || operation.kind === 'RawNode')
+            this.#collectRawTables(operation)
+        }
+      }
+    }
+  }
+
   #collectTableExpression(node: OperationNode): void {
     if (TableNode.is(node)) {
       this.#tables.add(node.table.identifier.name)
       this.#aliases.delete(node.table.identifier.name)
+      // Local read bindings shadow enclosing write qualifiers in correlated subqueries.
+      this.#writeNames.delete(node.table.identifier.name)
     } else if (AliasNode.is(node)) {
       if (TableNode.is(node.node)) this.#tables.add(node.node.table.identifier.name)
       if (IdentifierNode.is(node.alias)) this.#aliases.add(node.alias.name)

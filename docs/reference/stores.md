@@ -150,13 +150,17 @@ Omitted `encrypted` and `pinned` default to `false`. Omitted `keyID` defaults to
 6. Call `finalizeTransfer(blobID)` after recording every manifest index.
 
 `beginTransfer` preserves existing manifest rows and transfer progress.
+Retries must use the existing chunk size once a manifest exists.
+Changing it rejects with `Cannot change chunk size for blob <blobID>: manifest already exists`, leaving metadata and progress unchanged.
 `recordTransferChunk` is idempotent. Present indexes return in ascending order.
+It rejects unknown manifest indexes with `Blob chunk <blobID> at index <index> not found`.
 `finalizeTransfer` sets the entry to `local` and purges transfer progress, preserving the manifest.
 It rejects missing chunks with `Cannot finalize transfer <blobID>: <count> chunk(s) missing`.
-Both `beginTransfer` and `finalizeTransfer` reject absent entries with `Blob entry <blobID> not found`.
+`beginTransfer`, `recordTransferChunk`, and `finalizeTransfer` reject absent entries with `Blob entry <blobID> not found`.
 Failed finalisation leaves state and progress unchanged.
+Manifest chunks reference entries, and transfer rows reference manifest chunks, with cascading deletion preventing orphan progress.
 
-`insertEntry`, `deleteEntry`, `beginTransfer`, and `finalizeTransfer` use `withStoreTransaction` and reuse an enclosing transaction.
+`insertEntry`, `deleteEntry`, `beginTransfer`, `recordTransferChunk`, and `finalizeTransfer` use `withStoreTransaction` and reuse an enclosing transaction.
 Manifest inserts batch 166 rows, binding three parameters per row, below the 500-parameter limit.
 
 ## Blob backends
@@ -180,8 +184,10 @@ type BlobBackend = {
 ```
 
 `createStaging` accepts sequential writes. Close the writer before committing.
+Reopening it resets existing staging bytes. `writeChunk` preserves other staged ranges for resumable downloads.
 `writeChunk` creates staging when absent and writes at an absolute byte offset, supporting out-of-order chunks.
 `commit` promotes staging to a key. An existing key remains unchanged, and its redundant staging is discarded.
+Concurrent competing uploads preserve the first published bytes. Duplicate commits of the same staging area are idempotent.
 `abortStaging` removes abandoned staging. `delete` removes committed bytes and tolerates absent keys.
 `BlobRange` uses inclusive start and end offsets.
 
@@ -195,10 +201,13 @@ It copies buffers on write and read, isolating stored bytes from caller mutation
 
 `@hozon/blob-node-fs` exports `FSBlobBackend`. `new FSBlobBackend(root)` requires Node.js 24 or later.
 Staging files live at `<root>/staging/<stagingID>`. Committed files live at `<root>/content/<key>`.
-Commit uses an atomic rename within one filesystem. Sequential staging copies chunks before passing them to Node streams.
+Commit atomically publishes a hard link without replacing existing content, then removes staging.
+Staging and content must share a filesystem supporting hard links, including NTFS on Windows.
+Sequential staging copies chunks before passing them to Node streams.
+Positioned writes complete all bytes and reject zero progress.
 `getURL` returns a file URL for existing content, or `null` when absent.
 `has` returns `false` only for `ENOENT` and propagates other filesystem errors.
 
 Keys and staging IDs must be nonempty and differ from `.`.
-They must contain none of `..`, `/`, `\\`, `:`, or NUL.
+They must contain none of `..`, `/`, `\`, `:`, or NUL.
 Invalid names reject with `Invalid blob key: <JSON.stringify(value)>`.

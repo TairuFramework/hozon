@@ -23,5 +23,9 @@ Invalid names reject with `Invalid blob key: <JSON.stringify(value)>`.
 `getURL` returns a file URL for existing content, or `null` when absent.
 `has` returns `false` only for `ENOENT` and propagates other filesystem errors.
 Sequential staging copies chunks before passing them to Node streams.
+Reopening `createStaging` truncates previous bytes. Positioned `writeChunk` calls preserve other ranges and complete all bytes, rejecting zero progress.
+`commit` atomically publishes a hard link without replacing existing content, then removes staging.
+Concurrent competing uploads preserve the first published bytes. Duplicate commits of the same staging area are idempotent.
+Staging and content directories must share a filesystem that supports hard links, including NTFS on Windows.
 
 See the [store reference](../../docs/reference/stores.md#fsblobbackend).

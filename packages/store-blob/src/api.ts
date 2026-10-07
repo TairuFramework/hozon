@@ -90,12 +90,23 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
     },
     async beginTransfer(blobID, chunkSize, chunks) {
       await withStoreTransaction(db, async (trx) => {
-        const entry = await trx
+        let query = trx
           .selectFrom('blob_entries')
-          .select('blob_id')
+          .select(['blob_id', 'chunk_size'])
           .where('blob_id', '=', blobID)
-          .executeTakeFirst()
+        if (adapter.kind === 'postgres') query = query.forUpdate()
+        const entry = await query.executeTakeFirst()
         if (entry === undefined) throw new Error(`Blob entry ${blobID} not found`)
+        if (entry.chunk_size !== chunkSize) {
+          const manifest = await trx
+            .selectFrom('blob_chunks')
+            .select('index')
+            .where('blob_id', '=', blobID)
+            .executeTakeFirst()
+          if (manifest !== undefined) {
+            throw new Error(`Cannot change chunk size for blob ${blobID}: manifest already exists`)
+          }
+        }
         await trx
           .updateTable('blob_entries')
           .set({ chunk_size: chunkSize, state: 'partial' })
@@ -105,11 +116,26 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
       })
     },
     async recordTransferChunk(blobID, index) {
-      await db
-        .insertInto('blob_transfers')
-        .values({ blob_id: blobID, index })
-        .onConflict((oc) => oc.columns(['blob_id', 'index']).doNothing())
-        .execute()
+      await withStoreTransaction(db, async (trx) => {
+        const entry = await trx
+          .selectFrom('blob_entries')
+          .select('blob_id')
+          .where('blob_id', '=', blobID)
+          .executeTakeFirst()
+        if (entry === undefined) throw new Error(`Blob entry ${blobID} not found`)
+        const chunk = await trx
+          .selectFrom('blob_chunks')
+          .select('index')
+          .where('blob_id', '=', blobID)
+          .where('index', '=', index)
+          .executeTakeFirst()
+        if (chunk === undefined) throw new Error(`Blob chunk ${blobID} at index ${index} not found`)
+        await trx
+          .insertInto('blob_transfers')
+          .values({ blob_id: blobID, index })
+          .onConflict((oc) => oc.columns(['blob_id', 'index']).doNothing())
+          .execute()
+      })
     },
     async getPresentChunkIndexes(blobID) {
       const rows = await db

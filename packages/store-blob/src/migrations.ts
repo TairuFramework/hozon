@@ -23,12 +23,26 @@ export function blobStoreMigrations(ctx: MigrationContext): Record<string, Migra
           .addColumn('index', 'integer', (column) => column.notNull())
           .addColumn('digest', ctx.types.binary, (column) => column.notNull())
           .addPrimaryKeyConstraint(`${ctx.tablePrefix}_blob_chunks_pkey`, ['blob_id', 'index'])
+          .addForeignKeyConstraint(
+            `${ctx.tablePrefix}_blob_chunks_entry_fkey`,
+            ['blob_id'],
+            'blob_entries',
+            ['blob_id'],
+            (constraint) => constraint.onDelete('cascade'),
+          )
           .execute()
         await db.schema
           .createTable('blob_transfers')
           .addColumn('blob_id', ctx.types.text, (column) => column.notNull())
           .addColumn('index', 'integer', (column) => column.notNull())
           .addPrimaryKeyConstraint(`${ctx.tablePrefix}_blob_transfers_pkey`, ['blob_id', 'index'])
+          .addForeignKeyConstraint(
+            `${ctx.tablePrefix}_blob_transfers_chunk_fkey`,
+            ['blob_id', 'index'],
+            'blob_chunks',
+            ['blob_id', 'index'],
+            (constraint) => constraint.onDelete('cascade'),
+          )
           .execute()
       },
       async down(db) {

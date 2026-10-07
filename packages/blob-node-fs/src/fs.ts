@@ -1,12 +1,12 @@
 import { constants, createReadStream, createWriteStream } from 'node:fs'
-import { mkdir, open, rename, rm, stat } from 'node:fs/promises'
+import { link, mkdir, open, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import { pathToFileURL } from 'node:url'
 import type { BlobBackend, BlobRange } from '@hozon/blob-backend'
 
 // Filesystem BlobBackend. Staged uploads land under `<root>/staging`, committed
-// blobs under `<root>/content/<key>`. Commit is an atomic rename within the same
+// blobs under `<root>/content/<key>`. Commit publishes a hard link within the same
 // filesystem. Names must be nonempty, not `.`, and contain no `..`,
 // path separators, colons, or NUL bytes.
 function assertSafeName(value: string): void {
@@ -70,7 +70,17 @@ export class FSBlobBackend implements BlobBackend {
     // possibly-sparse file as out-of-order ranges arrive.
     const handle = await open(this.#stagingPath(stagingID), constants.O_RDWR | constants.O_CREAT)
     try {
-      await handle.write(bytes, 0, bytes.length, offset)
+      let written = 0
+      while (written < bytes.length) {
+        const { bytesWritten } = await handle.write(
+          bytes,
+          written,
+          bytes.length - written,
+          offset + written,
+        )
+        if (bytesWritten === 0) throw new Error(`No progress writing staging area ${stagingID}`)
+        written += bytesWritten
+      }
     } finally {
       await handle.close()
     }
@@ -78,11 +88,18 @@ export class FSBlobBackend implements BlobBackend {
 
   async commit(stagingID: string, key: string): Promise<void> {
     await this.#ensureDirs()
-    if (await this.has(key)) {
-      await rm(this.#stagingPath(stagingID), { force: true })
-      return
+    const stagingPath = this.#stagingPath(stagingID)
+    const contentPath = this.#contentPath(key)
+    try {
+      // link refuses to replace existing content on both POSIX and Windows.
+      await link(stagingPath, contentPath)
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error)) throw error
+      // Another commit may have published and removed this staging file already.
+      if (error.code !== 'EEXIST' && !(error.code === 'ENOENT' && (await this.has(key))))
+        throw error
     }
-    await rename(this.#stagingPath(stagingID), this.#contentPath(key))
+    await rm(stagingPath, { force: true })
   }
 
   async abortStaging(stagingID: string): Promise<void> {

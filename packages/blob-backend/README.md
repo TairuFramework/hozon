@@ -20,7 +20,9 @@ const stream = await backend.createReadStream('blob-key', { start: 0, end: 1 })
 
 Implement `BlobBackend` for other byte storage systems. `BlobRange` uses inclusive byte offsets.
 `writeChunk` stages bytes by offset, including chunks received out of order.
+`createStaging` resets existing staging bytes when reopening a sequential upload. `writeChunk` preserves other staged ranges for resumable downloads.
 `commit` preserves an existing key and discards the staging area. `abortStaging` discards abandoned uploads.
+Concurrent duplicate commits preserve the first published bytes, even when competing uploads contain different bytes.
 
 `MemoryBlobBackend` keeps bytes in memory without persistence. Its `getURL` method always returns `null`.
 It copies buffers on write and read, isolating stored bytes from caller mutations.

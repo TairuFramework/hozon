@@ -92,10 +92,30 @@ describe.each(backends)('$name', ({ create }) => {
   })
 
   test('commit is a no-op when the key already exists', async () => {
-    await writeBlob(backend, 'stg-dup', BLOB)
+    await writeBlob(backend, 'stg-dup', new Uint8Array([9, 8, 7]))
     await backend.commit('stg-dup', key)
     const read = await drain(await backend.createReadStream(key))
     expect(Array.from(read)).toEqual(Array.from(BLOB))
+    await expect(backend.commit('stg-dup', 'discarded-duplicate')).rejects.toThrow()
+  })
+
+  test('reopening sequential staging discards a longer previous upload', async () => {
+    await writeBlob(backend, 'stg-reopened', new Uint8Array([1, 2, 3]))
+    await writeBlob(backend, 'stg-reopened', new Uint8Array([4]))
+    await backend.commit('stg-reopened', 'reopened-key')
+    expect(Array.from(await drain(await backend.createReadStream('reopened-key')))).toEqual([4])
+  })
+
+  test('concurrent duplicate commits of one staging area are idempotent', async () => {
+    await writeBlob(backend, 'stg-concurrent-duplicate', new Uint8Array([1, 2, 3]))
+    await Promise.all([
+      backend.commit('stg-concurrent-duplicate', 'concurrent-duplicate'),
+      backend.commit('stg-concurrent-duplicate', 'concurrent-duplicate'),
+    ])
+    expect(Array.from(await drain(await backend.createReadStream('concurrent-duplicate')))).toEqual(
+      [1, 2, 3],
+    )
+    await expect(backend.commit('stg-concurrent-duplicate', 'duplicate-cleaned')).rejects.toThrow()
   })
 
   test('abortStaging discards staged bytes', async () => {

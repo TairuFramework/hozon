@@ -10,6 +10,8 @@ type Tables = {
   a: { id: number }
   b: { id: number }
   items: { id: number; value: string }
+  kubun_items: { id: number; value: string }
+  item_view: { id: number; value: string }
   'main.logs': { seq: number }
 }
 
@@ -221,4 +223,179 @@ test('returns the query result unchanged', async () => {
   expect(
     await new TablePrefixPlugin('kubun').transformResult({ queryId: createQueryId(), result }),
   ).toBe(result)
+})
+
+test('creates an executable view from a plugged query without double prefixing', async () => {
+  const db = setup()
+  await db.schema
+    .createTable('items')
+    .addColumn('id', 'integer')
+    .addColumn('value', 'text')
+    .execute()
+  await db.insertInto('items').values({ id: 1, value: 'view row' }).execute()
+  await db.schema
+    .createView('item_view')
+    .as(db.selectFrom('items').selectAll().where('id', '=', 1))
+    .execute()
+  expect(await db.withoutPlugins().selectFrom('item_view').selectAll().execute()).toEqual([
+    { id: 1, value: 'view row' },
+  ])
+})
+
+test('prefixes logical names that already start with the prefix in views', async () => {
+  const db = setup()
+  await db.schema
+    .createTable('kubun_items')
+    .addColumn('id', 'integer')
+    .addColumn('value', 'text')
+    .execute()
+  await db.insertInto('kubun_items').values({ id: 2, value: 'logical prefix' }).execute()
+  await db.schema.createView('item_view').as(db.selectFrom('kubun_items').selectAll()).execute()
+  expect(await db.withoutPlugins().selectFrom('item_view').selectAll().execute()).toEqual([
+    { id: 2, value: 'logical prefix' },
+  ])
+})
+
+test('a nonrecursive CTE reads the physical table with the same name', async () => {
+  const db = setup()
+  await db.schema
+    .createTable('items')
+    .addColumn('id', 'integer')
+    .addColumn('value', 'text')
+    .execute()
+  await db.insertInto('items').values({ id: 1, value: 'physical row' }).execute()
+  expect(
+    await db
+      .with('items', (qb) => qb.selectFrom('items').selectAll())
+      .selectFrom('items')
+      .selectAll()
+      .execute(),
+  ).toEqual([{ id: 1, value: 'physical row' }])
+})
+
+test('CTEs remain visible to later definitions and recursive references', async () => {
+  const db = setup()
+  const rows = await db
+    .with('first', () => sql<{ id: number }>`(select 1 as id)`)
+    .with('second', (qb) => qb.selectFrom('first').selectAll())
+    .selectFrom('second')
+    .selectAll()
+    .execute()
+  expect(rows).toEqual([{ id: 1 }])
+  const recursive = await db
+    .withRecursive('numbers', (qb) =>
+      qb
+        .selectNoFrom(sql<number>`1`.as('id'))
+        .unionAll(
+          qb.selectFrom('numbers').select(sql<number>`id + 1`.as('id')).where('id', '<', 3),
+        ),
+    )
+    .selectFrom('numbers')
+    .selectAll()
+    .execute()
+  expect(recursive).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }])
+})
+
+test('CTE names do not exempt physical write targets', async () => {
+  const db = setup()
+  await db.schema
+    .createTable('items')
+    .addColumn('id', 'integer')
+    .addColumn('value', 'text')
+    .execute()
+  await db
+    .with('items', () => sql<{ id: number; value: string }>`(select 1 as id, 'cte row' as value)`)
+    .insertInto('items')
+    .columns(['id', 'value'])
+    .expression((eb) => eb.selectFrom('items').selectAll())
+    .execute()
+  expect(await db.selectFrom('items').selectAll().execute()).toEqual([{ id: 1, value: 'cte row' }])
+  await db
+    .with('items', () => sql<{ id: number }>`(select 2 as id)`)
+    .updateTable('items')
+    .set({ value: 'updated' })
+    .where('items.id', '=', 1)
+    .execute()
+  expect(await db.selectFrom('items').selectAll().execute()).toEqual([{ id: 1, value: 'updated' }])
+  await db
+    .with('items', () => sql<{ id: number }>`(select 2 as id)`)
+    .deleteFrom('items')
+    .where('items.id', '=', 1)
+    .execute()
+  expect(await db.selectFrom('items').selectAll().execute()).toEqual([])
+})
+
+test('raw SQL rewrites qualified references to explicit table parameters', async () => {
+  const db = setup()
+  await db.schema
+    .createTable('items')
+    .addColumn('id', 'integer')
+    .addColumn('value', 'text')
+    .execute()
+  await db.insertInto('items').values({ id: 1, value: 'raw row' }).execute()
+  expect(
+    (
+      await sql<{ id: number }>`SELECT ${sql.ref('items.id')} FROM ${sql.table('items')}`.execute(
+        db,
+      )
+    ).rows,
+  ).toEqual([{ id: 1 }])
+  expect(
+    (
+      await sql<{
+        id: number
+      }>`SELECT ${sql.ref('items.id')} FROM ${sql.table('items').as('items')}`.execute(db)
+    ).rows,
+  ).toEqual([{ id: 1 }])
+})
+
+test('correlated write qualifiers survive nested scopes while local CTE reads shadow them', async () => {
+  const db = setup()
+  await db.schema
+    .createTable('items')
+    .addColumn('id', 'integer')
+    .addColumn('value', 'text')
+    .execute()
+  await db.schema.createTable('a').addColumn('id', 'integer').execute()
+  await db.insertInto('items').values({ id: 1, value: 'original' }).execute()
+  await db.insertInto('a').values({ id: 3 }).execute()
+  await db
+    .with('items', () => sql<{ id: number }>`(select 2 as id)`)
+    .updateTable('items')
+    .set((eb) => ({
+      value: eb
+        .selectFrom('a')
+        .select(sql<string>`cast(${sql.ref('items.id')} as text)`.as('value')),
+    }))
+    .execute()
+  expect(await db.selectFrom('items').selectAll().execute()).toEqual([{ id: 1, value: '1' }])
+  await db
+    .with('items', () => sql<{ id: number }>`(select 2 as id)`)
+    .updateTable('items')
+    .set((eb) => ({
+      value: eb
+        .selectFrom('items')
+        .select(sql<string>`cast(${sql.ref('items.id')} as text)`.as('value')),
+    }))
+    .execute()
+  expect(await db.selectFrom('items').selectAll().execute()).toEqual([{ id: 1, value: '2' }])
+})
+
+test('raw CTE definitions collect explicit tables before rewriting qualifiers', async () => {
+  const db = setup()
+  await db.schema
+    .createTable('items')
+    .addColumn('id', 'integer')
+    .addColumn('value', 'text')
+    .execute()
+  await db.insertInto('items').values({ id: 1, value: 'raw CTE' }).execute()
+  const rows = await db
+    .with(
+      'recent',
+      () => sql<{ id: number }>`(select ${sql.ref('items.id')} from ${sql.table('items')})`,
+    )
+    .selectFrom('recent')
+    .selectAll()
+    .execute()
+  expect(rows).toEqual([{ id: 1 }])
 })
