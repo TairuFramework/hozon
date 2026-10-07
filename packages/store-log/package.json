@@ -1,6 +1,6 @@
 {
   "name": "@hozon/store-log",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Portable structured log store for Hozon",
   "repository": {
     "type": "git",
@@ -30,13 +30,13 @@
   "dependencies": {
     "@hozon/adapter": "workspace:^",
     "@hozon/db": "workspace:^",
-    "@sozai/json": "catalog:",
-    "kysely": "catalog:"
+    "@sozai/json": "catalog:"
   },
   "devDependencies": {
     "@hozon/node-sqlite": "workspace:^",
     "@types/node": "catalog:",
     "del-cli": "catalog:",
+    "kysely": "catalog:",
     "vitest": "catalog:"
   },
   "publishConfig": {

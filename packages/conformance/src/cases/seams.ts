@@ -1,5 +1,5 @@
 import type { ArrayPresenceMode } from '@hozon/adapter'
-import { type Kysely, sql } from 'kysely'
+import { type Kysely, sql } from '@hozon/db'
 
 import * as assert from '../assert.js'
 import type { CaseContext, ConformanceCase } from '../runner.js'

@@ -1,6 +1,6 @@
 import type { Adapter } from '@hozon/adapter'
+import type { Kysely } from '@hozon/db'
 import { chunk, withKeepSet, withStoreTransaction } from '@hozon/db'
-import type { Kysely } from 'kysely'
 
 import type { TelemetryTables } from './tables.js'
 import type { TelemetryStore } from './types.js'

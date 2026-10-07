@@ -1,7 +1,6 @@
-import type { StoreDefinition } from '@hozon/db'
+import type { Kysely, StoreDefinition } from '@hozon/db'
 import type { StoredLog } from '@hozon/store-log'
 import type { StoredSpan } from '@hozon/store-telemetry'
-import type { Kysely } from 'kysely'
 
 // biome-ignore lint/suspicious/noExplicitAny: raw access to tables created by the tests.
 export type RawDB = Kysely<any>

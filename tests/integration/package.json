@@ -27,7 +27,6 @@
     "@opentelemetry/context-async-hooks": "catalog:",
     "@opentelemetry/sdk-trace-base": "catalog:",
     "hozon-test-scenarios": "workspace:^",
-    "kysely": "catalog:",
     "postgres": "catalog:"
   },
   "devDependencies": {

@@ -1,6 +1,6 @@
 import type { Adapter } from '@hozon/adapter'
+import type { Kysely } from '@hozon/db'
 import { chunk, withStoreTransaction } from '@hozon/db'
-import type { Kysely } from 'kysely'
 
 import type { BlobTables } from './tables.js'
 import type { BlobChunkInput, BlobStoreAPI } from './types.js'

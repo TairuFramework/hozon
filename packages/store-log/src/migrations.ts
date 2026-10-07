@@ -1,6 +1,5 @@
-import type { MigrationContext } from '@hozon/db'
-import { sql } from 'kysely'
-import type { Migration } from 'kysely/migration'
+import type { Migration, MigrationContext } from '@hozon/db'
+import { sql } from '@hozon/db'
 
 export function logStoreMigrations(ctx: MigrationContext): Record<string, Migration> {
   return {

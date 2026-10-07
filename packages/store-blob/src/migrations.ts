@@ -1,5 +1,4 @@
-import type { MigrationContext } from '@hozon/db'
-import type { Migration } from 'kysely/migration'
+import type { Migration, MigrationContext } from '@hozon/db'
 
 export function blobStoreMigrations(ctx: MigrationContext): Record<string, Migration> {
   return {

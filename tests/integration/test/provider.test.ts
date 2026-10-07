@@ -1,9 +1,9 @@
 import type { HozonDB } from '@hozon/db'
+import { sql } from '@hozon/db'
 import { NodeSQLiteAdapter } from '@hozon/node-sqlite'
 import { PostgresAdapter } from '@hozon/postgres'
 import { resolveDB } from '@hozon/provider'
 import { getLogStore, logStoreDefinition } from '@hozon/store-log'
-import { sql } from 'kysely'
 import { afterEach, describe, expect, test } from 'vitest'
 
 import { backends, backendsNamed } from '../src/backends.js'

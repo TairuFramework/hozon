@@ -1,6 +1,5 @@
-import { HozonDB, withKeepSet } from '@hozon/db'
+import { HozonDB, sql, withKeepSet } from '@hozon/db'
 import { getLogStore, type LogStore, logStoreDefinition, type StoredLog } from '@hozon/store-log'
-import { sql } from 'kysely'
 import { afterEach, describe, expect, test } from 'vitest'
 
 import { backends } from '../src/backends.js'

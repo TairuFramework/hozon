@@ -1,7 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { DatabaseSync } from 'node:sqlite'
-import { HozonDB, SchemaVersionError, type StoreDefinition } from '@hozon/db'
-import { Kysely } from 'kysely'
+import { HozonDB, Kysely, SchemaVersionError, type StoreDefinition } from '@hozon/db'
 import { afterEach, describe, expect, test } from 'vitest'
 
 import { type Backend, backends } from '../src/backends.js'

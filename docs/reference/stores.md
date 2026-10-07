@@ -4,6 +4,7 @@ All stores register through `HozonDB` and use logical table names.
 The database's `tablePrefix` applies to store tables, including migration and temporary keep-set tables.
 The default prefix is `hozon`, preserving existing physical names `hozon_logs` and `hozon_spans`.
 See [table prefix rules](db.md#table-prefixes) for store author requirements.
+Store packages import Kysely types, `sql`, and `Migration` from `@hozon/db`, not from `kysely`; see the [re-exported Kysely surface](db.md).
 
 | Store | Package | Name | Logical tables | Reference |
 | --- | --- | --- | --- | --- |

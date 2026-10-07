@@ -1,9 +1,8 @@
 import { existsSync } from 'node:fs'
 import { rm } from 'node:fs/promises'
-import { HozonDB, SchemaVersionError, type StoreDefinition } from '@hozon/db'
+import { HozonDB, Kysely, SchemaVersionError, type StoreDefinition } from '@hozon/db'
 import { getLogStore, logStoreDefinition } from '@hozon/store-log'
 import { getTelemetryStore, telemetryStoreDefinition } from '@hozon/store-telemetry'
-import { Kysely } from 'kysely'
 import { afterEach, describe, expect, test } from 'vitest'
 
 import { backends, backendsNamed } from '../src/backends.js'

@@ -2,6 +2,8 @@
 
 `@hozon/db` exports `HozonDB`, `HozonDBParams`, `MigrationContext`, `StoreDefinition`, `StoreProvider`, and `TablePrefixPlugin`. It also exports `HozonDBClosedError`, `InvalidTablePrefixError`, `SavepointOverlapError`, `SchemaVersionError`, `chunk`, `withKeepSet`, and `withStoreTransaction`.
 
+It re-exports the Kysely surface stores need, so store packages do not depend on `kysely` directly: the `Kysely` class and `sql` tag, and the types `ColumnType`, `Expression`, `Generated`, `Insertable`, `Migration` (from `kysely/migration`), `RawBuilder`, `Selectable`, `SelectQueryBuilder`, `Transaction`, and `Updateable`. Dialect authors still depend on `kysely` for `Dialect` and `Driver`.
+
 ```ts
 type HozonDBParams = { adapter: Adapter; logger?: Logger; tablePrefix?: string }
 type MigrationContext = {

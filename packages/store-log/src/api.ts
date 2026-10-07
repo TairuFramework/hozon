@@ -1,6 +1,6 @@
 import type { Adapter } from '@hozon/adapter'
+import type { Kysely } from '@hozon/db'
 import { chunk, withKeepSet, withStoreTransaction } from '@hozon/db'
-import type { Kysely } from 'kysely'
 
 import { categoryRange, encodeCategory } from './category.js'
 import type { LogTables } from './tables.js'

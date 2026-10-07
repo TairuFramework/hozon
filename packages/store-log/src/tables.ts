@@ -1,4 +1,4 @@
-import type { ColumnType, Generated } from 'kysely'
+import type { ColumnType, Generated } from '@hozon/db'
 
 import type { LogLevel, StoredLog } from './types.js'
 

@@ -1,5 +1,4 @@
-import { SchemaVersionError } from '@hozon/db'
-import { Kysely } from 'kysely'
+import { Kysely, SchemaVersionError } from '@hozon/db'
 
 import * as assert from '../assert.js'
 import type { ConformanceCase } from '../runner.js'

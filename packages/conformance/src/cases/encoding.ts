@@ -1,5 +1,5 @@
 import type { ColumnTypes } from '@hozon/adapter'
-import type { Kysely } from 'kysely'
+import type { Kysely } from '@hozon/db'
 
 import * as assert from '../assert.js'
 import type { ConformanceCase } from '../runner.js'
