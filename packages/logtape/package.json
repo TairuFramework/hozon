@@ -1,6 +1,6 @@
 {
   "name": "@hozon/logtape",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Logtape sink for Hozon log stores",
   "repository": {
     "type": "git",

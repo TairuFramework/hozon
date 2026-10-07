@@ -1,6 +1,6 @@
 {
   "name": "@hozon/conformance",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Runner-agnostic adapter and database conformance suite for Hozon",
   "repository": {
     "type": "git",

@@ -2,6 +2,14 @@
   dir: packages/adapter
   intents:
     - initial-adapter
+"@hozon/blob-backend@0.1.0":
+  dir: packages/blob-backend
+  intents:
+    - initial-blob-backend
+"@hozon/blob-node-fs@0.1.0":
+  dir: packages/blob-node-fs
+  intents:
+    - initial-blob-node-fs
 "@hozon/conformance@0.1.0":
   dir: packages/conformance
   intents:
@@ -10,6 +18,10 @@
   dir: packages/db
   intents:
     - initial-db
+"@hozon/db@0.2.0":
+  dir: packages/db
+  intents:
+    - table-prefix-db
 "@hozon/expo@0.1.0":
   dir: packages/expo
   intents:
@@ -38,11 +50,23 @@
   dir: packages/sqlocal
   intents:
     - initial-sqlocal
+"@hozon/store-blob@0.1.0":
+  dir: packages/store-blob
+  intents:
+    - initial-store-blob
 "@hozon/store-log@0.1.0":
   dir: packages/store-log
   intents:
     - initial-store-log
+"@hozon/store-log@0.2.0":
+  dir: packages/store-log
+  intents:
+    - table-prefix-stores
 "@hozon/store-telemetry@0.1.0":
   dir: packages/store-telemetry
   intents:
     - initial-store-telemetry
+"@hozon/store-telemetry@0.2.0":
+  dir: packages/store-telemetry
+  intents:
+    - table-prefix-stores
