@@ -253,7 +253,8 @@ class TablePrefixTransformer extends OperationNodeTransformer {
     if (node.kind === 'RawNode') {
       for (const parameter of (node as RawNode).parameters) {
         if (AliasNode.is(parameter)) {
-          this.#collectRawTables(parameter.node)
+          if (!isRootOperationNode(parameter.node) || parameter.node.kind === 'RawNode')
+            this.#collectRawTables(parameter.node)
           this.#collectTableExpression(parameter)
           continue
         }

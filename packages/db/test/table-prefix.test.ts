@@ -349,6 +349,31 @@ test('raw SQL rewrites qualified references to explicit table parameters', async
   ).toEqual([{ id: 1 }])
 })
 
+test('raw SQL keeps outer aliases when an aliased nested query reads a same-name table', async () => {
+  const db = setup()
+  await db.schema
+    .createTable('items')
+    .addColumn('id', 'integer')
+    .addColumn('value', 'text')
+    .execute()
+  await db.schema.createTable('a').addColumn('id', 'integer').execute()
+  await db.insertInto('items').values({ id: 2, value: 'inner' }).execute()
+  await db.insertInto('a').values({ id: 1 }).execute()
+  const inner = db
+    .selectFrom(sql<{ id: number }>`${sql.table('items')}`.as('i'))
+    .select('i.id')
+    .as('inner_items')
+  expect(
+    (
+      await sql<{
+        id: number
+      }>`SELECT ${sql.ref('kubun_items.id')} FROM ${sql.table('a').as('kubun_items')}, ${inner}`.execute(
+        db,
+      )
+    ).rows,
+  ).toEqual([{ id: 1 }])
+})
+
 test('correlated write qualifiers survive nested scopes while local CTE reads shadow them', async () => {
   const db = setup()
   await db.schema
