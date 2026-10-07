@@ -41,8 +41,8 @@ catalog:
   '@vitejs/plugin-react': ^6.1.1
   del-cli: ^7.0.0
   electron: ^44.5.1
-  expo: ^57.0.26
-  expo-sqlite: ~57.0.3
+  expo: ^57.0.27
+  expo-sqlite: ~57.0.4
   expo-status-bar: ^57.0.1
   kysely: ^0.29.6
   kysely-postgres-js: ^5.0.0
@@ -54,7 +54,7 @@ catalog:
   sqlocal: ^0.18.0
   testcontainers: ^12.1.0
   typescript: ^6.0.3
-  vite: ^8.3.2
+  vite: ^8.3.3
   vitest: 5.0.3
   '@kigu/dev': ^0.3.1
 
