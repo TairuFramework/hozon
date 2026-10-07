@@ -804,6 +804,9 @@ importers:
       '@hozon/provider':
         specifier: workspace:^
         version: link:../../packages/provider
+      '@hozon/store-blob':
+        specifier: workspace:^
+        version: link:../../packages/store-blob
       '@hozon/store-log':
         specifier: workspace:^
         version: link:../../packages/store-log
