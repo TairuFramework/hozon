@@ -53,8 +53,14 @@ function isRootOperationNode(node: OperationNode): node is RootOperationNode {
   return Object.hasOwn(ROOT_NODE_KINDS, node.kind)
 }
 
+export type TablePrefixOptions = {
+  /** Logical table names to leave unprefixed, e.g. dynamic tables near identifier length limits. */
+  unprefixed?: (name: string) => boolean
+}
+
 class TablePrefixTransformer extends OperationNodeTransformer {
   #prefix: string
+  #unprefixed: ((name: string) => boolean) | undefined
   #tables = new Set<string>()
   #ctes = new Set<string>()
   #aliases = new Set<string>()
@@ -62,9 +68,10 @@ class TablePrefixTransformer extends OperationNodeTransformer {
   #writeNames = new Set<string>()
   #prefixedIdentifiers = new WeakSet<IdentifierNode>()
 
-  constructor(prefix: string) {
+  constructor(prefix: string, options: TablePrefixOptions = {}) {
     super()
     this.#prefix = prefix
+    this.#unprefixed = options.unprefixed
   }
 
   override transformNodeImpl<TNode extends OperationNode>(node: TNode, queryId?: QueryId): TNode {
@@ -122,6 +129,7 @@ class TablePrefixTransformer extends OperationNodeTransformer {
     if (node.table.schema !== undefined || this.#prefixedIdentifiers.has(node.table.identifier))
       return node
     const name = node.table.identifier.name
+    if (this.#unprefixed?.(name)) return node
     const transformed = TableNode.create(`${this.#prefix}_${name}`)
     this.#prefixedIdentifiers.add(transformed.table.identifier)
     return transformed
@@ -295,8 +303,8 @@ class TablePrefixTransformer extends OperationNodeTransformer {
 export class TablePrefixPlugin implements KyselyPlugin {
   #transformer: TablePrefixTransformer
 
-  constructor(prefix: string) {
-    this.#transformer = new TablePrefixTransformer(prefix)
+  constructor(prefix: string, options?: TablePrefixOptions) {
+    this.#transformer = new TablePrefixTransformer(prefix, options)
   }
 
   transformQuery({ node, queryId }: PluginTransformQueryArgs): RootOperationNode {

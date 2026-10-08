@@ -223,3 +223,97 @@ test('migration down drops prefixed tables', async () => {
   expect(names()).not.toContain('kubun_widgets')
   expect(names()).not.toContain('kubun_widgets_id')
 })
+
+type DocsAPI = {
+  createModel(id: string): Promise<void>
+  addDoc(model: string, id: string): Promise<void>
+  listDocs(model: string): Promise<Array<string>>
+}
+
+function setupUnprefixed() {
+  const adapter = new NodeSQLiteAdapter({ database: ':memory:' })
+  const db = new HozonDB({ adapter, tablePrefix: 'kubun' })
+  instances.push(db)
+  const store: StoreDefinition<Record<`k_${string}` | 'models', { id: string }>, DocsAPI> = {
+    name: 'docs',
+    unprefixedTables: (name) => name.startsWith('k_'),
+    migrations: {
+      '0-init': {
+        async up(query) {
+          await query.schema
+            .createTable('models')
+            .addColumn('id', 'text', (column) => column.primaryKey())
+            .execute()
+          await query.schema
+            .createTable('k_static')
+            .addColumn('id', 'text', (column) => column.primaryKey())
+            .execute()
+        },
+      },
+    },
+    createAPI: (query) => ({
+      async createModel(id) {
+        await query.schema
+          .createTable(`k_${id}`)
+          .addColumn('id', 'text', (column) => column.primaryKey())
+          .execute()
+        await query.insertInto('models').values({ id }).execute()
+      },
+      async addDoc(model, id) {
+        await query.insertInto(`k_${model}`).values({ id }).execute()
+      },
+      async listDocs(model) {
+        const rows = await query.selectFrom(`k_${model}`).select('id').orderBy('id').execute()
+        return rows.map((row) => row.id)
+      },
+    }),
+  }
+  db.register(store)
+  db.register({
+    name: 'others',
+    migrations: {
+      '0-init': {
+        async up(query) {
+          await query.schema.createTable('k_other').addColumn('id', 'text').execute()
+        },
+      },
+    },
+    createAPI: () => ({}),
+  })
+  const names = () => {
+    return adapter.database
+      .prepare('SELECT name FROM sqlite_master ORDER BY name')
+      .all()
+      .map((row) => row.name)
+  }
+  return { db, names }
+}
+
+test('store unprefixedTables keeps matching tables outside the prefix', async () => {
+  const { db, names } = setupUnprefixed()
+  const docs = await db.getStore<DocsAPI>('docs')
+  await docs.createModel('m1')
+  await docs.addDoc('m1', 'a')
+  expect(await docs.listDocs('m1')).toEqual(['a'])
+
+  await db.withTransaction<{ docs: DocsAPI }, void>(async (tx) => {
+    const txDocs = await tx.getStore('docs')
+    await txDocs.createModel('m2')
+    await txDocs.addDoc('m2', 'b')
+    expect(await txDocs.listDocs('m2')).toEqual(['b'])
+  })
+
+  expect(names()).toEqual(
+    expect.arrayContaining([
+      'k_static',
+      'k_m1',
+      'k_m2',
+      'kubun_models',
+      'kubun_docs_migration',
+      // Stores without the predicate still prefix every table.
+      'kubun_k_other',
+    ]),
+  )
+  expect(names()).not.toContain('kubun_k_m1')
+  expect(names()).not.toContain('k_other')
+})

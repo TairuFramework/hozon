@@ -13,6 +13,7 @@ type StoreDefinition<Tables, API> = {
   name: string
   migrations: Record<string, Migration> | ((ctx: MigrationContext) => Record<string, Migration>)
   dependsOn?: Array<string>
+  unprefixedTables?: (name: string) => boolean
   createAPI: (db: Kysely<Tables>, adapter: Adapter) => API
 }
 type StoreProvider<Stores extends Record<string, unknown> = Record<string, unknown>> = {
@@ -99,6 +100,13 @@ Databases created with a non-default `tablePrefix` must be reset because store t
 Keep-set tables use logical names `keep_log` and `keep_telemetry`.
 Index and constraint names use `ctx.tablePrefix`, for example `${ctx.tablePrefix}_logs_timestamp`.
 The plugin does not rewrite index or constraint names.
+
+A store can keep some tables outside the prefix with `unprefixedTables`, a predicate over logical table names.
+`HozonDB` gives that store its own plugin, built with `new TablePrefixPlugin(prefix, { unprefixed })`, for its migrations, its API, and its transaction-scoped API.
+Use it for dynamic tables whose prefixed names would exceed identifier length limits, such as Postgres's 63 bytes.
+For example, `unprefixedTables: (name) => name.startsWith('k_')` keeps `k_<modelID>` as is.
+Matching tables lose the namespace, so the store must keep them collision-free, including across databases that share one schema with different prefixes.
+Other stores still prefix the same names, and migration tables always use the prefix.
 
 WARNING: never reference system tables through the store instance.
 The plugin would prefix unqualified names such as `sqlite_master` or `information_schema`.

@@ -13,6 +13,7 @@ type Tables = {
   kubun_items: { id: number; value: string }
   item_view: { id: number; value: string }
   'main.logs': { seq: number }
+  k_doc: { id: string; owner: string }
 }
 
 const instances: Array<Kysely<Tables>> = []
@@ -20,11 +21,11 @@ afterEach(async () => {
   await Promise.all(instances.splice(0).map((db) => db.destroy()))
 })
 
-function setup() {
+function setup(options?: { unprefixed?: (name: string) => boolean }) {
   const adapter = new NodeSQLiteAdapter({ database: ':memory:' })
   const db = new Kysely<Tables>({
     dialect: adapter.dialect,
-    plugins: [new TablePrefixPlugin('kubun')],
+    plugins: [new TablePrefixPlugin('kubun', options)],
   })
   instances.push(db)
   return db
@@ -423,4 +424,54 @@ test('raw CTE definitions collect explicit tables before rewriting qualifiers', 
     .selectAll()
     .execute()
   expect(rows).toEqual([{ id: 1 }])
+})
+
+test('keeps tables matched by the unprefixed predicate', () => {
+  const db = setup({ unprefixed: (name) => name.startsWith('k_') })
+  expect(db.selectFrom('k_doc').selectAll().compile().sql).toBe('select * from "k_doc"')
+  expect(db.insertInto('k_doc').values({ id: 'a', owner: 'o' }).compile().sql).toContain(
+    'insert into "k_doc"',
+  )
+  expect(db.updateTable('k_doc').set({ owner: 'o' }).compile().sql).toContain('update "k_doc"')
+  expect(db.deleteFrom('k_doc').compile().sql).toContain('delete from "k_doc"')
+  expect(db.selectFrom('logs').selectAll().compile().sql).toContain('"kubun_logs"')
+})
+
+test('keeps unprefixed tables in joins, references, and subqueries', () => {
+  const db = setup({ unprefixed: (name) => name.startsWith('k_') })
+  expect(
+    db
+      .selectFrom('k_doc')
+      .innerJoin('spans', 'spans.trace_id', 'k_doc.id')
+      .select('k_doc.owner')
+      .compile().sql,
+  ).toBe(
+    'select "k_doc"."owner" from "k_doc" inner join "kubun_spans" on "kubun_spans"."trace_id" = "k_doc"."id"',
+  )
+  expect(
+    db
+      .updateTable('k_doc')
+      .set({ owner: 'o' })
+      .where((eb) =>
+        eb.exists(
+          eb.selectFrom('spans').select('trace_id').whereRef('spans.trace_id', '=', 'k_doc.id'),
+        ),
+      )
+      .compile().sql,
+  ).toBe(
+    'update "k_doc" set "owner" = ? where exists (select "trace_id" from "kubun_spans" where "kubun_spans"."trace_id" = "k_doc"."id")',
+  )
+})
+
+test('keeps unprefixed tables in schema builders and raw sql.table', () => {
+  const db = setup({ unprefixed: (name) => name.startsWith('k_') })
+  expect(db.schema.createTable('k_doc').addColumn('id', 'text').compile().sql).toBe(
+    'create table "k_doc" ("id" text)',
+  )
+  expect(db.schema.createIndex('idx_doc').on('k_doc').column('id').compile().sql).toBe(
+    'create index "idx_doc" on "k_doc" ("id")',
+  )
+  expect(db.schema.dropTable('k_doc').compile().sql).toBe('drop table "k_doc"')
+  expect(sql`select * from ${sql.table('k_doc')}`.compile(db).sql).toBe('select * from "k_doc"')
+  expect(sql`select * from ${sql.table('logs')}`.compile(db).sql).toBe('select * from "kubun_logs"')
 })

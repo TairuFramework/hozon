@@ -19,6 +19,12 @@ export type StoreDefinition<Tables, API> = {
   name: string
   migrations: Record<string, Migration> | ((ctx: MigrationContext) => Record<string, Migration>)
   dependsOn?: Array<string>
+  /**
+   * Logical table names this store keeps outside the table prefix, for example
+   * dynamic tables whose names would exceed identifier length limits. Matching
+   * tables are not namespaced: the store must keep them collision-free.
+   */
+  unprefixedTables?: (name: string) => boolean
   createAPI: (db: Kysely<Tables>, adapter: Adapter) => API
 }
 
@@ -73,11 +79,13 @@ type StoredDefinition = {
   name: string
   migrations: Record<string, Migration> | ((ctx: MigrationContext) => Record<string, Migration>)
   dependsOn?: Array<string>
+  unprefixedTables?: (name: string) => boolean
   createAPI: (db: Kysely<Record<string, unknown>>, adapter: Adapter) => unknown
 }
 
 export class HozonDB implements StoreProvider {
   #tablePrefix: string
+  #defaultPlugin: TablePrefixPlugin
   #closed = false
   #closing: Promise<void> | null = null
   #preflight: Promise<void> | null = null
@@ -86,6 +94,7 @@ export class HozonDB implements StoreProvider {
   #adapter: Adapter
   #db: Kysely<Record<string, unknown>>
   #storeDB: Kysely<Record<string, unknown>>
+  #storePlugins = new Map<string, TablePrefixPlugin>()
   #logger: Logger
   #migrated: Map<string, Promise<void>> = new Map()
   #storeAPIs: Map<string, unknown> = new Map()
@@ -96,6 +105,7 @@ export class HozonDB implements StoreProvider {
     if (!/^[a-z][a-z0-9_]{0,30}$/.test(this.#tablePrefix)) {
       throw new InvalidTablePrefixError(this.#tablePrefix)
     }
+    this.#defaultPlugin = new TablePrefixPlugin(this.#tablePrefix)
     this.#adapter = params.adapter
     this.#db = new Kysely<Record<string, unknown>>({
       // SQLite supports transactional DDL, but Kysely's SQLite adapters do not report it.
@@ -105,7 +115,7 @@ export class HozonDB implements StoreProvider {
           : this.#adapter.dialect,
       plugins: [new ParseJSONResultsPlugin()],
     })
-    this.#storeDB = this.#db.withPlugin(new TablePrefixPlugin(this.#tablePrefix))
+    this.#storeDB = this.#db.withPlugin(this.#defaultPlugin)
     this.#logger = params.logger ?? getLogger(['hozon', 'db'])
   }
 
@@ -136,7 +146,11 @@ export class HozonDB implements StoreProvider {
       if (store == null) {
         throw new Error(`Store "${name}" is not registered`)
       }
-      this.#storeAPIs.set(name, store.createAPI(this.#storeDB, this.#adapter))
+      const storeDB =
+        store.unprefixedTables == null
+          ? this.#storeDB
+          : this.#db.withPlugin(this.#getStorePlugin(store))
+      this.#storeAPIs.set(name, store.createAPI(storeDB, this.#adapter))
     }
     return this.#storeAPIs.get(name) as T
   }
@@ -177,8 +191,10 @@ export class HozonDB implements StoreProvider {
     let result: R
     let savepointID = 0
     try {
-      result = await this.#storeDB.transaction().execute(async (trx) => {
+      // The transaction runs on the unprefixed base so each store applies its own plugin.
+      result = await this.#db.transaction().execute(async (trx) => {
         const txKysely = trx as unknown as Kysely<Record<string, unknown>>
+        const txStoreDB = txKysely.withPlugin(this.#defaultPlugin)
         const txStoreAPIs = new Map<string, unknown>()
 
         const createScopedProvider = (
@@ -196,7 +212,11 @@ export class HozonDB implements StoreProvider {
                 if (store == null) {
                   throw new Error(`Store "${name}" is not registered`)
                 }
-                txStoreAPIs.set(name, store.createAPI(txKysely, this.#adapter))
+                const storeDB =
+                  store.unprefixedTables == null
+                    ? txStoreDB
+                    : txKysely.withPlugin(this.#getStorePlugin(store))
+                txStoreAPIs.set(name, store.createAPI(storeDB, this.#adapter))
               }
               return txStoreAPIs.get(name) as Stores[S]
             },
@@ -323,7 +343,7 @@ export class HozonDB implements StoreProvider {
               functions: this.#adapter.functions,
             })
           : store.migrations
-      const plugin = new TablePrefixPlugin(this.#tablePrefix)
+      const plugin = this.#getStorePlugin(store)
       migrations = Object.fromEntries(
         Object.entries(storeMigrations).map(([name, migration]) => {
           const down = migration.down
@@ -339,6 +359,16 @@ export class HozonDB implements StoreProvider {
       this.#migrations.set(store.name, migrations)
     }
     return migrations
+  }
+
+  #getStorePlugin(store: StoredDefinition): TablePrefixPlugin {
+    if (store.unprefixedTables == null) return this.#defaultPlugin
+    let plugin = this.#storePlugins.get(store.name)
+    if (plugin == null) {
+      plugin = new TablePrefixPlugin(this.#tablePrefix, { unprefixed: store.unprefixedTables })
+      this.#storePlugins.set(store.name, plugin)
+    }
+    return plugin
   }
 
   #ensurePreflight(): Promise<void> {
