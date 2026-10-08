@@ -118,7 +118,7 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
         await trx.deleteFrom('blob_entries').where('blob_id', '=', blobID).execute()
       })
     },
-    async beginTransfer(blobID, chunkSize, chunks, stagingID) {
+    async beginTransfer({ blobID, chunkSize, chunks, stagingID }) {
       await withStoreTransaction(db, async (trx) => {
         let query = trx
           .selectFrom('blob_entries')

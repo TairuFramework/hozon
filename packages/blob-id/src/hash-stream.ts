@@ -1,13 +1,16 @@
 import type { BlobIDCodec, HashResult } from './types.js'
 
+export type HashStreamParams = { codec: BlobIDCodec; chunkSize: number }
+
 /**
  * Pass-through transform computing the whole-content digest and a digest per
  * `chunkSize` chunk. Memory is bounded to the incoming piece.
  */
-export function hashStream(
-  codec: BlobIDCodec,
-  chunkSize: number,
-): { transform: TransformStream<Uint8Array, Uint8Array>; result: Promise<HashResult> } {
+export function hashStream(params: HashStreamParams): {
+  transform: TransformStream<Uint8Array, Uint8Array>
+  result: Promise<HashResult>
+} {
+  const { codec, chunkSize } = params
   if (!Number.isSafeInteger(chunkSize) || chunkSize <= 0) {
     throw new RangeError(`Invalid chunk size: ${chunkSize}`)
   }

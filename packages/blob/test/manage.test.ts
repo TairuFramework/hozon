@@ -27,7 +27,7 @@ describe.each(backendFactories)('manage ($name)', (factory) => {
   })
 
   test('setPinned toggles and rejects unknown IDs', async () => {
-    const { entry } = await ctx.service.write(sourceOf(bytesOf(10)).stream)
+    const { entry } = await ctx.service.write({ stream: sourceOf(bytesOf(10)).stream })
     await ctx.service.setPinned(entry.blobID, true)
     expect((await ctx.service.get(entry.blobID))?.pinned).toBe(true)
     await ctx.service.setPinned(entry.blobID, false)
@@ -37,7 +37,7 @@ describe.each(backendFactories)('manage ($name)', (factory) => {
   })
 
   test('delete removes row, manifest and bytes', async () => {
-    const { entry } = await ctx.service.write(sourceOf(bytesOf(5000)).stream)
+    const { entry } = await ctx.service.write({ stream: sourceOf(bytesOf(5000)).stream })
     const id = entry.blobID
     expect(await ctx.service.delete(id)).toBe(true)
     expect(await ctx.store.getEntry(id)).toBeNull()
@@ -52,7 +52,7 @@ describe.each(backendFactories)('manage ($name)', (factory) => {
       { blobID: id, contentLength: 10, chunkSize: 4, state: 'remote-only', createdAt: 5 },
       [],
     )
-    await ctx.store.beginTransfer(id, 4, [], 'stg-del')
+    await ctx.store.beginTransfer({ blobID: id, chunkSize: 4, chunks: [], stagingID: 'stg-del' })
     await backend.writeChunk('stg-del', 0, bytesOf(4))
     expect(await listStaging(backend)).toEqual(['stg-del'])
     expect(await ctx.service.delete(id)).toBe(true)
@@ -93,20 +93,20 @@ describe.each(backendFactories)('manage ($name)', (factory) => {
           }
           const built = await createTestService({ backend, chunkSize: 4096, lock })
           try {
-            const id = (await built.service.write(sourceOf(data).stream)).entry.blobID
+            const id = (await built.service.write({ stream: sourceOf(data).stream })).entry.blobID
             armed = true
             let first: Promise<unknown>
             let second: Promise<unknown>
             if (order === 'write-first') {
               // The delete is issued once the write holds the lock.
               startOther = () => built.service.delete(id)
-              first = built.service.write(sourceOf(data, 500).stream)
+              first = built.service.write({ stream: sourceOf(data, 500).stream })
               await first
               await started
             } else {
               // The delete holds the lock until the write has requested it.
               first = built.service.delete(id)
-              second = built.service.write(sourceOf(data, 500).stream)
+              second = built.service.write({ stream: sourceOf(data, 500).stream })
               await Promise.all([first, second])
             }
             const row = (await built.store.getEntry(id)) !== null

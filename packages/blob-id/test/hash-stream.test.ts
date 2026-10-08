@@ -40,7 +40,7 @@ function split(content: Uint8Array, sizes: Array<number>): Array<Uint8Array> {
 
 describe('hashStream', () => {
   test('hashes empty input', async () => {
-    const { transform, result } = hashStream(blake3Codec, 4)
+    const { transform, result } = hashStream({ codec: blake3Codec, chunkSize: 4 })
     const output = await drain(sourceOf([]).pipeThrough(transform))
     expect(output).toEqual(new Uint8Array())
     expect(await result).toEqual({
@@ -52,7 +52,7 @@ describe('hashStream', () => {
 
   test('hashes an exact multiple of chunkSize', async () => {
     const content = bytes(8)
-    const { transform, result } = hashStream(blake3Codec, 4)
+    const { transform, result } = hashStream({ codec: blake3Codec, chunkSize: 4 })
     await drain(sourceOf([content]).pipeThrough(transform))
     const hashed = await result
     expect(hashed.contentLength).toBe(8)
@@ -62,7 +62,7 @@ describe('hashStream', () => {
 
   test('splits pieces at chunk boundaries', async () => {
     const content = bytes(10)
-    const { transform, result } = hashStream(blake3Codec, 4)
+    const { transform, result } = hashStream({ codec: blake3Codec, chunkSize: 4 })
     await drain(sourceOf(split(content, [3, 5, 2])).pipeThrough(transform))
     const hashed = await result
     expect(hashed.contentLength).toBe(10)
@@ -76,12 +76,12 @@ describe('hashStream', () => {
 
   test('passes bytes through unchanged', async () => {
     const content = bytes(10)
-    const { transform } = hashStream(blake3Codec, 4)
+    const { transform } = hashStream({ codec: blake3Codec, chunkSize: 4 })
     expect(await drain(sourceOf(split(content, [3, 5, 2])).pipeThrough(transform))).toEqual(content)
   })
 
   test('rejects result when the source errors', async () => {
-    const { transform, result } = hashStream(blake3Codec, 4)
+    const { transform, result } = hashStream({ codec: blake3Codec, chunkSize: 4 })
     const failing = new ReadableStream<Uint8Array>({
       start(controller) {
         controller.enqueue(bytes(3))
@@ -97,7 +97,7 @@ describe('hashStream', () => {
   })
 
   test('rejects result when the output is cancelled', async () => {
-    const { transform, result } = hashStream(blake3Codec, 4)
+    const { transform, result } = hashStream({ codec: blake3Codec, chunkSize: 4 })
     const settled = result.then(
       () => 'resolved',
       () => 'rejected',

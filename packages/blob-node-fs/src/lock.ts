@@ -4,13 +4,15 @@ import { TimeoutInterruption, withFileLock } from '@sozai/lock'
 
 import { assertSafeName } from './fs.js'
 
-export type FileBlobLockOptions = {
+export type FileBlobLockParams = {
+  directory: string
   /** Milliseconds to wait for the lock before rejecting with BlobLockTimeoutError. */
   acquireTimeoutMs?: number
 }
 
 // Cross-process lock: one `<directory>/<id>.lock` file per blob ID.
-export function createFileBlobLock(directory: string, options: FileBlobLockOptions = {}): BlobLock {
+export function createFileBlobLock(params: FileBlobLockParams): BlobLock {
+  const { directory, acquireTimeoutMs } = params
   return {
     async withLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
       assertSafeName(id)
@@ -23,7 +25,7 @@ export function createFileBlobLock(directory: string, options: FileBlobLockOptio
             acquired = true
             return fn()
           },
-          options.acquireTimeoutMs == null ? undefined : { timeout: options.acquireTimeoutMs },
+          acquireTimeoutMs == null ? undefined : { timeout: acquireTimeoutMs },
         )
       } catch (error) {
         if (!acquired && error instanceof TimeoutInterruption) {

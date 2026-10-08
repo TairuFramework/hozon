@@ -48,10 +48,10 @@ async function sourceBlob(
   const chunkSize = params.chunkSize ?? CHUNK
   const source = await createTestService({ chunkSize, codec: params.codec })
   try {
-    const { entry } = await source.service.write(
-      sourceOf(bytes, 100).stream,
-      params.contentType === undefined ? {} : { contentType: params.contentType },
-    )
+    const { entry } = await source.service.write({
+      stream: sourceOf(bytes, 100).stream,
+      ...(params.contentType === undefined ? {} : { contentType: params.contentType }),
+    })
     const manifest: TransferManifest = {
       contentLength: entry.contentLength,
       chunkSize: entry.chunkSize,
@@ -95,7 +95,11 @@ describe.each(backendFactories)('transfer ($name)', (factory) => {
     await ctx.service.beginFetch(src.id.toUpperCase(), src.manifest)
     expect((await ctx.service.get(src.id))?.state).toBe('partial')
     for (let index = src.chunks.length - 1; index >= 0; index--) {
-      await ctx.service.stageChunk(src.id.toUpperCase(), index, src.chunks[index] as Uint8Array)
+      await ctx.service.stageChunk({
+        id: src.id.toUpperCase(),
+        index,
+        bytes: src.chunks[index] as Uint8Array,
+      })
     }
     expect(await ctx.service.getPresentChunks(src.id)).toEqual(src.chunks.map((_, i) => i))
     const entry = await ctx.service.completeFetch(src.id.toUpperCase())
@@ -115,7 +119,7 @@ describe.each(backendFactories)('transfer ($name)', (factory) => {
 
   test('beginFetch on a local blob is a no-op', async () => {
     const src = await sourceBlob(bytesOf(2500))
-    await ctx.service.write(sourceOf(src.bytes, 100).stream)
+    await ctx.service.write({ stream: sourceOf(src.bytes, 100).stream })
     await ctx.service.beginFetch(src.id, src.manifest)
     expect((await ctx.service.get(src.id))?.state).toBe('local')
     expect(await ctx.store.getTransfer(src.id)).toBeNull()
@@ -127,7 +131,7 @@ describe.each(backendFactories)('transfer ($name)', (factory) => {
     await ctx.service.beginFetch(src.id, src.manifest)
     const first = await ctx.store.getTransfer(src.id)
     expect(first?.stagingID).toMatch(/^t-[0-9a-f]{32}$/)
-    await ctx.service.stageChunk(src.id, 1, src.chunks[1] as Uint8Array)
+    await ctx.service.stageChunk({ id: src.id, index: 1, bytes: src.chunks[1] as Uint8Array })
 
     await ctx.service.beginFetch(src.id, { ...src.manifest, chunks: [...src.manifest.chunks] })
     const second = await ctx.store.getTransfer(src.id)
@@ -144,7 +148,7 @@ describe.each(backendFactories)('transfer ($name)', (factory) => {
     expect(await listStaging(backend)).toEqual([])
 
     for (const [index, chunk] of other.chunks.entries()) {
-      await ctx.service.stageChunk(src.id, index, chunk)
+      await ctx.service.stageChunk({ id: src.id, index, bytes: chunk })
     }
     await ctx.service.completeFetch(src.id)
     expect(await readAll(await ctx.service.createReadStream(src.id))).toEqual(bytes)
@@ -237,7 +241,7 @@ describe.each(backendFactories)('transfer ($name)', (factory) => {
         const { contentType: _, ...withoutType } = mime.manifest
         await dest.service.beginFetch(mime.id, withoutType)
         for (const [index, chunk] of mime.chunks.entries()) {
-          await dest.service.stageChunk(mime.id, index, chunk)
+          await dest.service.stageChunk({ id: mime.id, index, bytes: chunk })
         }
         expect((await dest.service.completeFetch(mime.id)).contentType).toBe('text/plain')
       } finally {
@@ -263,17 +267,21 @@ describe.each(backendFactories)('transfer ($name)', (factory) => {
     const [c0, c1, c2] = src.chunks as [Uint8Array, Uint8Array, Uint8Array]
 
     for (const index of [-1, 3, 1.5]) {
-      await expect(ctx.service.stageChunk(src.id, index, c0)).rejects.toThrow(InvalidManifestError)
+      await expect(ctx.service.stageChunk({ id: src.id, index, bytes: c0 })).rejects.toThrow(
+        InvalidManifestError,
+      )
     }
     const padded = new Uint8Array(CHUNK)
     padded.set(c2)
-    await expect(ctx.service.stageChunk(src.id, 2, padded)).rejects.toThrow(ChunkLengthError)
-    await expect(ctx.service.stageChunk(src.id, 1, c1.slice(0, 1000))).rejects.toThrow(
+    await expect(ctx.service.stageChunk({ id: src.id, index: 2, bytes: padded })).rejects.toThrow(
       ChunkLengthError,
     )
+    await expect(
+      ctx.service.stageChunk({ id: src.id, index: 1, bytes: c1.slice(0, 1000) }),
+    ).rejects.toThrow(ChunkLengthError)
     const tampered = c1.slice()
     tampered[10] = (tampered[10] as number) ^ 0xff
-    await expect(ctx.service.stageChunk(src.id, 1, tampered)).rejects.toThrow(
+    await expect(ctx.service.stageChunk({ id: src.id, index: 1, bytes: tampered })).rejects.toThrow(
       ChunkDigestMismatchError,
     )
 
@@ -317,9 +325,9 @@ describe.each(backendFactories)('transfer ($name)', (factory) => {
 
   test('stageChunk and completeFetch without an active transfer throw BlobNotFoundError', async () => {
     const src = await sourceBlob(bytesOf(2500, 3))
-    await expect(ctx.service.stageChunk(src.id, 0, src.chunks[0] as Uint8Array)).rejects.toThrow(
-      BlobNotFoundError,
-    )
+    await expect(
+      ctx.service.stageChunk({ id: src.id, index: 0, bytes: src.chunks[0] as Uint8Array }),
+    ).rejects.toThrow(BlobNotFoundError)
     await expect(ctx.service.completeFetch(src.id)).rejects.toThrow(BlobNotFoundError)
     expect(await ctx.service.getPresentChunks(src.id)).toEqual([])
   })
@@ -327,14 +335,14 @@ describe.each(backendFactories)('transfer ($name)', (factory) => {
   test('completeFetch with a missing chunk leaves the transfer intact', async () => {
     const src = await sourceBlob(bytesOf(2500, 4))
     await ctx.service.beginFetch(src.id, src.manifest)
-    await ctx.service.stageChunk(src.id, 0, src.chunks[0] as Uint8Array)
-    await ctx.service.stageChunk(src.id, 2, src.chunks[2] as Uint8Array)
+    await ctx.service.stageChunk({ id: src.id, index: 0, bytes: src.chunks[0] as Uint8Array })
+    await ctx.service.stageChunk({ id: src.id, index: 2, bytes: src.chunks[2] as Uint8Array })
     await expect(ctx.service.completeFetch(src.id)).rejects.toThrow(TransferIncompleteError)
     expect((await ctx.service.get(src.id))?.state).toBe('partial')
     expect(await ctx.service.getPresentChunks(src.id)).toEqual([0, 2])
     expect(await backend.has(src.id)).toBe(false)
 
-    await ctx.service.stageChunk(src.id, 1, src.chunks[1] as Uint8Array)
+    await ctx.service.stageChunk({ id: src.id, index: 1, bytes: src.chunks[1] as Uint8Array })
     expect((await ctx.service.completeFetch(src.id)).state).toBe('local')
   })
 
@@ -345,7 +353,7 @@ describe.each(backendFactories)('transfer ($name)', (factory) => {
     const tamperedChunks = split(tampered, CHUNK)
     await ctx.service.beginFetch(src.id, { ...src.manifest, chunks: tamperedChunks.map(digestOf) })
     for (const [index, chunk] of tamperedChunks.entries()) {
-      await ctx.service.stageChunk(src.id, index, chunk)
+      await ctx.service.stageChunk({ id: src.id, index, bytes: chunk })
     }
     await expect(ctx.service.completeFetch(src.id)).rejects.toThrow(BlobIDMismatchError)
     expect(await backend.has(src.id)).toBe(false)
@@ -358,8 +366,8 @@ describe.each(backendFactories)('transfer ($name)', (factory) => {
   test('resume across service instances, and a vanished staging area resets', async () => {
     const src = await sourceBlob(bytesOf(2500, 7))
     await ctx.service.beginFetch(src.id, src.manifest)
-    await ctx.service.stageChunk(src.id, 0, src.chunks[0] as Uint8Array)
-    await ctx.service.stageChunk(src.id, 1, src.chunks[1] as Uint8Array)
+    await ctx.service.stageChunk({ id: src.id, index: 0, bytes: src.chunks[0] as Uint8Array })
+    await ctx.service.stageChunk({ id: src.id, index: 1, bytes: src.chunks[1] as Uint8Array })
 
     const resumed = createBlobService({ db: ctx.db, backend, chunkSize: CHUNK })
     expect(await resumed.getPresentChunks(src.id)).toEqual([0, 1])
@@ -373,14 +381,14 @@ describe.each(backendFactories)('transfer ($name)', (factory) => {
     // The caller begins again and completes.
     await resumed.beginFetch(src.id, src.manifest)
     for (const [index, chunk] of src.chunks.entries())
-      await resumed.stageChunk(src.id, index, chunk)
+      await resumed.stageChunk({ id: src.id, index, bytes: chunk })
     expect((await resumed.completeFetch(src.id)).state).toBe('local')
   })
 
   test('identical beginFetch after the staging area vanished starts a fresh session', async () => {
     const src = await sourceBlob(bytesOf(2500, 8))
     await ctx.service.beginFetch(src.id, src.manifest)
-    await ctx.service.stageChunk(src.id, 0, src.chunks[0] as Uint8Array)
+    await ctx.service.stageChunk({ id: src.id, index: 0, bytes: src.chunks[0] as Uint8Array })
     const first = await ctx.store.getTransfer(src.id)
     await backend.abortStaging(first?.stagingID as string)
     await ctx.service.beginFetch(src.id, src.manifest)
@@ -393,9 +401,13 @@ describe.each(backendFactories)('transfer ($name)', (factory) => {
     const src = await sourceBlob(bytesOf(2500, 10))
     await ctx.service.beginFetch(src.id, src.manifest)
     for (const [index, chunk] of src.chunks.entries())
-      await ctx.service.stageChunk(src.id, index, chunk)
+      await ctx.service.stageChunk({ id: src.id, index, bytes: chunk })
     const done = ctx.service.completeFetch(src.id)
-    const late = ctx.service.stageChunk(src.id, 0, src.chunks[0] as Uint8Array)
+    const late = ctx.service.stageChunk({
+      id: src.id,
+      index: 0,
+      bytes: src.chunks[0] as Uint8Array,
+    })
     await expect(late).rejects.toThrow(BlobNotFoundError)
     expect((await done).state).toBe('local')
     expect(await listStaging(backend)).toEqual([])

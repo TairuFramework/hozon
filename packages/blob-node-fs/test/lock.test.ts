@@ -37,7 +37,7 @@ function holdInChild(id: string, holdMs: number): Promise<{ exited: Promise<numb
 }
 
 test('two withLock calls for one id in a process serialize', async () => {
-  const lock = createFileBlobLock(directory)
+  const lock = createFileBlobLock({ directory })
   const events: Array<string> = []
   const run = (name: string) =>
     lock.withLock('id', async () => {
@@ -50,7 +50,7 @@ test('two withLock calls for one id in a process serialize', async () => {
 })
 
 test('returns the value of fn and propagates its errors', async () => {
-  const lock = createFileBlobLock(directory)
+  const lock = createFileBlobLock({ directory })
   expect(await lock.withLock('id', async () => 42)).toBe(42)
   await expect(
     lock.withLock('id', async () => {
@@ -62,7 +62,7 @@ test('returns the value of fn and propagates its errors', async () => {
 
 test('a lock held by another process blocks until released', async () => {
   const { exited } = await holdInChild('id', 400)
-  const lock = createFileBlobLock(directory)
+  const lock = createFileBlobLock({ directory })
   const startedAt = Date.now()
   await lock.withLock('id', async () => {})
   expect(Date.now() - startedAt).toBeGreaterThanOrEqual(150)
@@ -71,13 +71,13 @@ test('a lock held by another process blocks until released', async () => {
 
 test('rejects with BlobLockTimeoutError when acquireTimeoutMs elapses', async () => {
   const { exited } = await holdInChild('id', 600)
-  const lock = createFileBlobLock(directory, { acquireTimeoutMs: 50 })
+  const lock = createFileBlobLock({ directory, acquireTimeoutMs: 50 })
   await expect(lock.withLock('id', async () => {})).rejects.toBeInstanceOf(BlobLockTimeoutError)
   await exited
 })
 
 test('does not wrap errors thrown by fn', async () => {
-  const lock = createFileBlobLock(directory, { acquireTimeoutMs: 50 })
+  const lock = createFileBlobLock({ directory, acquireTimeoutMs: 50 })
   const error = new Error('mine')
   await expect(
     lock.withLock('id', async () => {
@@ -87,7 +87,7 @@ test('does not wrap errors thrown by fn', async () => {
 })
 
 test('lock file is <directory>/<id>.lock', async () => {
-  const lock = createFileBlobLock(directory)
+  const lock = createFileBlobLock({ directory })
   const { access } = await import('node:fs/promises')
   await lock.withLock('abc', async () => {
     await access(join(directory, 'abc.lock'))
@@ -95,7 +95,7 @@ test('lock file is <directory>/<id>.lock', async () => {
 })
 
 test('rejects unsafe ids', async () => {
-  const lock = createFileBlobLock(directory)
+  const lock = createFileBlobLock({ directory })
   for (const id of ['', '.', '..', 'a/b', 'a\\b', 'a:b', '../x']) {
     await expect(lock.withLock(id, async () => {})).rejects.toThrow('Invalid blob key')
   }

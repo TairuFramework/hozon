@@ -8,7 +8,7 @@
 
   - Add a `contentType` column and entry field.
   - Add the `blob_transfer_sessions` table.
-  - Breaking: `beginTransfer(blobID, chunkSize, chunks, stagingID)` takes a `stagingID` parameter.
+  - Breaking: `beginTransfer` takes a single `BeginTransferParams` object, which includes a `stagingID`.
   - Add `getTransfer`, `getTransferByStagingID`, `touchTransfer`, `listEntries`, `promoteEntry`, `resetTransfer`, and `fillContentType`.
 
 ## 0.1.0

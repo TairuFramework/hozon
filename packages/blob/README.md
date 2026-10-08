@@ -16,7 +16,7 @@ import { blobStoreDefinition } from '@hozon/store-blob'
 db.register(blobStoreDefinition)
 const blobs = createBlobService({ db, backend: new MemoryBlobBackend() })
 
-const { entry, created } = await blobs.write(stream, { contentType: 'image/png' })
+const { entry, created } = await blobs.write({ stream, contentType: 'image/png' })
 ```
 
 Options: `codec` (default `blake3Codec`), `chunkSize` (default 1 MiB), `lock` (default `createMemoryBlobLock()`), and `limits` (`maxBlobSize` 1 GiB, `maxChunkSize` 16 MiB, `minChunkSize` 1 KiB).
@@ -35,7 +35,7 @@ Bytes are committed before the row, so a failure leaves only orphan bytes, never
 A `contentType` that is not a string of at most 255 characters throws `Error('Invalid contentType')` before the body is read.
 Aborting `signal` stops reading, discards staging, and throws `BlobWriteAbortedError`; the signal is checked again before commit.
 
-`writeWith(stream, options, fn)` records the entry and calls `fn(tx, entry)` in one store transaction, returning `{ entry, created, result }`.
+`writeWith({ stream, ...options, fn })` records the entry and calls `fn(tx, entry)` in one store transaction, returning `{ entry, created, result }`.
 It takes the blob lock before the transaction; the caller must not already be inside a store transaction (single-connection SQLite would deadlock).
 If `fn` throws, the transaction rolls back and the committed bytes remain as orphans.
 While `fn` runs the service holds the blob lock and, on SQLite, the single connection. `fn` must use only `tx`; it must not call blob service methods or use the outer `db`, which would deadlock.
@@ -50,7 +50,7 @@ Every method canonicalizes `id` first and throws `InvalidBlobIDError` when it is
 
 - `beginFetch(id, { contentLength, chunkSize, chunks, contentType?, encrypted?, keyID? })` validates the untrusted manifest (`InvalidManifestError`) against the ID and limits, then records the entry as `partial` with a fresh staging ID. A local blob is a no-op; an identical manifest with live staging is idempotent; a different one resets the transfer first. An existing stub whose stored `contentLength` differs from the manifest throws `InvalidManifestError`. A zero-length blob records the service's `chunkSize`, not the peer's.
 - `getPresentChunks(id)` lists staged indexes for resume. If the staging area vanished, the transfer is reset and the list is empty.
-- `stageChunk(id, index, bytes)` checks length (`ChunkLengthError`) and digest (`ChunkDigestMismatchError`) before writing.
+- `stageChunk({ id, index, bytes })` checks length (`ChunkLengthError`) and digest (`ChunkDigestMismatchError`) before writing.
 - `completeFetch(id)` throws `TransferIncompleteError` while chunks are missing. It verifies length and whole-blob digest from the staged bytes before committing; on mismatch it aborts staging, resets the transfer, and throws `BlobIDMismatchError`.
 
 ## Staging maintenance
@@ -70,7 +70,7 @@ Lock order is always blob lock, then store transaction. Locks are non-reentrant:
 `write` (commit and record), `delete`, `setPinned`, `beginFetch`, `stageChunk`, `completeFetch`, transfer resets, and pruning of a transfer area run under the lock.
 
 - `createMemoryBlobLock()` (default): in-process keyed mutex, correct for a single process.
-- `createFileBlobLock(directory, { acquireTimeoutMs? })`: from `@hozon/blob-node-fs`: cross-process lock for processes on one host sharing storage, one lock file per ID. `directory` must be on a local filesystem. Exclusion is as strong as `@sozai/lock` provides; its stale-lock reaping has a small documented exclusion gap.
+- `createFileBlobLock({ directory, acquireTimeoutMs? })`: from `@hozon/blob-node-fs`: cross-process lock for processes on one host sharing storage, one lock file per ID. `directory` must be on a local filesystem. Exclusion is as strong as `@sozai/lock` provides; its stale-lock reaping has a small documented exclusion gap.
 - Multi-host deployments sharing a backend and database need a distributed `BlobLock`. None ships; supply your own. A failed acquire throws `BlobLockTimeoutError`.
 
 ## Store registration

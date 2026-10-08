@@ -13,10 +13,11 @@ import {
   beginFetch,
   completeFetch,
   getPresentChunks,
+  type StageChunkParams,
   stageChunk,
   type TransferManifest,
 } from './transfer.js'
-import { type WriteContext, type WriteOptions, type WriteResult, writeBlob } from './write.js'
+import { type WriteContext, type WriteParams, type WriteResult, writeBlob } from './write.js'
 
 export type BlobServiceParams = {
   // Must have `blobStoreDefinition` registered.
@@ -29,11 +30,9 @@ export type BlobServiceParams = {
 }
 
 export type BlobService = {
-  write(stream: ReadableStream<Uint8Array>, options?: WriteOptions): Promise<WriteResult>
+  write(params: WriteParams): Promise<WriteResult>
   writeWith<T>(
-    stream: ReadableStream<Uint8Array>,
-    options: WriteOptions,
-    fn: (tx: StoreProvider, entry: BlobEntry) => Promise<T>,
+    params: WriteParams & { fn: (tx: StoreProvider, entry: BlobEntry) => Promise<T> },
   ): Promise<WriteResult & { result: T }>
   get(id: string): Promise<BlobEntry | null>
   list(params: {
@@ -47,7 +46,7 @@ export type BlobService = {
   delete(id: string): Promise<boolean>
   beginFetch(id: string, manifest: TransferManifest): Promise<void>
   getPresentChunks(id: string): Promise<Array<number>>
-  stageChunk(id: string, index: number, bytes: Uint8Array): Promise<void>
+  stageChunk(params: StageChunkParams): Promise<void>
   completeFetch(id: string): Promise<BlobEntry>
   // Aborts staging areas not modified since `olderThan`: abandoned writes and stale transfers.
   pruneStaging(olderThan: Date): Promise<{ removed: number; failed: number }>
@@ -81,19 +80,17 @@ export function createBlobService(params: BlobServiceParams): BlobService {
     delete: (id) => deleteBlob(ctx, id),
     beginFetch: (id, manifest) => beginFetch(ctx, id, manifest),
     getPresentChunks: (id) => getPresentChunks(ctx, id),
-    stageChunk: (id, index, bytes) => stageChunk(ctx, id, index, bytes),
+    stageChunk: (params) => stageChunk(ctx, params),
     completeFetch: (id) => completeFetch(ctx, id),
     pruneStaging: (olderThan) => pruneStaging(ctx, olderThan),
-    async write(stream, options = {}) {
-      const { entry, created } = await writeBlob(ctx, stream, options)
+    async write(params) {
+      const { entry, created } = await writeBlob(ctx, params)
       return { entry, created }
     },
     async writeWith<T>(
-      stream: ReadableStream<Uint8Array>,
-      options: WriteOptions,
-      fn: (tx: StoreProvider, entry: BlobEntry) => Promise<T>,
+      params: WriteParams & { fn: (tx: StoreProvider, entry: BlobEntry) => Promise<T> },
     ) {
-      const { entry, created, result } = await writeBlob(ctx, stream, options, fn)
+      const { entry, created, result } = await writeBlob(ctx, params)
       return { entry, created, result: result as T }
     },
   }

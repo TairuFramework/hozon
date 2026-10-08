@@ -28,14 +28,14 @@ async function sourceBlob(
 ): Promise<{ id: string; manifest: TransferManifest; chunks: Array<Uint8Array> }> {
   const source = await createTestService({ chunkSize: CHUNK })
   try {
-    const { entry } = await source.service.write(
-      new ReadableStream({
+    const { entry } = await source.service.write({
+      stream: new ReadableStream({
         start(controller) {
           controller.enqueue(bytes)
           controller.close()
         },
       }),
-    )
+    })
     return {
       id: entry.blobID,
       manifest: {
@@ -119,7 +119,7 @@ describe.each(backendFactories)('pruneStaging ($name)', (factory) => {
         controller.close()
       },
     })
-    const writing = ctx.service.write(stream)
+    const writing = ctx.service.write({ stream })
     await vi.waitFor(async () => expect(await listStaging(backend)).toHaveLength(1))
 
     expect(await ctx.service.pruneStaging(new Date(Date.now() + HOUR))).toEqual({
@@ -137,7 +137,7 @@ describe.each(backendFactories)('pruneStaging ($name)', (factory) => {
   test('aborts an old transfer whose session is also old and resets the entry', async () => {
     const src = await sourceBlob(bytesOf(2500, 1))
     await ctx.service.beginFetch(src.id, src.manifest)
-    await ctx.service.stageChunk(src.id, 0, src.chunks[0] as Uint8Array)
+    await ctx.service.stageChunk({ id: src.id, index: 0, bytes: src.chunks[0] as Uint8Array })
     expect(await listStaging(backend)).toHaveLength(1)
 
     vi.setSystemTime(Date.now() + 2 * HOUR)
@@ -151,7 +151,7 @@ describe.each(backendFactories)('pruneStaging ($name)', (factory) => {
   test('keeps a transfer whose staging is old but whose session was touched recently', async () => {
     const src = await sourceBlob(bytesOf(2500, 2))
     await ctx.service.beginFetch(src.id, src.manifest)
-    await ctx.service.stageChunk(src.id, 0, src.chunks[0] as Uint8Array)
+    await ctx.service.stageChunk({ id: src.id, index: 0, bytes: src.chunks[0] as Uint8Array })
 
     vi.setSystemTime(Date.now() + 2 * HOUR)
     await ctx.service.beginFetch(src.id, src.manifest) // identical: touches the session
@@ -165,11 +165,11 @@ describe.each(backendFactories)('pruneStaging ($name)', (factory) => {
   test('skips a transfer touched between listing and locking', async () => {
     const src = await sourceBlob(bytesOf(2500, 3))
     await ctx.service.beginFetch(src.id, src.manifest)
-    await ctx.service.stageChunk(src.id, 0, src.chunks[0] as Uint8Array)
+    await ctx.service.stageChunk({ id: src.id, index: 0, bytes: src.chunks[0] as Uint8Array })
 
     vi.setSystemTime(Date.now() + 2 * HOUR)
     hooked.arm(async () => {
-      await ctx.service.stageChunk(src.id, 1, src.chunks[1] as Uint8Array)
+      await ctx.service.stageChunk({ id: src.id, index: 1, bytes: src.chunks[1] as Uint8Array })
     })
     const result = await ctx.service.pruneStaging(new Date(Date.now() - HOUR))
     expect(result).toEqual({ removed: 0, failed: 0 })

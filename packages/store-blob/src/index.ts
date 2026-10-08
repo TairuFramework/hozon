@@ -7,6 +7,7 @@ export type {
   BlobTransferTable,
 } from './tables.js'
 export type {
+  BeginTransferParams,
   BlobChunkInput,
   BlobEntry,
   BlobEntryInput,

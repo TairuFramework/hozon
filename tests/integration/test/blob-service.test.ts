@@ -61,21 +61,24 @@ describe.each(backends())('blob service ($name)', (backend) => {
   test('write and read a range', async () => {
     const { service } = await openService()
     const bytes = bytesOf(2500, 3)
-    const { entry, created } = await service.write(streamOf(bytes), { contentType: 'text/plain' })
+    const { entry, created } = await service.write({
+      stream: streamOf(bytes),
+      contentType: 'text/plain',
+    })
     expect(created).toBe(true)
     expect(entry).toMatchObject({ state: 'local', contentLength: 2500, chunkSize: CHUNK })
     expect(await readAll(await service.createReadStream(entry.blobID))).toEqual(bytes)
     expect(
       await readAll(await service.createReadStream(entry.blobID, { start: 1000, end: 1999 })),
     ).toEqual(bytes.slice(1000, 2000))
-    expect((await service.write(streamOf(bytes))).created).toBe(false)
+    expect((await service.write({ stream: streamOf(bytes) })).created).toBe(false)
   })
 
   test('transfer between two services sharing nothing but bytes', async () => {
     const source = await openService()
     const dest = await openService()
     const bytes = bytesOf(2500, 9)
-    const { entry } = await source.service.write(streamOf(bytes))
+    const { entry } = await source.service.write({ stream: streamOf(bytes) })
     const id = entry.blobID
 
     await dest.service.beginFetch(id, {
@@ -87,7 +90,7 @@ describe.each(backends())('blob service ($name)', (backend) => {
     for (let index = 2; index >= 0; index--) {
       const range = { start: index * CHUNK, end: Math.min((index + 1) * CHUNK, 2500) - 1 }
       const chunk = await readAll(await source.service.createReadStream(id, range))
-      await dest.service.stageChunk(id, index, chunk)
+      await dest.service.stageChunk({ id, index, bytes: chunk })
     }
     expect(await dest.service.getPresentChunks(id)).toEqual([0, 1, 2])
     expect((await dest.service.completeFetch(id)).state).toBe('local')
@@ -98,8 +101,11 @@ describe.each(backends())('blob service ($name)', (backend) => {
     const { service, store } = await openService()
     const bytes = bytesOf(100, 1)
     await expect(
-      service.writeWith(streamOf(bytes), {}, async () => {
-        throw new Error('callback failed')
+      service.writeWith({
+        stream: streamOf(bytes),
+        fn: async () => {
+          throw new Error('callback failed')
+        },
       }),
     ).rejects.toThrow('callback failed')
     const id = blake3Codec.encode({
@@ -108,14 +114,17 @@ describe.each(backends())('blob service ($name)', (backend) => {
     })
     expect(await store.getEntry(id)).toBeNull()
 
-    const ok = await service.writeWith(streamOf(bytes), {}, async (_tx, entry) => entry.blobID)
+    const ok = await service.writeWith({
+      stream: streamOf(bytes),
+      fn: async (_tx, entry) => entry.blobID,
+    })
     expect(ok.result).toBe(id)
     expect(ok.entry.state).toBe('local')
   })
 
   test('delete removes the blob', async () => {
     const { service } = await openService()
-    const { entry } = await service.write(streamOf(bytesOf(50)))
+    const { entry } = await service.write({ stream: streamOf(bytesOf(50)) })
     expect(await service.delete(entry.blobID)).toBe(true)
     expect(await service.has(entry.blobID)).toBe(false)
     expect(await service.get(entry.blobID)).toBeNull()
@@ -126,7 +135,7 @@ describe.each(backends())('blob service ($name)', (backend) => {
     const { service } = await openService()
     const ids = new Set<string>()
     for (let seed = 0; seed < 5; seed++) {
-      ids.add((await service.write(streamOf(bytesOf(20 + seed, seed)))).entry.blobID)
+      ids.add((await service.write({ stream: streamOf(bytesOf(20 + seed, seed)) })).entry.blobID)
     }
     const seen: Array<string> = []
     let cursor: string | undefined

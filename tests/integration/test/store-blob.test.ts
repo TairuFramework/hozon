@@ -71,7 +71,12 @@ describe.each(backends())('$name', (backend) => {
     const chunks = manifest(3)
     await store.insertEntry(input, [])
     expect(await store.getPresentChunkIndexes(input.blobID)).toEqual([])
-    await store.beginTransfer(input.blobID, 4, [...chunks].reverse(), 'stg-1')
+    await store.beginTransfer({
+      blobID: input.blobID,
+      chunkSize: 4,
+      chunks: [...chunks].reverse(),
+      stagingID: 'stg-1',
+    })
     expect(await store.getEntry(input.blobID)).toEqual({ ...input, chunkSize: 4, state: 'partial' })
     expect(bytes(await store.getChunkDigests(input.blobID))).toEqual(
       bytes(chunks.map((chunk) => chunk.digest)),
@@ -112,7 +117,12 @@ describe.each(backends())('$name', (backend) => {
   test('promoteEntry replaces a partial entry atomically', async () => {
     const store = await openStore()
     await store.insertEntry(entry({ state: 'remote-only', pinned: true, createdAt: 5 }), [])
-    await store.beginTransfer('blob-1', 4, manifest(3), 'stg-1')
+    await store.beginTransfer({
+      blobID: 'blob-1',
+      chunkSize: 4,
+      chunks: manifest(3),
+      stagingID: 'stg-1',
+    })
     await store.recordTransferChunk('blob-1', 0)
     const { state: _state, ...input } = entry({ chunkSize: 6, createdAt: 99, pinned: false })
     await store.promoteEntry(input, manifest(2))
@@ -133,7 +143,12 @@ describe.each(backends())('$name', (backend) => {
   test('resetTransfer returns a partial entry to remote-only', async () => {
     const store = await openStore()
     await store.insertEntry(entry({ state: 'remote-only' }), [])
-    await store.beginTransfer('blob-1', 4, manifest(3), 'stg-1')
+    await store.beginTransfer({
+      blobID: 'blob-1',
+      chunkSize: 4,
+      chunks: manifest(3),
+      stagingID: 'stg-1',
+    })
     await store.recordTransferChunk('blob-1', 0)
     await store.resetTransfer('blob-1')
     expect((await store.getEntry('blob-1'))?.state).toBe('remote-only')

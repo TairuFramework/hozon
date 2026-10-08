@@ -28,7 +28,7 @@ Entries map integer flags to booleans and expose camelCase fields.
 Encryption and key IDs are optional metadata that the store does not interpret.
 Repeated entry and manifest inserts preserve existing rows.
 
-For a known remote entry, `beginTransfer(blobID, chunkSize, chunks, stagingID)` records its manifest, sets its state to `partial`, and records a transfer session for `stagingID`.
+For a known remote entry, `beginTransfer({ blobID, chunkSize, chunks, stagingID })` records its manifest, sets its state to `partial`, and records a transfer session for `stagingID`.
 Retries with the same chunk size preserve manifest digests. Progress is preserved only while `stagingID` matches the session; a different `stagingID` clears it.
 `getTransfer`, `getTransferByStagingID`, and `touchTransfer` read and refresh the session.
 Changing chunk size while a manifest exists rejects with `Cannot change chunk size for blob <blobID>: manifest already exists`.

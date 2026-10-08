@@ -35,7 +35,7 @@ Staging and content directories must share a filesystem that supports hard links
 ```ts
 import { createFileBlobLock } from '@hozon/blob-node-fs'
 
-const lock = createFileBlobLock('/var/lib/app/blob-locks', { acquireTimeoutMs: 5000 })
+const lock = createFileBlobLock({ directory: '/var/lib/app/blob-locks', acquireTimeoutMs: 5000 })
 await lock.withLock(blobID, async () => {})
 ```
 

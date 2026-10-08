@@ -20,6 +20,9 @@ type BlobEntry = {
   contentType: string | null
 }
 type BlobChunkInput = { index: number; digest: Uint8Array }
+type BeginTransferParams = {
+  blobID: string; chunkSize: number; chunks: Array<BlobChunkInput>; stagingID: string
+}
 type BlobTransfer = { stagingID: string; updatedAt: number; presentChunks: Array<number> }
 type BlobStoreAPI = {
   insertEntry(entry: BlobEntryInput, chunks: Array<BlobChunkInput>): Promise<void>
@@ -27,9 +30,7 @@ type BlobStoreAPI = {
   getChunkDigests(blobID: string): Promise<Array<Uint8Array>>
   setPinned(blobID: string, pinned: boolean): Promise<void>
   deleteEntry(blobID: string): Promise<void>
-  beginTransfer(
-    blobID: string, chunkSize: number, chunks: Array<BlobChunkInput>, stagingID: string,
-  ): Promise<void>
+  beginTransfer(params: BeginTransferParams): Promise<void>
   recordTransferChunk(blobID: string, index: number): Promise<void>
   getPresentChunkIndexes(blobID: string): Promise<Array<number>>
   finalizeTransfer(blobID: string): Promise<void>
@@ -74,7 +75,7 @@ Omitted `encrypted` and `pinned` default to `false`. Omitted `keyID` and `conten
 ## Transfer lifecycle
 
 1. Insert a known remote entry with `state: 'remote-only'`.
-2. Call `beginTransfer(blobID, chunkSize, chunks, stagingID)` to insert manifest rows, set the entry to `partial`, and record the transfer session for `stagingID`.
+2. Call `beginTransfer({ blobID, chunkSize, chunks, stagingID })` to insert manifest rows, set the entry to `partial`, and record the transfer session for `stagingID`.
 3. Store and verify each chunk through a backend.
 4. Call `recordTransferChunk(blobID, index)` for each verified chunk.
 5. Use `getPresentChunkIndexes(blobID)` to resume from the recorded progress.

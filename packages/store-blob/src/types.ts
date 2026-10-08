@@ -29,6 +29,13 @@ export type BlobEntry = {
   contentType: string | null
 }
 
+export type BeginTransferParams = {
+  blobID: string
+  chunkSize: number
+  chunks: Array<BlobChunkInput>
+  stagingID: string
+}
+
 export type BlobTransfer = {
   stagingID: string
   updatedAt: number
@@ -42,12 +49,7 @@ export type BlobStoreAPI = {
   getChunkDigests(blobID: string): Promise<Array<Uint8Array>>
   setPinned(blobID: string, pinned: boolean): Promise<void>
   deleteEntry(blobID: string): Promise<void>
-  beginTransfer(
-    blobID: string,
-    chunkSize: number,
-    chunks: Array<BlobChunkInput>,
-    stagingID: string,
-  ): Promise<void>
+  beginTransfer(params: BeginTransferParams): Promise<void>
   recordTransferChunk(blobID: string, index: number): Promise<void>
   getPresentChunkIndexes(blobID: string): Promise<Array<number>>
   finalizeTransfer(blobID: string): Promise<void>

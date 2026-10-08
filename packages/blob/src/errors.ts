@@ -12,33 +12,44 @@ export class BlobTooLargeError extends Error {
   }
 }
 
+export type BlobIDMismatchErrorParams = { expected: string; actual: string }
+
 export class BlobIDMismatchError extends Error {
-  constructor(expected: string, actual: string, options?: ErrorOptions) {
-    super(`Blob ID mismatch: expected ${expected}, got ${actual}`, options)
+  constructor(params: BlobIDMismatchErrorParams, options?: ErrorOptions) {
+    super(`Blob ID mismatch: expected ${params.expected}, got ${params.actual}`, options)
     this.name = 'BlobIDMismatchError'
   }
 }
 
+export type ContentTypeMismatchErrorParams = { expected: string; actual: string }
+
 export class ContentTypeMismatchError extends Error {
-  constructor(expected: string, actual: string, options?: ErrorOptions) {
+  constructor(params: ContentTypeMismatchErrorParams, options?: ErrorOptions) {
     super(
-      `Content type mismatch: expected ${JSON.stringify(expected)}, got ${JSON.stringify(actual)}`,
+      `Content type mismatch: expected ${JSON.stringify(params.expected)}, got ${JSON.stringify(params.actual)}`,
       options,
     )
     this.name = 'ContentTypeMismatchError'
   }
 }
 
+export type ChunkDigestMismatchErrorParams = { id: string; index: number }
+
 export class ChunkDigestMismatchError extends Error {
-  constructor(id: string, index: number, options?: ErrorOptions) {
-    super(`Chunk ${index} of blob ${id} does not match its manifest digest`, options)
+  constructor(params: ChunkDigestMismatchErrorParams, options?: ErrorOptions) {
+    super(`Chunk ${params.index} of blob ${params.id} does not match its manifest digest`, options)
     this.name = 'ChunkDigestMismatchError'
   }
 }
 
+export type ChunkLengthErrorParams = { id: string; index: number; expected: number; actual: number }
+
 export class ChunkLengthError extends Error {
-  constructor(id: string, index: number, expected: number, actual: number, options?: ErrorOptions) {
-    super(`Chunk ${index} of blob ${id} must be ${expected} bytes, got ${actual}`, options)
+  constructor(params: ChunkLengthErrorParams, options?: ErrorOptions) {
+    super(
+      `Chunk ${params.index} of blob ${params.id} must be ${params.expected} bytes, got ${params.actual}`,
+      options,
+    )
     this.name = 'ChunkLengthError'
   }
 }
@@ -64,9 +75,11 @@ export class BlobWriteAbortedError extends Error {
   }
 }
 
+export type TransferIncompleteErrorParams = { id: string; missing: number }
+
 export class TransferIncompleteError extends Error {
-  constructor(id: string, missing: number, options?: ErrorOptions) {
-    super(`Cannot complete transfer of ${id}: ${missing} chunk(s) missing`, options)
+  constructor(params: TransferIncompleteErrorParams, options?: ErrorOptions) {
+    super(`Cannot complete transfer of ${params.id}: ${params.missing} chunk(s) missing`, options)
     this.name = 'TransferIncompleteError'
   }
 }

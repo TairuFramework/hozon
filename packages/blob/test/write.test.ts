@@ -23,7 +23,7 @@ import {
 } from './helpers.js'
 
 async function hashChunks(bytes: Uint8Array, chunkSize: number): Promise<Array<Uint8Array>> {
-  const { transform, result } = hashStream(blake3Codec, chunkSize)
+  const { transform, result } = hashStream({ codec: blake3Codec, chunkSize: chunkSize })
   await sourceOf(bytes).stream.pipeThrough(transform).pipeTo(new WritableStream())
   return (await result).chunks
 }
@@ -71,13 +71,14 @@ describe.each(backendFactories)('write ($name)', (factory) => {
   test('rejects an invalid contentType before reading or staging', async () => {
     for (const contentType of ['x'.repeat(256), 5 as unknown as string]) {
       const { stream, pulls } = sourceOf(bytesOf(10))
-      await expect(ctx.service.write(stream, { contentType })).rejects.toThrow(
+      await expect(ctx.service.write({ stream, contentType })).rejects.toThrow(
         'Invalid contentType',
       )
       expect(pulls()).toBe(0)
       expect(await listStaging(backend)).toEqual([])
     }
-    const ok = await ctx.service.write(sourceOf(bytesOf(10, 9)).stream, {
+    const ok = await ctx.service.write({
+      stream: sourceOf(bytesOf(10, 9)).stream,
       contentType: 'x'.repeat(255),
     })
     expect(ok.entry.contentType).toHaveLength(255)
@@ -85,7 +86,7 @@ describe.each(backendFactories)('write ($name)', (factory) => {
 
   test('writes a blob and records its manifest', async () => {
     const data = bytesOf(10)
-    const { entry, created } = await ctx.service.write(sourceOf(data).stream)
+    const { entry, created } = await ctx.service.write({ stream: sourceOf(data).stream })
     expect(created).toBe(true)
     expect(entry.blobID).toBe(idOf(data))
     expect(entry).toMatchObject({
@@ -104,14 +105,16 @@ describe.each(backendFactories)('write ($name)', (factory) => {
   test('records multiple chunks with a short final chunk', async () => {
     const built = await build({ chunkSize: 1024 })
     const data = bytesOf(2500)
-    const { entry } = await built.service.write(sourceOf(data, 700).stream)
+    const { entry } = await built.service.write({ stream: sourceOf(data, 700).stream })
     const digests = await built.store.getChunkDigests(entry.blobID)
     expect(digests).toHaveLength(3)
     expect(digests).toEqual(await hashChunks(data, 1024))
   })
 
   test('writes a zero-length blob with zero chunks', async () => {
-    const { entry, created } = await ctx.service.write(sourceOf(new Uint8Array(0)).stream)
+    const { entry, created } = await ctx.service.write({
+      stream: sourceOf(new Uint8Array(0)).stream,
+    })
     expect(created).toBe(true)
     expect(entry.contentLength).toBe(0)
     expect(entry.blobID).toBe(idOf(new Uint8Array(0)))
@@ -120,7 +123,8 @@ describe.each(backendFactories)('write ($name)', (factory) => {
   })
 
   test('records encryption metadata as given', async () => {
-    const { entry } = await ctx.service.write(sourceOf(bytesOf(5)).stream, {
+    const { entry } = await ctx.service.write({
+      stream: sourceOf(bytesOf(5)).stream,
       encrypted: true,
       keyID: 'k1',
       contentType: 'text/plain',
@@ -130,8 +134,8 @@ describe.each(backendFactories)('write ($name)', (factory) => {
 
   test('a second identical write returns the existing entry', async () => {
     const data = bytesOf(10)
-    const first = await ctx.service.write(sourceOf(data).stream)
-    const second = await ctx.service.write(sourceOf(data).stream, { encrypted: true })
+    const first = await ctx.service.write({ stream: sourceOf(data).stream })
+    const second = await ctx.service.write({ stream: sourceOf(data).stream, encrypted: true })
     expect(second.created).toBe(false)
     expect(second.entry).toEqual(first.entry)
     expect(await listStaging(backend)).toEqual([])
@@ -139,19 +143,25 @@ describe.each(backendFactories)('write ($name)', (factory) => {
 
   test('fills a null content type only', async () => {
     const data = bytesOf(10)
-    await ctx.service.write(sourceOf(data).stream)
-    const second = await ctx.service.write(sourceOf(data).stream, { contentType: 'image/png' })
+    await ctx.service.write({ stream: sourceOf(data).stream })
+    const second = await ctx.service.write({
+      stream: sourceOf(data).stream,
+      contentType: 'image/png',
+    })
     expect(second.entry.contentType).toBe('image/png')
-    const third = await ctx.service.write(sourceOf(data).stream, { contentType: 'text/plain' })
+    const third = await ctx.service.write({
+      stream: sourceOf(data).stream,
+      contentType: 'text/plain',
+    })
     expect(third.entry.contentType).toBe('image/png')
     expect((await ctx.store.getEntry(idOf(data)))?.contentType).toBe('image/png')
   })
 
   test('maxSize bounds the stream', async () => {
     const data = bytesOf(10)
-    await expect(ctx.service.write(sourceOf(data).stream, { maxSize: 4 })).rejects.toBeInstanceOf(
-      BlobTooLargeError,
-    )
+    await expect(
+      ctx.service.write({ stream: sourceOf(data).stream, maxSize: 4 }),
+    ).rejects.toBeInstanceOf(BlobTooLargeError)
     expect(await ctx.store.getEntry(idOf(data))).toBeNull()
     expect(await listStaging(backend)).toEqual([])
   })
@@ -159,22 +169,25 @@ describe.each(backendFactories)('write ($name)', (factory) => {
   test('limits.maxBlobSize bounds the stream', async () => {
     const built = await build({ limits: { maxBlobSize: 4 } })
     const data = bytesOf(10)
-    await expect(built.service.write(sourceOf(data).stream, { maxSize: 100 })).rejects.toThrow(
-      BlobTooLargeError,
-    )
+    await expect(
+      built.service.write({ stream: sourceOf(data).stream, maxSize: 100 }),
+    ).rejects.toThrow(BlobTooLargeError)
     expect(await built.store.getEntry(idOf(data))).toBeNull()
     expect(await listStaging(backend)).toEqual([])
   })
 
   test('a content length equal to the limit is accepted', async () => {
-    const { created } = await ctx.service.write(sourceOf(bytesOf(10)).stream, { maxSize: 10 })
+    const { created } = await ctx.service.write({
+      stream: sourceOf(bytesOf(10)).stream,
+      maxSize: 10,
+    })
     expect(created).toBe(true)
   })
 
   test('expectedID mismatch commits nothing', async () => {
     const data = bytesOf(10)
     await expect(
-      ctx.service.write(sourceOf(data).stream, { expectedID: idOf(bytesOf(10, 1)) }),
+      ctx.service.write({ stream: sourceOf(data).stream, expectedID: idOf(bytesOf(10, 1)) }),
     ).rejects.toBeInstanceOf(BlobIDMismatchError)
     expect(await ctx.store.getEntry(idOf(data))).toBeNull()
     expect(await backend.has(idOf(data))).toBe(false)
@@ -183,7 +196,8 @@ describe.each(backendFactories)('write ($name)', (factory) => {
 
   test('uppercase expectedID of the same bytes succeeds', async () => {
     const data = bytesOf(10)
-    const { entry } = await ctx.service.write(sourceOf(data).stream, {
+    const { entry } = await ctx.service.write({
+      stream: sourceOf(data).stream,
       expectedID: idOf(data).toUpperCase(),
     })
     expect(entry.blobID).toBe(idOf(data))
@@ -193,7 +207,7 @@ describe.each(backendFactories)('write ($name)', (factory) => {
     const source = sourceOf(bytesOf(10))
     const expectedID = blake3Codec.encode({ digest: new Uint8Array(32), contentLength: 100 })
     await expect(
-      ctx.service.write(source.stream, { expectedID, maxSize: 4 }),
+      ctx.service.write({ stream: source.stream, expectedID, maxSize: 4 }),
     ).rejects.toBeInstanceOf(BlobTooLargeError)
     expect(source.pulls()).toBe(0)
     expect(await listStaging(backend)).toEqual([])
@@ -208,7 +222,7 @@ describe.each(backendFactories)('write ($name)', (factory) => {
         contentLength: 10,
         contentType: 'image/png',
       })
-      const { entry } = await built.service.write(sourceOf(data).stream, { expectedID })
+      const { entry } = await built.service.write({ stream: sourceOf(data).stream, expectedID })
       expect(entry.blobID).toBe(expectedID)
       expect(entry.contentType).toBe('image/png')
     })
@@ -223,7 +237,7 @@ describe.each(backendFactories)('write ($name)', (factory) => {
         contentType: 'image/png',
       })
       await expect(
-        built.service.write(source.stream, { expectedID, contentType: 'text/plain' }),
+        built.service.write({ stream: source.stream, expectedID, contentType: 'text/plain' }),
       ).rejects.toBeInstanceOf(ContentTypeMismatchError)
       expect(source.pulls()).toBe(0)
       expect(await listStaging(backend)).toEqual([])
@@ -239,7 +253,7 @@ describe.each(backendFactories)('write ($name)', (factory) => {
         else controller.error(failure)
       },
     })
-    await expect(ctx.service.write(stream)).rejects.toBe(failure)
+    await expect(ctx.service.write({ stream })).rejects.toBe(failure)
     expect((await ctx.store.listEntries({ limit: 10 })).entries).toEqual([])
     expect(await listStaging(backend)).toEqual([])
   })
@@ -247,7 +261,7 @@ describe.each(backendFactories)('write ($name)', (factory) => {
   test('rejects an invalid maxSize before staging', async () => {
     for (const maxSize of [Number.NaN, -1, 1.5, Number.POSITIVE_INFINITY]) {
       const { stream, pulls } = sourceOf(bytesOf(10))
-      await expect(ctx.service.write(stream, { maxSize })).rejects.toThrow('Invalid maxSize')
+      await expect(ctx.service.write({ stream, maxSize })).rejects.toThrow('Invalid maxSize')
       expect(pulls()).toBe(0)
     }
     expect(await listStaging(backend)).toEqual([])
@@ -262,7 +276,7 @@ describe.each(backendFactories)('write ($name)', (factory) => {
         source.enqueue(bytesOf(3))
       },
     })
-    await expect(ctx.service.write(stream, { signal: controller.signal })).rejects.toBeInstanceOf(
+    await expect(ctx.service.write({ stream, signal: controller.signal })).rejects.toBeInstanceOf(
       BlobWriteAbortedError,
     )
     expect((await ctx.store.listEntries({ limit: 10 })).entries).toEqual([])
@@ -281,7 +295,7 @@ describe.each(backendFactories)('write ($name)', (factory) => {
     const built = await build({ lock })
     const data = bytesOf(10)
     await expect(
-      built.service.write(sourceOf(data).stream, { signal: controller.signal }),
+      built.service.write({ stream: sourceOf(data).stream, signal: controller.signal }),
     ).rejects.toBeInstanceOf(BlobWriteAbortedError)
     expect(await backend.has(idOf(data))).toBe(false)
     expect(await built.store.getEntry(idOf(data))).toBeNull()
@@ -296,11 +310,16 @@ describe.each(backendFactories)('write ($name)', (factory) => {
       [],
     )
     const chunks = [0, 1, 2].map((index) => ({ index, digest: new Uint8Array(32) }))
-    await ctx.store.beginTransfer(id, 4, chunks, 'stg-transfer')
+    await ctx.store.beginTransfer({
+      blobID: id,
+      chunkSize: 4,
+      chunks: chunks,
+      stagingID: 'stg-transfer',
+    })
     await backend.writeChunk('stg-transfer', 0, data.subarray(0, 4))
     await ctx.store.recordTransferChunk(id, 0)
 
-    const { entry, created } = await ctx.service.write(sourceOf(data).stream)
+    const { entry, created } = await ctx.service.write({ stream: sourceOf(data).stream })
     expect(created).toBe(true)
     expect(entry).toMatchObject({ blobID: id, state: 'local', chunkSize: 4096, createdAt: 5 })
     expect(await ctx.store.getChunkDigests(id)).toEqual(await hashChunks(data, 4096))
@@ -311,14 +330,13 @@ describe.each(backendFactories)('write ($name)', (factory) => {
   describe('writeWith', () => {
     test('runs fn in the transaction that records the entry', async () => {
       const data = bytesOf(10)
-      const { entry, created, result } = await ctx.service.writeWith(
-        sourceOf(data).stream,
-        {},
-        async (tx, recorded) => {
+      const { entry, created, result } = await ctx.service.writeWith({
+        stream: sourceOf(data).stream,
+        fn: async (tx, recorded) => {
           const seen = await (await getBlobStore(tx)).getEntry(recorded.blobID)
           return seen
         },
-      )
+      })
       expect(created).toBe(true)
       expect(result).toEqual(entry)
       expect(result?.state).toBe('local')
@@ -326,12 +344,12 @@ describe.each(backendFactories)('write ($name)', (factory) => {
 
     test('runs fn for an already-local blob', async () => {
       const data = bytesOf(10)
-      await ctx.service.write(sourceOf(data).stream)
-      const { entry, created, result } = await ctx.service.writeWith(
-        sourceOf(data).stream,
-        { contentType: 'image/png' },
-        async (_tx, existing) => existing.contentType,
-      )
+      await ctx.service.write({ stream: sourceOf(data).stream })
+      const { entry, created, result } = await ctx.service.writeWith({
+        stream: sourceOf(data).stream,
+        contentType: 'image/png',
+        fn: async (_tx, existing) => existing.contentType,
+      })
       expect(created).toBe(false)
       expect(entry.contentType).toBe('image/png')
       expect(result).toBe('image/png')
@@ -341,8 +359,11 @@ describe.each(backendFactories)('write ($name)', (factory) => {
       const data = bytesOf(10)
       const failure = new Error('fn failed')
       await expect(
-        ctx.service.writeWith(sourceOf(data).stream, {}, async () => {
-          throw failure
+        ctx.service.writeWith({
+          stream: sourceOf(data).stream,
+          fn: async () => {
+            throw failure
+          },
         }),
       ).rejects.toBe(failure)
       expect(await ctx.store.getEntry(idOf(data))).toBeNull()
@@ -355,11 +376,19 @@ describe.each(backendFactories)('write ($name)', (factory) => {
         { blobID: id, contentLength: 10, chunkSize: 4, state: 'remote-only', createdAt: 5 },
         [],
       )
-      await ctx.store.beginTransfer(id, 4, [], 'stg-transfer')
+      await ctx.store.beginTransfer({
+        blobID: id,
+        chunkSize: 4,
+        chunks: [],
+        stagingID: 'stg-transfer',
+      })
       await backend.writeChunk('stg-transfer', 0, data.subarray(0, 4))
       await expect(
-        ctx.service.writeWith(sourceOf(data).stream, {}, async () => {
-          throw new Error('fn failed')
+        ctx.service.writeWith({
+          stream: sourceOf(data).stream,
+          fn: async () => {
+            throw new Error('fn failed')
+          },
         }),
       ).rejects.toThrow('fn failed')
       expect((await ctx.store.getEntry(id))?.state).toBe('partial')
@@ -371,14 +400,17 @@ describe.each(backendFactories)('write ($name)', (factory) => {
       const id = idOf(data)
       const events: Array<string> = []
       let concurrent: Promise<void> | undefined
-      const write = ctx.service.writeWith(sourceOf(data).stream, {}, async (tx) => {
-        events.push('fn-start')
-        tx.onCommit(() => events.push('commit'))
-        concurrent = ctx.service.delete(id).then(() => {
-          events.push('delete-end')
-        })
-        for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 1))
-        events.push('fn-end')
+      const write = ctx.service.writeWith({
+        stream: sourceOf(data).stream,
+        fn: async (tx) => {
+          events.push('fn-start')
+          tx.onCommit(() => events.push('commit'))
+          concurrent = ctx.service.delete(id).then(() => {
+            events.push('delete-end')
+          })
+          for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 1))
+          events.push('fn-end')
+        },
       })
       await write
       await concurrent

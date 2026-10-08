@@ -31,7 +31,7 @@ describe.each(backendFactories)('read ($name)', (factory) => {
 
   async function put(length: number, seed = 0) {
     const data = bytesOf(length, seed)
-    const { entry } = await ctx.service.write(sourceOf(data).stream)
+    const { entry } = await ctx.service.write({ stream: sourceOf(data).stream })
     return { data, id: entry.blobID }
   }
 
@@ -58,15 +58,15 @@ describe.each(backendFactories)('read ($name)', (factory) => {
       { blobID: id, contentLength: 8, chunkSize: 4, state: 'remote-only', createdAt: 5 },
       [],
     )
-    await ctx.store.beginTransfer(
-      id,
-      4,
-      [
+    await ctx.store.beginTransfer({
+      blobID: id,
+      chunkSize: 4,
+      chunks: [
         { index: 0, digest: new Uint8Array(32).fill(1) },
         { index: 1, digest: new Uint8Array(32).fill(2) },
       ],
-      't-x',
-    )
+      stagingID: 't-x',
+    })
     expect(await ctx.store.getChunkDigests(id)).toHaveLength(2)
     expect(await ctx.service.getChunkDigests(id)).toEqual([])
   })
@@ -155,7 +155,12 @@ describe.each(backendFactories)('read ($name)', (factory) => {
       { blobID: partialID, contentLength: 10, chunkSize: 4, state: 'remote-only', createdAt: 5 },
       [],
     )
-    await ctx.store.beginTransfer(partialID, 4, [], 'stg-p')
+    await ctx.store.beginTransfer({
+      blobID: partialID,
+      chunkSize: 4,
+      chunks: [],
+      stagingID: 'stg-p',
+    })
     await expect(ctx.service.createReadStream(remoteID)).rejects.toThrow(BlobNotFoundError)
     await expect(ctx.service.createReadStream(partialID)).rejects.toThrow(BlobNotFoundError)
     await expect(

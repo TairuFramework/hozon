@@ -52,7 +52,7 @@ Positioned writes complete all bytes and reject zero progress.
 
 ### File lock
 
-`createFileBlobLock(directory, { acquireTimeoutMs? })` returns a `BlobLock` that excludes other processes on the same host, one lock file per canonical blob ID, built on `@sozai/lock`.
+`createFileBlobLock({ directory, acquireTimeoutMs? })` returns a `BlobLock` that excludes other processes on the same host, one lock file per canonical blob ID, built on `@sozai/lock`.
 `directory` must be on a local filesystem. Its stale-lock reaping has a small documented exclusion gap.
 Processes on different hosts need a distributed `BlobLock`; none ships.
 

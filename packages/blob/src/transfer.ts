@@ -26,6 +26,8 @@ export type TransferManifest = {
   keyID?: string
 }
 
+export type StageChunkParams = { id: string; index: number; bytes: Uint8Array }
+
 export type TransferContext = {
   db: StoreProvider
   backend: BlobBackend
@@ -227,7 +229,7 @@ export async function beginFetch(
       if (contentType !== undefined) await store.fillContentType(blobID, contentType)
     }
     const chunks = manifest.chunks.map((digest, index) => ({ index, digest }))
-    await store.beginTransfer(blobID, chunkSize, chunks, createStagingID('t'))
+    await store.beginTransfer({ blobID, chunkSize, chunks, stagingID: createStagingID('t') })
   })
 }
 
@@ -247,12 +249,8 @@ export async function getPresentChunks(ctx: TransferContext, id: string): Promis
   })
 }
 
-export async function stageChunk(
-  ctx: TransferContext,
-  id: string,
-  index: number,
-  bytes: Uint8Array,
-): Promise<void> {
+export async function stageChunk(ctx: TransferContext, params: StageChunkParams): Promise<void> {
+  const { id, index, bytes } = params
   const blobID = ctx.codec.canonicalize(id)
   await ctx.lock.withLock(blobID, async () => {
     const { store, entry, transfer, digests } = await requireTransfer(ctx, blobID)
@@ -261,12 +259,17 @@ export async function stageChunk(
     }
     const expectedLength = chunkLength(entry, digests.length, index)
     if (bytes.length !== expectedLength) {
-      throw new ChunkLengthError(blobID, index, expectedLength, bytes.length)
+      throw new ChunkLengthError({
+        id: blobID,
+        index,
+        expected: expectedLength,
+        actual: bytes.length,
+      })
     }
     const hasher = ctx.codec.createHasher()
     hasher.update(bytes)
     if (!bytesEqual(hasher.digest(), digests[index] as Uint8Array)) {
-      throw new ChunkDigestMismatchError(blobID, index)
+      throw new ChunkDigestMismatchError({ id: blobID, index })
     }
     await ctx.backend.writeChunk(transfer.stagingID, index * entry.chunkSize, bytes)
     await store.recordTransferChunk(blobID, index)
@@ -307,7 +310,7 @@ export async function completeFetch(ctx: TransferContext, id: string): Promise<B
     const present = new Set(transfer.presentChunks)
     const missing = digests.length - digests.filter((_, index) => present.has(index)).length
     if (missing > 0) {
-      throw new TransferIncompleteError(blobID, missing)
+      throw new TransferIncompleteError({ id: blobID, missing })
     }
     // A zero-length blob stages no chunks; materialize its empty area for commit.
     if (digests.length === 0) {
@@ -332,7 +335,7 @@ export async function completeFetch(ctx: TransferContext, id: string): Promise<B
         contentLength: hashed.length,
         ...(expected.contentType === undefined ? {} : { contentType: expected.contentType }),
       })
-      throw new BlobIDMismatchError(blobID, actual)
+      throw new BlobIDMismatchError({ expected: blobID, actual })
     }
 
     // Verified: bytes are committed before the row.

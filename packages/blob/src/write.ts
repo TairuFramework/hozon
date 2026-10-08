@@ -22,6 +22,8 @@ export type WriteOptions = {
   signal?: AbortSignal
 }
 
+export type WriteParams = WriteOptions & { stream: ReadableStream<Uint8Array> }
+
 export type WriteResult = { entry: BlobEntry; created: boolean }
 
 export type WriteContext = {
@@ -86,10 +88,9 @@ async function record<T>(
 
 export async function writeBlob<T>(
   ctx: WriteContext,
-  stream: ReadableStream<Uint8Array>,
-  options: WriteOptions,
-  fn?: RecordFn<T>,
+  params: WriteParams & { fn?: RecordFn<T> },
 ): Promise<WriteResult & { result: T | undefined }> {
+  const { stream, fn, ...options } = params
   const { signal } = options
   if (
     options.contentType !== undefined &&
@@ -119,7 +120,10 @@ export async function writeBlob<T>(
         if (contentType === undefined) {
           contentType = expected.contentType
         } else if (contentType !== expected.contentType) {
-          throw new ContentTypeMismatchError(expected.contentType, contentType)
+          throw new ContentTypeMismatchError({
+            expected: expected.contentType,
+            actual: contentType,
+          })
         }
       }
       if (expected.contentLength > limit) throw new BlobTooLargeError(limit)
@@ -147,7 +151,7 @@ export async function writeBlob<T>(
     let hashed: HashResult
     try {
       const sink = await ctx.backend.createStaging(stagingID)
-      const hasher = hashStream(ctx.codec, ctx.chunkSize)
+      const hasher = hashStream({ codec: ctx.codec, chunkSize: ctx.chunkSize })
       await stream
         .pipeThrough(sizeLimiter(limit))
         .pipeThrough(hasher.transform)
@@ -167,7 +171,7 @@ export async function writeBlob<T>(
       ...(contentType === undefined ? {} : { contentType }),
     })
     if (expectedID !== undefined && blobID !== expectedID) {
-      throw new BlobIDMismatchError(expectedID, blobID)
+      throw new BlobIDMismatchError({ expected: expectedID, actual: blobID })
     }
 
     // Step 4: commit bytes, then record the entry, under the blob lock.

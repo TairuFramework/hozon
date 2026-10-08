@@ -35,7 +35,7 @@ const id = blake3Codec.encode({ digest: hasher.digest(), contentLength: bytes.le
 
 ## Hashing a stream
 
-`hashStream(codec, chunkSize)` returns a pass-through `TransformStream` and a `result` promise resolving to `{ digest, contentLength, chunks }`, where `chunks` holds one digest per `chunkSize` chunk (the last may be shorter). `result` rejects if the stream errors or is cancelled.
+`hashStream({ codec, chunkSize })` returns a pass-through `TransformStream` and a `result` promise resolving to `{ digest, contentLength, chunks }`, where `chunks` holds one digest per `chunkSize` chunk (the last may be shorter). `result` rejects if the stream errors or is cancelled.
 
 ## Conformance
 
