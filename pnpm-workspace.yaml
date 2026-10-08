@@ -26,6 +26,7 @@ catalog:
   '@electron-forge/cli': ^8.0.1
   '@electron-forge/plugin-vite': ^8.0.1
   '@logtape/logtape': ^2.4.0
+  '@noble/hashes': ^2.4.0
   '@opentelemetry/api': ^1.9.1
   '@opentelemetry/context-async-hooks': ^2.12.0
   '@opentelemetry/core': ^2.12.0
