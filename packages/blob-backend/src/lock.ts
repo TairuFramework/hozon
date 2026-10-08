@@ -6,8 +6,8 @@ export type BlobLock = {
 
 // Thrown by lock implementations that give up waiting for a lock.
 export class BlobLockTimeoutError extends Error {
-  constructor(message = 'Timed out waiting for blob lock') {
-    super(message)
+  constructor(message = 'Timed out waiting for blob lock', options?: ErrorOptions) {
+    super(message, options)
     this.name = 'BlobLockTimeoutError'
   }
 }

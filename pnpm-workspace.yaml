@@ -34,6 +34,7 @@ catalog:
   '@opentelemetry/sdk-trace-web': ^2.12.0
   '@playwright/test': 1.63.0
   '@sozai/json': ^0.3.0
+  '@sozai/lock': ^0.1.2
   '@sozai/log': ^0.4.0
   '@testcontainers/postgresql': ^12.1.0
   '@types/node': ^26.6.4
