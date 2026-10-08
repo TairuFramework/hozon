@@ -334,3 +334,14 @@ test('finalizeTransfer and deleteEntry remove the session', async () => {
   expect(await store.getTransfer('b1')).toBeNull()
   expect(await store.getTransferByStagingID('stg-2')).toBeNull()
 })
+
+test('beginTransfer with a new staging ID clears previous progress', async () => {
+  await store.insertEntry(entry({ state: 'remote-only' }), [])
+  await store.beginTransfer('b1', 4, manifest(), 'stg-1')
+  await store.recordTransferChunk('b1', 1)
+  await store.beginTransfer('b1', 4, manifest(), 'stg-1')
+  expect((await store.getTransfer('b1'))?.presentChunks).toEqual([1])
+  await store.beginTransfer('b1', 4, manifest(), 'stg-2')
+  expect((await store.getTransfer('b1'))?.presentChunks).toEqual([])
+  expect(await store.getPresentChunkIndexes('b1')).toEqual([])
+})

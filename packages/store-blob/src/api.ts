@@ -116,6 +116,15 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
           .where('blob_id', '=', blobID)
           .execute()
         await insertManifest(trx, blobID, chunks)
+        const existing = await trx
+          .selectFrom('blob_transfer_sessions')
+          .select('staging_id')
+          .where('blob_id', '=', blobID)
+          .executeTakeFirst()
+        // A new staging area holds none of the previous session's chunks.
+        if (existing !== undefined && existing.staging_id !== stagingID) {
+          await trx.deleteFrom('blob_transfers').where('blob_id', '=', blobID).execute()
+        }
         const updatedAt = Date.now()
         await trx
           .insertInto('blob_transfer_sessions')
