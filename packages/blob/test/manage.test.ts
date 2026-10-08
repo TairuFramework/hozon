@@ -1,4 +1,5 @@
-import type { BlobBackend } from '@hozon/blob-backend'
+import type { BlobBackend, BlobLock } from '@hozon/blob-backend'
+import { createMemoryBlobLock } from '@hozon/blob-backend'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 
 import { BlobNotFoundError } from '../src/index.js'
@@ -59,14 +60,67 @@ describe.each(backendFactories)('manage ($name)', (factory) => {
     expect(await listStaging(backend)).toEqual([])
   })
 
-  test('concurrent write and delete leave row present iff bytes present', async () => {
-    const data = bytesOf(5000)
-    const { entry } = await ctx.service.write(sourceOf(data).stream)
-    const id = entry.blobID
-    for (let i = 0; i < 20; i++) {
-      await Promise.all([ctx.service.write(sourceOf(data, 500).stream), ctx.service.delete(id)])
-      const row = (await ctx.store.getEntry(id)) !== null
-      expect(row).toBe(await backend.has(id))
-    }
-  })
+  // Forces the lock order of one write and one delete of the same blob.
+  describe.each(['write-first', 'delete-first'] as const)(
+    'concurrent write and delete (%s)',
+    (order) => {
+      test('row present iff bytes present, in the forced order', async () => {
+        const data = bytesOf(5000)
+        let sawPresent = 0
+        let sawAbsent = 0
+        for (let i = 0; i < 10; i++) {
+          const base = createMemoryBlobLock()
+          let calls = 0
+          let armed = false
+          let started: Promise<void> | undefined
+          let release: () => void = () => {}
+          const secondRequested = new Promise<void>((resolve) => {
+            release = resolve
+          })
+          let startOther: () => Promise<unknown> = async () => {}
+          const lock: BlobLock = {
+            withLock(id, fn) {
+              const n = armed ? ++calls : 0
+              if (n === 2) release()
+              return base.withLock(id, async () => {
+                if (n === 1) {
+                  if (order === 'write-first') started = startOther().then(() => {})
+                  else await secondRequested
+                }
+                return await fn()
+              })
+            },
+          }
+          const built = await createTestService({ backend, chunkSize: 4096, lock })
+          try {
+            const id = (await built.service.write(sourceOf(data).stream)).entry.blobID
+            armed = true
+            let first: Promise<unknown>
+            let second: Promise<unknown>
+            if (order === 'write-first') {
+              // The delete is issued once the write holds the lock.
+              startOther = () => built.service.delete(id)
+              first = built.service.write(sourceOf(data, 500).stream)
+              await first
+              await started
+            } else {
+              // The delete holds the lock until the write has requested it.
+              first = built.service.delete(id)
+              second = built.service.write(sourceOf(data, 500).stream)
+              await Promise.all([first, second])
+            }
+            const row = (await built.store.getEntry(id)) !== null
+            expect(row).toBe(await backend.has(id))
+            expect(row).toBe(order === 'delete-first')
+            if (row) sawPresent++
+            else sawAbsent++
+            await built.service.delete(id)
+          } finally {
+            await built.db.close()
+          }
+        }
+        expect(order === 'delete-first' ? sawPresent : sawAbsent).toBe(10)
+      })
+    },
+  )
 })

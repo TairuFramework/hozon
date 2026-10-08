@@ -34,7 +34,6 @@ export async function deleteBlob(ctx: ManageContext, id: string): Promise<boolea
     const transfer = entry.state === 'partial' ? await store.getTransfer(blobID) : null
     // The row goes first: a crash then leaves orphaned bytes, never a row without bytes.
     await store.deleteEntry(blobID)
-    if (entry.state === 'local') await ctx.backend.delete(blobID)
     if (transfer !== null) {
       try {
         await ctx.backend.abortStaging(transfer.stagingID)
@@ -42,6 +41,7 @@ export async function deleteBlob(ctx: ManageContext, id: string): Promise<boolea
         // Reclaimed by staging pruning.
       }
     }
+    if (entry.state === 'local') await ctx.backend.delete(blobID)
     return true
   })
 }
