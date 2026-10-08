@@ -41,6 +41,7 @@ type BlobStoreAPI = {
   }>
   promoteEntry(entry: Omit<BlobEntryInput, 'state'>, chunks: Array<BlobChunkInput>): Promise<void>
   resetTransfer(blobID: string): Promise<void>
+  fillContentType(blobID: string, contentType: string): Promise<void>
 }
 const BLOB_STORE: 'blob'
 const blobStoreDefinition: StoreDefinition<BlobTables, BlobStoreAPI>

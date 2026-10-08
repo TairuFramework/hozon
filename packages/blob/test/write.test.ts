@@ -68,6 +68,21 @@ describe.each(backendFactories)('write ($name)', (factory) => {
     await cleanup()
   })
 
+  test('rejects an invalid contentType before reading or staging', async () => {
+    for (const contentType of ['x'.repeat(256), 5 as unknown as string]) {
+      const { stream, pulls } = sourceOf(bytesOf(10))
+      await expect(ctx.service.write(stream, { contentType })).rejects.toThrow(
+        'Invalid contentType',
+      )
+      expect(pulls()).toBe(0)
+      expect(await listStaging(backend)).toEqual([])
+    }
+    const ok = await ctx.service.write(sourceOf(bytesOf(10, 9)).stream, {
+      contentType: 'x'.repeat(255),
+    })
+    expect(ok.entry.contentType).toHaveLength(255)
+  })
+
   test('writes a blob and records its manifest', async () => {
     const data = bytesOf(10)
     const { entry, created } = await ctx.service.write(sourceOf(data).stream)

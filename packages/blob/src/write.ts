@@ -92,6 +92,13 @@ export async function writeBlob<T>(
 ): Promise<WriteResult & { result: T | undefined }> {
   const { signal } = options
   if (
+    options.contentType !== undefined &&
+    (typeof options.contentType !== 'string' || options.contentType.length > 255)
+  ) {
+    await cancelQuietly(stream, new Error('Invalid contentType'))
+    throw new Error('Invalid contentType')
+  }
+  if (
     options.maxSize !== undefined &&
     (!Number.isSafeInteger(options.maxSize) || options.maxSize < 0)
   ) {

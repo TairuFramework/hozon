@@ -15,6 +15,8 @@
 
 ## Blob packages
 
+- [@hozon/blob-id](../packages/blob-id/README.md) -- content-addressed blob IDs and hashing
+- [@hozon/blob](../packages/blob/README.md) -- verified blob service over a backend and the blob store
 - [@hozon/blob-backend](../packages/blob-backend/README.md) -- byte storage contract and in-memory backend
 - [@hozon/blob-node-fs](../packages/blob-node-fs/README.md) -- Node filesystem backend
 - [@hozon/store-blob](../packages/store-blob/README.md) -- metadata, manifests, and resumable transfers

@@ -187,6 +187,12 @@ export async function beginFetch(
     const store = await getBlobStore(ctx.db)
     const entry = await store.getEntry(blobID)
     if (entry?.state === 'local') return
+    // A stub with another length could never complete against this manifest.
+    if (entry !== null && entry.contentLength !== manifest.contentLength) {
+      throw new InvalidManifestError(
+        `contentLength ${manifest.contentLength} does not match the stored entry (${entry.contentLength})`,
+      )
+    }
 
     const transfer = entry === null ? null : await store.getTransfer(blobID)
     if (entry !== null && transfer !== null) {

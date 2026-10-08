@@ -17,6 +17,8 @@ Load the domain skill matching your task:
 
 ## Blob packages
 
+- `@hozon/blob-id` -- content-addressed blob ID codec and hashing
+- `@hozon/blob` -- verified blob service: writes, reads, resumable peer transfer, staging pruning
 - `@hozon/blob-backend` -- `BlobBackend`, inclusive `BlobRange`, and `MemoryBlobBackend`
 - `@hozon/blob-node-fs` -- `FSBlobBackend` for Node filesystem byte storage
 - `@hozon/store-blob` -- metadata, chunk manifests, and resumable transfer progress

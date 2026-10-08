@@ -50,7 +50,7 @@ export type BlobService = {
   stageChunk(id: string, index: number, bytes: Uint8Array): Promise<void>
   completeFetch(id: string): Promise<BlobEntry>
   // Aborts staging areas not modified since `olderThan`: abandoned writes and stale transfers.
-  pruneStaging(olderThan: Date): Promise<{ removed: number }>
+  pruneStaging(olderThan: Date): Promise<{ removed: number; failed: number }>
   readonly codec: BlobIDCodec
   readonly limits: BlobLimits
 }
@@ -65,7 +65,7 @@ export function createBlobService(params: BlobServiceParams): BlobService {
     codec: params.codec ?? blake3Codec,
     chunkSize,
     lock: params.lock ?? createMemoryBlobLock(),
-    limits,
+    limits: Object.freeze(limits),
     activeWrites: new Set(),
   }
 

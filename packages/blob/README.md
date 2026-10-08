@@ -32,31 +32,36 @@ Options: `codec` (default `blake3Codec`), `chunkSize` (default 1 MiB), `lock` (d
 4. Under the blob lock: an already-local blob keeps its metadata (a null `contentType` is filled from this write) and returns `created: false`. Otherwise bytes are committed, then the entry and manifest are recorded, replacing any `remote-only` or `partial` state and discarding that transfer's staging area.
 
 Bytes are committed before the row, so a failure leaves only orphan bytes, never a row without bytes.
+A `contentType` that is not a string of at most 255 characters throws `Error('Invalid contentType')` before the body is read.
 Aborting `signal` stops reading, discards staging, and throws `BlobWriteAbortedError`; the signal is checked again before commit.
 
 `writeWith(stream, options, fn)` records the entry and calls `fn(tx, entry)` in one store transaction, returning `{ entry, created, result }`.
 It takes the blob lock before the transaction; the caller must not already be inside a store transaction (single-connection SQLite would deadlock).
 If `fn` throws, the transaction rolls back and the committed bytes remain as orphans.
+While `fn` runs the service holds the blob lock and, on SQLite, the single connection. `fn` must use only `tx`; it must not call blob service methods or use the outer `db`, which would deadlock.
 
 ## Read and manage
 
-`get(id)`, `list({ limit, cursor })`, `has(id)` (true only for `local` entries), `getChunkDigests(id)`, `createReadStream(id, range?)` (local blobs only, inclusive `BlobRange`), `setPinned(id, pinned)`, and `delete(id)`.
+`get(id)`, `list({ limit, cursor })`, `has(id)` (true only for `local` entries), `getChunkDigests(id)` (returns `[]` for non-`local` entries: unverified peer digests are never re-served), `createReadStream(id, range?)` (local blobs only, inclusive `BlobRange`), `setPinned(id, pinned)`, and `delete(id)`.
 Every method canonicalizes `id` first and throws `InvalidBlobIDError` when it is invalid.
 `delete` removes the row (manifest and transfer rows cascade), aborts any transfer staging area, then deletes the bytes.
 
 ## Peer transfer
 
-- `beginFetch(id, { contentLength, chunkSize, chunks, contentType?, encrypted?, keyID? })` validates the untrusted manifest (`InvalidManifestError`) against the ID and limits, then records the entry as `partial` with a fresh staging ID. A local blob is a no-op; an identical manifest with live staging is idempotent; a different one resets the transfer first. A zero-length blob records the service's `chunkSize`, not the peer's.
+- `beginFetch(id, { contentLength, chunkSize, chunks, contentType?, encrypted?, keyID? })` validates the untrusted manifest (`InvalidManifestError`) against the ID and limits, then records the entry as `partial` with a fresh staging ID. A local blob is a no-op; an identical manifest with live staging is idempotent; a different one resets the transfer first. An existing stub whose stored `contentLength` differs from the manifest throws `InvalidManifestError`. A zero-length blob records the service's `chunkSize`, not the peer's.
 - `getPresentChunks(id)` lists staged indexes for resume. If the staging area vanished, the transfer is reset and the list is empty.
 - `stageChunk(id, index, bytes)` checks length (`ChunkLengthError`) and digest (`ChunkDigestMismatchError`) before writing.
 - `completeFetch(id)` throws `TransferIncompleteError` while chunks are missing. It verifies length and whole-blob digest from the staged bytes before committing; on mismatch it aborts staging, resets the transfer, and throws `BlobIDMismatchError`.
 
 ## Staging maintenance
 
-`pruneStaging(olderThan)` returns `{ removed }`. It skips areas modified after `olderThan`.
+`pruneStaging(olderThan)` returns `{ removed, failed }`. It skips areas modified after `olderThan`.
+Only areas with the service's own `w-` (write) and `t-` (transfer) ID prefixes are considered; other names are left untouched. A failure on one area (for example a backend abort error) is counted in `failed` and does not stop the others.
 Transfer areas are aborted and reset only if, under the blob lock, the session still points at that staging ID and is itself older than `olderThan`.
 Write areas are aborted unless they belong to a write in progress in this process. Writes in other processes are protected only by the age threshold: `olderThan` must exceed the longest upload duration.
-A backend without `listStaging` returns `{ removed: 0 }`.
+A backend without `listStaging` returns `{ removed: 0, failed: 0 }`.
+The backend's staging namespace must not be shared with non-service writers that use `w-`/`t-` IDs: such areas would be pruned.
+Abandoned `remote-only` stub rows (for example after a reset) are never removed automatically; there is no garbage collection for them.
 
 ## Locking
 

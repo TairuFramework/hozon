@@ -52,6 +52,29 @@ describe.each(backendFactories)('read ($name)', (factory) => {
     ).toBeNull()
   })
 
+  test('getChunkDigests returns [] for non-local entries', async () => {
+    const id = ctx.service.codec.encode({ digest: new Uint8Array(32).fill(3), contentLength: 8 })
+    await ctx.store.insertEntry(
+      { blobID: id, contentLength: 8, chunkSize: 4, state: 'remote-only', createdAt: 5 },
+      [],
+    )
+    await ctx.store.beginTransfer(
+      id,
+      4,
+      [
+        { index: 0, digest: new Uint8Array(32).fill(1) },
+        { index: 1, digest: new Uint8Array(32).fill(2) },
+      ],
+      't-x',
+    )
+    expect(await ctx.store.getChunkDigests(id)).toHaveLength(2)
+    expect(await ctx.service.getChunkDigests(id)).toEqual([])
+  })
+
+  test('limits are frozen', () => {
+    expect(Object.isFrozen(ctx.service.limits)).toBe(true)
+  })
+
   test('list pages entries', async () => {
     await put(10, 1)
     await put(10, 2)

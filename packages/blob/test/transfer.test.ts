@@ -187,6 +187,24 @@ describe.each(backendFactories)('transfer ($name)', (factory) => {
       expect(await ctx.store.getTransfer(src.id)).toBeNull()
     })
 
+    test('remote-only stub with a different contentLength', async () => {
+      await ctx.store.insertEntry(
+        {
+          blobID: src.id,
+          contentLength: 2501,
+          chunkSize: CHUNK,
+          state: 'remote-only',
+          createdAt: 5,
+        },
+        [],
+      )
+      await expect(ctx.service.beginFetch(src.id, src.manifest)).rejects.toThrow(
+        InvalidManifestError,
+      )
+      expect((await ctx.store.getEntry(src.id))?.state).toBe('remote-only')
+      expect(await ctx.store.getTransfer(src.id)).toBeNull()
+    })
+
     test('contentLength above maxBlobSize', async () => {
       const small = await createTestService({
         backend,

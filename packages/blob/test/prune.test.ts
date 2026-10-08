@@ -101,7 +101,7 @@ describe.each(backendFactories)('pruneStaging ($name)', (factory) => {
     await orphanStaging(backend, 'w-new')
     await touchStaging('w-new', new Date())
     const result = await ctx.service.pruneStaging(new Date(Date.now() - HOUR))
-    expect(result).toEqual({ removed: 1 })
+    expect(result).toEqual({ removed: 1, failed: 0 })
     expect(await listStaging(backend)).toEqual(['w-new'])
   })
 
@@ -122,7 +122,10 @@ describe.each(backendFactories)('pruneStaging ($name)', (factory) => {
     const writing = ctx.service.write(stream)
     await vi.waitFor(async () => expect(await listStaging(backend)).toHaveLength(1))
 
-    expect(await ctx.service.pruneStaging(new Date(Date.now() + HOUR))).toEqual({ removed: 0 })
+    expect(await ctx.service.pruneStaging(new Date(Date.now() + HOUR))).toEqual({
+      removed: 0,
+      failed: 0,
+    })
     expect(await listStaging(backend)).toHaveLength(1)
 
     release()
@@ -139,7 +142,7 @@ describe.each(backendFactories)('pruneStaging ($name)', (factory) => {
 
     vi.setSystemTime(Date.now() + 2 * HOUR)
     const result = await ctx.service.pruneStaging(new Date(Date.now() - HOUR))
-    expect(result).toEqual({ removed: 1 })
+    expect(result).toEqual({ removed: 1, failed: 0 })
     expect(await listStaging(backend)).toEqual([])
     expect((await ctx.service.get(src.id))?.state).toBe('remote-only')
     expect(await ctx.store.getTransfer(src.id)).toBeNull()
@@ -154,7 +157,7 @@ describe.each(backendFactories)('pruneStaging ($name)', (factory) => {
     await ctx.service.beginFetch(src.id, src.manifest) // identical: touches the session
     const olderThan = new Date(Date.now() - HOUR)
     // The staging area is old for the FS backend; the session decides either way.
-    expect(await ctx.service.pruneStaging(olderThan)).toEqual({ removed: 0 })
+    expect(await ctx.service.pruneStaging(olderThan)).toEqual({ removed: 0, failed: 0 })
     expect(await listStaging(backend)).toHaveLength(1)
     expect((await ctx.service.get(src.id))?.state).toBe('partial')
   })
@@ -169,9 +172,46 @@ describe.each(backendFactories)('pruneStaging ($name)', (factory) => {
       await ctx.service.stageChunk(src.id, 1, src.chunks[1] as Uint8Array)
     })
     const result = await ctx.service.pruneStaging(new Date(Date.now() - HOUR))
-    expect(result).toEqual({ removed: 0 })
+    expect(result).toEqual({ removed: 0, failed: 0 })
     expect(await listStaging(backend)).toHaveLength(1)
     expect(await ctx.service.getPresentChunks(src.id)).toEqual([0, 1])
+  })
+
+  test('leaves foreign-named staging areas untouched', async () => {
+    await orphanStaging(backend, 'foreign')
+    await orphanStaging(backend, 'w-old')
+    vi.setSystemTime(Date.now() + 2 * HOUR)
+    const result = await ctx.service.pruneStaging(new Date(Date.now() - HOUR))
+    expect(result).toEqual({ removed: 1, failed: 0 })
+    expect(await listStaging(backend)).toEqual(['foreign'])
+  })
+
+  test('counts a failing abort and still removes other areas', async () => {
+    await orphanStaging(backend, 'w-bad')
+    await orphanStaging(backend, 'w-good')
+    vi.setSystemTime(Date.now() + 2 * HOUR)
+    const flaky = new Proxy(backend, {
+      get(target, prop) {
+        if (prop === 'abortStaging') {
+          return async (stagingID: string) => {
+            if (stagingID === 'w-bad') throw new Error('boom')
+            await target.abortStaging(stagingID)
+          }
+        }
+        const value = Reflect.get(target, prop, target)
+        return typeof value === 'function' ? value.bind(target) : value
+      },
+    })
+    const other = await createTestService({ backend: flaky })
+    try {
+      expect(await other.service.pruneStaging(new Date(Date.now() - HOUR))).toEqual({
+        removed: 1,
+        failed: 1,
+      })
+      expect(await listStaging(backend)).toEqual(['w-bad'])
+    } finally {
+      await other.db.close()
+    }
   })
 
   test('returns removed 0 for a backend without listStaging', async () => {
@@ -186,7 +226,10 @@ describe.each(backendFactories)('pruneStaging ($name)', (factory) => {
     })
     const other = await createTestService({ backend: bare })
     try {
-      expect(await other.service.pruneStaging(new Date(Date.now() + HOUR))).toEqual({ removed: 0 })
+      expect(await other.service.pruneStaging(new Date(Date.now() + HOUR))).toEqual({
+        removed: 0,
+        failed: 0,
+      })
       expect(await listStaging(backend)).toEqual(['w-old'])
     } finally {
       await other.db.close()

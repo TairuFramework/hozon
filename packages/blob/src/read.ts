@@ -30,8 +30,12 @@ export async function hasBlob(ctx: ReadContext, id: string): Promise<boolean> {
 }
 
 export async function getChunkDigests(ctx: ReadContext, id: string): Promise<Array<Uint8Array>> {
+  const blobID = ctx.codec.canonicalize(id)
   const store = await getBlobStore(ctx.db)
-  return await store.getChunkDigests(ctx.codec.canonicalize(id))
+  // Digests of non-local entries come from an unverified peer manifest.
+  const entry = await store.getEntry(blobID)
+  if (entry?.state !== 'local') return []
+  return await store.getChunkDigests(blobID)
 }
 
 export async function createBlobReadStream(
