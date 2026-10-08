@@ -229,6 +229,15 @@ describe.each(backendFactories)('write ($name)', (factory) => {
     expect(await listStaging(backend)).toEqual([])
   })
 
+  test('rejects an invalid maxSize before staging', async () => {
+    for (const maxSize of [Number.NaN, -1, 1.5, Number.POSITIVE_INFINITY]) {
+      const { stream, pulls } = sourceOf(bytesOf(10))
+      await expect(ctx.service.write(stream, { maxSize })).rejects.toThrow('Invalid maxSize')
+      expect(pulls()).toBe(0)
+    }
+    expect(await listStaging(backend)).toEqual([])
+  })
+
   test('an abort mid-stream throws BlobWriteAbortedError', async () => {
     const controller = new AbortController()
     let pulls = 0
@@ -350,10 +359,7 @@ describe.each(backendFactories)('write ($name)', (factory) => {
       const write = ctx.service.writeWith(sourceOf(data).stream, {}, async (tx) => {
         events.push('fn-start')
         tx.onCommit(() => events.push('commit'))
-        // Stands in for `delete(id)` (Task 7): a blob mutation under the same lock.
-        concurrent = ctx.lock.withLock(id, async () => {
-          events.push('delete-start')
-          await ctx.store.deleteEntry(id)
+        concurrent = ctx.service.delete(id).then(() => {
           events.push('delete-end')
         })
         for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 1))
@@ -361,7 +367,7 @@ describe.each(backendFactories)('write ($name)', (factory) => {
       })
       await write
       await concurrent
-      expect(events).toEqual(['fn-start', 'fn-end', 'commit', 'delete-start', 'delete-end'])
+      expect(events).toEqual(['fn-start', 'fn-end', 'commit', 'delete-end'])
       expect(await ctx.store.getEntry(id)).toBeNull()
     })
   })

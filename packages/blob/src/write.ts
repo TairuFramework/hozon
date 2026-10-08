@@ -90,6 +90,13 @@ export async function writeBlob<T>(
   fn?: RecordFn<T>,
 ): Promise<WriteResult & { result: T | undefined }> {
   const { signal } = options
+  if (
+    options.maxSize !== undefined &&
+    (!Number.isSafeInteger(options.maxSize) || options.maxSize < 0)
+  ) {
+    await cancelQuietly(stream, new Error('Invalid maxSize'))
+    throw new Error('Invalid maxSize')
+  }
   const limit = Math.min(options.maxSize ?? Number.POSITIVE_INFINITY, ctx.limits.maxBlobSize)
   let contentType = options.contentType
   let expectedID: string | undefined
@@ -174,7 +181,8 @@ export async function writeBlob<T>(
       }
 
       const transfer = existing === null ? null : await store.getTransfer(blobID)
-      // Step 5: bytes are committed before the row.
+      // Step 5: bytes are committed before the row. Re-check: the awaits above may outlast an abort.
+      throwIfAborted(signal)
       await ctx.backend.commit(stagingID, blobID)
       staged = false
 
