@@ -830,6 +830,15 @@ importers:
       '@hozon/adapter':
         specifier: workspace:^
         version: link:../../packages/adapter
+      '@hozon/blob':
+        specifier: workspace:^
+        version: link:../../packages/blob
+      '@hozon/blob-backend':
+        specifier: workspace:^
+        version: link:../../packages/blob-backend
+      '@hozon/blob-id':
+        specifier: workspace:^
+        version: link:../../packages/blob-id
       '@hozon/conformance':
         specifier: workspace:^
         version: link:../../packages/conformance

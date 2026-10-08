@@ -10,6 +10,7 @@ import {
   ChunkLengthError,
   createBlobService,
   InvalidManifestError,
+  TransferIncompleteError,
 } from '../src/index.js'
 import {
   backendFactories,
@@ -262,6 +263,40 @@ describe.each(backendFactories)('transfer ($name)', (factory) => {
     expect(await listStaging(backend)).toEqual([])
   })
 
+  test('beginFetch rejects ill-typed metadata', async () => {
+    const src = await sourceBlob(bytesOf(2500, 11))
+    const bad = [
+      { contentType: 5 },
+      { contentType: 'x'.repeat(256) },
+      { encrypted: 'yes' },
+      { keyID: 7 },
+      { keyID: 'k'.repeat(256) },
+    ]
+    for (const extra of bad) {
+      await expect(
+        ctx.service.beginFetch(src.id, {
+          ...src.manifest,
+          ...extra,
+        } as unknown as TransferManifest),
+      ).rejects.toThrow(InvalidManifestError)
+    }
+    expect(await ctx.service.get(src.id)).toBeNull()
+    await ctx.service.beginFetch(src.id, {
+      ...src.manifest,
+      contentType: 'x'.repeat(255),
+      encrypted: true,
+      keyID: 'k'.repeat(255),
+    })
+    expect((await ctx.service.get(src.id))?.state).toBe('partial')
+  })
+
+  test('zero-length transfer records the service chunk size, not the peer one', async () => {
+    const src = await sourceBlob(new Uint8Array(0))
+    await ctx.service.beginFetch(src.id, { ...src.manifest, chunkSize: 7 })
+    const entry = await ctx.service.completeFetch(src.id)
+    expect(entry.chunkSize).toBe(CHUNK)
+  })
+
   test('stageChunk and completeFetch without an active transfer throw BlobNotFoundError', async () => {
     const src = await sourceBlob(bytesOf(2500, 3))
     await expect(ctx.service.stageChunk(src.id, 0, src.chunks[0] as Uint8Array)).rejects.toThrow(
@@ -276,7 +311,7 @@ describe.each(backendFactories)('transfer ($name)', (factory) => {
     await ctx.service.beginFetch(src.id, src.manifest)
     await ctx.service.stageChunk(src.id, 0, src.chunks[0] as Uint8Array)
     await ctx.service.stageChunk(src.id, 2, src.chunks[2] as Uint8Array)
-    await expect(ctx.service.completeFetch(src.id)).rejects.toThrow(/missing/)
+    await expect(ctx.service.completeFetch(src.id)).rejects.toThrow(TransferIncompleteError)
     expect((await ctx.service.get(src.id))?.state).toBe('partial')
     expect(await ctx.service.getPresentChunks(src.id)).toEqual([0, 2])
     expect(await backend.has(src.id)).toBe(false)

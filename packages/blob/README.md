@@ -38,6 +38,40 @@ Aborting `signal` stops reading, discards staging, and throws `BlobWriteAbortedE
 It takes the blob lock before the transaction; the caller must not already be inside a store transaction (single-connection SQLite would deadlock).
 If `fn` throws, the transaction rolls back and the committed bytes remain as orphans.
 
+## Read and manage
+
+`get(id)`, `list({ limit, cursor })`, `has(id)` (true only for `local` entries), `getChunkDigests(id)`, `createReadStream(id, range?)` (local blobs only, inclusive `BlobRange`), `setPinned(id, pinned)`, and `delete(id)`.
+Every method canonicalizes `id` first and throws `InvalidBlobIDError` when it is invalid.
+`delete` removes the row (manifest and transfer rows cascade), aborts any transfer staging area, then deletes the bytes.
+
+## Peer transfer
+
+- `beginFetch(id, { contentLength, chunkSize, chunks, contentType?, encrypted?, keyID? })` validates the untrusted manifest (`InvalidManifestError`) against the ID and limits, then records the entry as `partial` with a fresh staging ID. A local blob is a no-op; an identical manifest with live staging is idempotent; a different one resets the transfer first. A zero-length blob records the service's `chunkSize`, not the peer's.
+- `getPresentChunks(id)` lists staged indexes for resume. If the staging area vanished, the transfer is reset and the list is empty.
+- `stageChunk(id, index, bytes)` checks length (`ChunkLengthError`) and digest (`ChunkDigestMismatchError`) before writing.
+- `completeFetch(id)` throws `TransferIncompleteError` while chunks are missing. It verifies length and whole-blob digest from the staged bytes before committing; on mismatch it aborts staging, resets the transfer, and throws `BlobIDMismatchError`.
+
+## Staging maintenance
+
+`pruneStaging(olderThan)` returns `{ removed }`. It skips areas modified after `olderThan`.
+Transfer areas are aborted and reset only if, under the blob lock, the session still points at that staging ID and is itself older than `olderThan`.
+Write areas are aborted unless they belong to a write in progress in this process. Writes in other processes are protected only by the age threshold: `olderThan` must exceed the longest upload duration.
+A backend without `listStaging` returns `{ removed: 0 }`.
+
+## Locking
+
+`BlobLock` is `withLock(id, fn)`, keyed by canonical blob ID.
+Lock order is always blob lock, then store transaction. Locks are non-reentrant: public methods take the lock once and call unlocked helpers.
+`write` (commit and record), `delete`, `setPinned`, `beginFetch`, `stageChunk`, `completeFetch`, transfer resets, and pruning of a transfer area run under the lock.
+
+- `createMemoryBlobLock()` (default): in-process keyed mutex, correct for a single process.
+- `createFileBlobLock(directory, { acquireTimeoutMs? })`: from `@hozon/blob-node-fs`: cross-process lock for processes on one host sharing storage, one lock file per ID. `directory` must be on a local filesystem. Exclusion is as strong as `@sozai/lock` provides; its stale-lock reaping has a small documented exclusion gap.
+- Multi-host deployments sharing a backend and database need a distributed `BlobLock`. None ships; supply your own. A failed acquire throws `BlobLockTimeoutError`.
+
+## Store registration
+
+The caller must register `blobStoreDefinition` on the `HozonDB` before creating the service. The service does not register it.
+
 ## Errors
 
-`BlobNotFoundError`, `BlobTooLargeError`, `BlobIDMismatchError`, `ContentTypeMismatchError`, `ChunkDigestMismatchError`, `ChunkLengthError`, `InvalidManifestError`, `InvalidRangeError`, `BlobWriteAbortedError`, and the re-exported `InvalidBlobIDError` and `BlobLockTimeoutError`.
+`BlobNotFoundError`, `BlobTooLargeError`, `BlobIDMismatchError`, `ContentTypeMismatchError`, `ChunkDigestMismatchError`, `ChunkLengthError`, `InvalidManifestError`, `InvalidRangeError`, `BlobWriteAbortedError`, `TransferIncompleteError`, and the re-exported `InvalidBlobIDError` and `BlobLockTimeoutError`.

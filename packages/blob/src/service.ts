@@ -7,6 +7,7 @@ import type { BlobEntry } from '@hozon/store-blob'
 
 import { assertChunkSize, type BlobLimits, DEFAULT_CHUNK_SIZE, resolveLimits } from './limits.js'
 import { deleteBlob, setBlobPinned } from './manage.js'
+import { pruneStaging } from './prune.js'
 import { createBlobReadStream, getChunkDigests, getEntry, hasBlob, listEntries } from './read.js'
 import {
   beginFetch,
@@ -48,6 +49,8 @@ export type BlobService = {
   getPresentChunks(id: string): Promise<Array<number>>
   stageChunk(id: string, index: number, bytes: Uint8Array): Promise<void>
   completeFetch(id: string): Promise<BlobEntry>
+  // Aborts staging areas not modified since `olderThan`: abandoned writes and stale transfers.
+  pruneStaging(olderThan: Date): Promise<{ removed: number }>
   readonly codec: BlobIDCodec
   readonly limits: BlobLimits
 }
@@ -80,6 +83,7 @@ export function createBlobService(params: BlobServiceParams): BlobService {
     getPresentChunks: (id) => getPresentChunks(ctx, id),
     stageChunk: (id, index, bytes) => stageChunk(ctx, id, index, bytes),
     completeFetch: (id) => completeFetch(ctx, id),
+    pruneStaging: (olderThan) => pruneStaging(ctx, olderThan),
     async write(stream, options = {}) {
       const { entry, created } = await writeBlob(ctx, stream, options)
       return { entry, created }

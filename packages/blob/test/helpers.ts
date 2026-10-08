@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, utimes } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { BlobBackend, BlobLock } from '@hozon/blob-backend'
@@ -16,14 +16,23 @@ import { createBlobService } from '../src/index.js'
 
 export type BackendFactory = {
   name: string
-  create(): Promise<{ backend: BlobBackend; cleanup(): Promise<void> }>
+  create(): Promise<{
+    backend: BlobBackend
+    cleanup(): Promise<void>
+    // Sets the modification time of a staging area, for backends that use file times.
+    touchStaging(stagingID: string, time: Date): Promise<void>
+  }>
 }
 
 export const backendFactories: Array<BackendFactory> = [
   {
     name: 'MemoryBlobBackend',
     async create() {
-      return { backend: new MemoryBlobBackend(), cleanup: async () => {} }
+      return {
+        backend: new MemoryBlobBackend(),
+        cleanup: async () => {},
+        touchStaging: async () => {},
+      }
     },
   },
   {
@@ -33,6 +42,7 @@ export const backendFactories: Array<BackendFactory> = [
       return {
         backend: new FSBlobBackend(root),
         cleanup: () => rm(root, { recursive: true, force: true }),
+        touchStaging: (stagingID, time) => utimes(join(root, 'staging', stagingID), time, time),
       }
     },
   },

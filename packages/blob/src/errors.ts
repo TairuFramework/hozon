@@ -63,3 +63,10 @@ export class BlobWriteAbortedError extends Error {
     this.name = 'BlobWriteAbortedError'
   }
 }
+
+export class TransferIncompleteError extends Error {
+  constructor(id: string, missing: number, options?: ErrorOptions) {
+    super(`Cannot complete transfer of ${id}: ${missing} chunk(s) missing`, options)
+    this.name = 'TransferIncompleteError'
+  }
+}

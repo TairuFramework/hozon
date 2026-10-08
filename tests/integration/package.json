@@ -12,6 +12,9 @@
   },
   "dependencies": {
     "@hozon/adapter": "workspace:^",
+    "@hozon/blob": "workspace:^",
+    "@hozon/blob-backend": "workspace:^",
+    "@hozon/blob-id": "workspace:^",
     "@hozon/conformance": "workspace:^",
     "@hozon/db": "workspace:^",
     "@hozon/logtape": "workspace:^",

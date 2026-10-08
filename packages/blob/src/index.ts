@@ -11,6 +11,7 @@ export {
   ContentTypeMismatchError,
   InvalidManifestError,
   InvalidRangeError,
+  TransferIncompleteError,
 } from './errors.js'
 export { type BlobLimits, DEFAULT_CHUNK_SIZE, DEFAULT_LIMITS } from './limits.js'
 export { type BlobService, type BlobServiceParams, createBlobService } from './service.js'

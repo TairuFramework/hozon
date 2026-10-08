@@ -10,6 +10,7 @@ import {
   ChunkDigestMismatchError,
   ChunkLengthError,
   InvalidManifestError,
+  TransferIncompleteError,
 } from './errors.js'
 import type { BlobLimits } from './limits.js'
 import { createStagingID } from './write.js'
@@ -29,6 +30,8 @@ export type TransferContext = {
   db: StoreProvider
   backend: BlobBackend
   codec: BlobIDCodec
+  // The service's chunk size, recorded for zero-length transfers.
+  chunkSize: number
   lock: BlobLock
   limits: BlobLimits
 }
@@ -103,6 +106,16 @@ function validateManifest(
       )
     }
   }
+  const { contentType, encrypted, keyID } = manifest
+  if (contentType !== undefined && (typeof contentType !== 'string' || contentType.length > 255)) {
+    throw new InvalidManifestError('contentType must be a string of at most 255 characters')
+  }
+  if (encrypted !== undefined && typeof encrypted !== 'boolean') {
+    throw new InvalidManifestError('encrypted must be a boolean')
+  }
+  if (keyID !== undefined && (typeof keyID !== 'string' || keyID.length > 255)) {
+    throw new InvalidManifestError('keyID must be a string of at most 255 characters')
+  }
   const decoded = ctx.codec.decode(blobID)
   if (decoded.contentLength !== contentLength) {
     throw new InvalidManifestError(
@@ -168,6 +181,8 @@ export async function beginFetch(
 ): Promise<void> {
   const blobID = ctx.codec.canonicalize(id)
   const contentType = validateManifest(ctx, blobID, manifest)
+  // A zero-length blob has no chunks, so the peer's chunk size is meaningless.
+  const chunkSize = manifest.contentLength === 0 ? ctx.chunkSize : manifest.chunkSize
   await ctx.lock.withLock(blobID, async () => {
     const store = await getBlobStore(ctx.db)
     const entry = await store.getEntry(blobID)
@@ -177,7 +192,7 @@ export async function beginFetch(
     if (entry !== null && transfer !== null) {
       const identical =
         entry.state === 'partial' &&
-        entry.chunkSize === manifest.chunkSize &&
+        entry.chunkSize === chunkSize &&
         digestsEqual(await store.getChunkDigests(blobID), manifest.chunks)
       if (identical && (await stagingExists(ctx.backend, transfer, entry.chunkSize))) {
         await store.touchTransfer(blobID)
@@ -193,7 +208,7 @@ export async function beginFetch(
           contentLength: manifest.contentLength,
           encrypted: manifest.encrypted ?? false,
           keyID: manifest.keyID ?? null,
-          chunkSize: manifest.chunkSize,
+          chunkSize,
           state: 'remote-only',
           createdAt: Date.now(),
           contentType: contentType ?? null,
@@ -206,7 +221,7 @@ export async function beginFetch(
       if (contentType !== undefined) await store.fillContentType(blobID, contentType)
     }
     const chunks = manifest.chunks.map((digest, index) => ({ index, digest }))
-    await store.beginTransfer(blobID, manifest.chunkSize, chunks, createStagingID('t'))
+    await store.beginTransfer(blobID, chunkSize, chunks, createStagingID('t'))
   })
 }
 
@@ -286,7 +301,7 @@ export async function completeFetch(ctx: TransferContext, id: string): Promise<B
     const present = new Set(transfer.presentChunks)
     const missing = digests.length - digests.filter((_, index) => present.has(index)).length
     if (missing > 0) {
-      throw new Error(`Cannot complete transfer of ${blobID}: ${missing} chunk(s) missing`)
+      throw new TransferIncompleteError(blobID, missing)
     }
     // A zero-length blob stages no chunks; materialize its empty area for commit.
     if (digests.length === 0) {
