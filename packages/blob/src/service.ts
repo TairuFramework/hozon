@@ -1,0 +1,101 @@
+import type { BlobBackend, BlobLock, BlobRange } from '@hozon/blob-backend'
+import { createMemoryBlobLock } from '@hozon/blob-backend'
+import type { BlobIDCodec } from '@hozon/blob-id'
+import { blake3Codec } from '@hozon/blob-id'
+import type { StoreProvider } from '@hozon/db'
+import type { BlobEntry } from '@hozon/store-blob'
+import type { Runtime } from '@sozai/runtime'
+import { createRuntime } from '@sozai/runtime'
+
+import { assertChunkSize, type BlobLimits, DEFAULT_CHUNK_SIZE, resolveLimits } from './limits.js'
+import { deleteBlob, setBlobPinned } from './manage.js'
+import { pruneStaging } from './prune.js'
+import { createBlobReadStream, getChunkDigests, getEntry, hasBlob, listEntries } from './read.js'
+import {
+  beginFetch,
+  completeFetch,
+  getPresentChunks,
+  type StageChunkParams,
+  stageChunk,
+  type TransferManifest,
+} from './transfer.js'
+import { type WriteContext, type WriteParams, type WriteResult, writeBlob } from './write.js'
+
+export type BlobServiceParams = {
+  // Must have `blobStoreDefinition` registered.
+  db: StoreProvider
+  backend: BlobBackend
+  codec?: BlobIDCodec
+  chunkSize?: number
+  lock?: BlobLock
+  limits?: Partial<BlobLimits>
+  runtime?: Runtime
+}
+
+export type BlobService = {
+  write(params: WriteParams): Promise<WriteResult>
+  writeWith<T>(
+    params: WriteParams & { fn: (tx: StoreProvider, entry: BlobEntry) => Promise<T> },
+  ): Promise<WriteResult & { result: T }>
+  get(id: string): Promise<BlobEntry | null>
+  list(params: {
+    limit: number
+    cursor?: string
+  }): Promise<{ entries: Array<BlobEntry>; nextCursor: string | null }>
+  has(id: string): Promise<boolean>
+  getChunkDigests(id: string): Promise<Array<Uint8Array>>
+  createReadStream(id: string, range?: BlobRange): Promise<ReadableStream<Uint8Array>>
+  setPinned(id: string, pinned: boolean): Promise<void>
+  delete(id: string): Promise<boolean>
+  beginFetch(id: string, manifest: TransferManifest): Promise<void>
+  getPresentChunks(id: string): Promise<Array<number>>
+  stageChunk(params: StageChunkParams): Promise<void>
+  completeFetch(id: string): Promise<BlobEntry>
+  // Aborts staging areas not modified since `olderThan`: abandoned writes and stale transfers.
+  pruneStaging(olderThan: Date): Promise<{ removed: number; failed: number }>
+  readonly codec: BlobIDCodec
+  readonly limits: BlobLimits
+}
+
+export function createBlobService(params: BlobServiceParams): BlobService {
+  const limits = resolveLimits(params.limits)
+  const chunkSize = params.chunkSize ?? DEFAULT_CHUNK_SIZE
+  assertChunkSize(chunkSize, limits)
+  const ctx: WriteContext = {
+    db: params.db,
+    backend: params.backend,
+    codec: params.codec ?? blake3Codec,
+    chunkSize,
+    lock: params.lock ?? createMemoryBlobLock(),
+    limits: Object.freeze(limits),
+    runtime: params.runtime ?? createRuntime(),
+    activeWrites: new Set(),
+  }
+
+  return {
+    codec: ctx.codec,
+    limits: ctx.limits,
+    get: (id) => getEntry(ctx, id),
+    list: (listParams) => listEntries(ctx, listParams),
+    has: (id) => hasBlob(ctx, id),
+    getChunkDigests: (id) => getChunkDigests(ctx, id),
+    createReadStream: (id, range) => createBlobReadStream(ctx, id, range),
+    setPinned: (id, pinned) => setBlobPinned(ctx, id, pinned),
+    delete: (id) => deleteBlob(ctx, id),
+    beginFetch: (id, manifest) => beginFetch(ctx, id, manifest),
+    getPresentChunks: (id) => getPresentChunks(ctx, id),
+    stageChunk: (params) => stageChunk(ctx, params),
+    completeFetch: (id) => completeFetch(ctx, id),
+    pruneStaging: (olderThan) => pruneStaging(ctx, olderThan),
+    async write(params) {
+      const { entry, created } = await writeBlob(ctx, params)
+      return { entry, created }
+    },
+    async writeWith<T>(
+      params: WriteParams & { fn: (tx: StoreProvider, entry: BlobEntry) => Promise<T> },
+    ) {
+      const { entry, created, result } = await writeBlob(ctx, params)
+      return { entry, created, result: result as T }
+    },
+  }
+}

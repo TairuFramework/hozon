@@ -1,5 +1,5 @@
 import { constants, createReadStream, createWriteStream } from 'node:fs'
-import { link, mkdir, open, rm, stat } from 'node:fs/promises'
+import { link, mkdir, open, readdir, rm, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 import { pathToFileURL } from 'node:url'
@@ -9,7 +9,7 @@ import type { BlobBackend, BlobRange } from '@hozon/blob-backend'
 // blobs under `<root>/content/<key>`. Commit publishes a hard link within the same
 // filesystem. Names must be nonempty, not `.`, and contain no `..`,
 // path separators, colons, or NUL bytes.
-function assertSafeName(value: string): void {
+export function assertSafeName(value: string): void {
   if (value === '' || value === '.' || value.includes('..') || /[/\\:\0]/.test(value)) {
     throw new Error(`Invalid blob key: ${JSON.stringify(value)}`)
   }
@@ -58,8 +58,14 @@ export class FSBlobBackend implements BlobBackend {
       close() {
         return writer.close()
       },
-      abort(reason) {
-        return writer.abort(reason)
+      async abort(reason) {
+        // The file opens lazily: wait for it to close so a following
+        // abortStaging cannot run before the file exists.
+        const closed = nodeStream.closed
+          ? Promise.resolve()
+          : new Promise<void>((resolve) => nodeStream.once('close', () => resolve()))
+        await writer.abort(reason)
+        await closed
       },
     })
   }
@@ -104,6 +110,37 @@ export class FSBlobBackend implements BlobBackend {
 
   async abortStaging(stagingID: string): Promise<void> {
     await rm(this.#stagingPath(stagingID), { force: true })
+  }
+
+  async createStagingReadStream(
+    stagingID: string,
+    range?: BlobRange,
+  ): Promise<ReadableStream<Uint8Array>> {
+    const path = this.#stagingPath(stagingID)
+    // Reject up front for a missing staging file instead of erroring the stream later.
+    await stat(path)
+    const options = range == null ? undefined : { start: range.start, end: range.end }
+    return Readable.toWeb(createReadStream(path, options)) as ReadableStream<Uint8Array>
+  }
+
+  async *listStaging(): AsyncIterable<{ stagingID: string; modifiedAt: Date }> {
+    let names: Array<string>
+    try {
+      names = await readdir(this.#stagingDir)
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return
+      throw error
+    }
+    for (const stagingID of names) {
+      try {
+        const { mtime } = await stat(join(this.#stagingDir, stagingID))
+        yield { stagingID, modifiedAt: mtime }
+      } catch (error) {
+        // Committed or aborted between readdir and stat.
+        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') continue
+        throw error
+      }
+    }
   }
 
   async createReadStream(key: string, range?: BlobRange): Promise<ReadableStream<Uint8Array>> {

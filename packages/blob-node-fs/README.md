@@ -28,4 +28,17 @@ Reopening `createStaging` truncates previous bytes. Positioned `writeChunk` call
 Concurrent competing uploads preserve the first published bytes. Duplicate commits of the same staging area are idempotent.
 Staging and content directories must share a filesystem that supports hard links, including NTFS on Windows.
 
+`createStagingReadStream(stagingID, range?)` reads a staging file (inclusive range) and rejects when it does not exist. `listStaging()` yields `{ stagingID, modifiedAt }` from the staging file `mtime`, and yields nothing when no staging directory exists.
+
+## File lock
+
+```ts
+import { createFileBlobLock } from '@hozon/blob-node-fs'
+
+const lock = createFileBlobLock({ directory: '/var/lib/app/blob-locks', acquireTimeoutMs: 5000 })
+await lock.withLock(blobID, async () => {})
+```
+
+`createFileBlobLock` serializes work per blob ID across processes with `<directory>/<id>.lock` files, via `@sozai/lock`. IDs are validated like backend keys. Acquisition rejects with `BlobLockTimeoutError` after `acquireTimeoutMs`. Limits: local filesystem only, non-reentrant (nested `withLock` for one ID deadlocks until timeout), and stale-lock reaping inherits the gap documented in `@sozai/lock`.
+
 See the [blob backend reference](../../docs/reference/blob-backends.md#fsblobbackend).

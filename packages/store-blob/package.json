@@ -1,6 +1,6 @@
 {
   "name": "@hozon/store-blob",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Content-addressed blob metadata and resumable transfer store for Hozon",
   "repository": {
     "type": "git",
@@ -29,7 +29,8 @@
   },
   "dependencies": {
     "@hozon/adapter": "workspace:^",
-    "@hozon/db": "workspace:^"
+    "@hozon/db": "workspace:^",
+    "@sozai/codec": "catalog:"
   },
   "devDependencies": {
     "@hozon/node-sqlite": "workspace:^",

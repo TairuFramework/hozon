@@ -1,0 +1,42 @@
+{
+  "name": "@hozon/blob-id",
+  "version": "0.1.0",
+  "description": "Pluggable content-addressed blob IDs for Hozon",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TairuFramework/hozon.git",
+    "directory": "packages/blob-id"
+  },
+  "license": "MIT",
+  "sideEffects": false,
+  "type": "module",
+  "exports": {
+    ".": "./lib/index.js",
+    "./conformance": "./lib/conformance.js"
+  },
+  "files": [
+    "lib/*"
+  ],
+  "scripts": {
+    "build": "pnpm run build:clean && pnpm run build:js && pnpm run build:types",
+    "build:clean": "del-cli lib",
+    "build:js": "del-cli \"lib/**/*.js\" && swc src -d ./lib --config-file ../../node_modules/@kigu/dev/swc.json --strip-leading-paths",
+    "build:types": "del-cli \"lib/**/*.d.ts\" \"lib/**/*.d.ts.map\" && tsc --emitDeclarationOnly --skipLibCheck",
+    "build:types:ci": "tsc --emitDeclarationOnly --skipLibCheck --declarationMap false",
+    "prepack": "pnpm run build:clean && pnpm run build:js && pnpm run build:types:ci",
+    "test": "pnpm run test:types && pnpm run test:unit",
+    "test:types": "tsc --noEmit --skipLibCheck -p tsconfig.test.json",
+    "test:unit": "vitest run"
+  },
+  "dependencies": {
+    "@noble/hashes": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "del-cli": "catalog:",
+    "vitest": "catalog:"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

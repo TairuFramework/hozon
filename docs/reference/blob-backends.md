@@ -11,6 +11,8 @@ type BlobBackend = {
   writeChunk(stagingID: string, offset: number, bytes: Uint8Array): Promise<void>
   commit(stagingID: string, key: string): Promise<void>
   abortStaging(stagingID: string): Promise<void>
+  createStagingReadStream(stagingID: string, range?: BlobRange): Promise<ReadableStream<Uint8Array>>
+  listStaging?(): AsyncIterable<{ stagingID: string; modifiedAt: Date }>
   createReadStream(key: string, range?: BlobRange): Promise<ReadableStream<Uint8Array>>
   has(key: string): Promise<boolean>
   delete(key: string): Promise<void>
@@ -24,6 +26,10 @@ Reopening it resets existing staging bytes. `writeChunk` preserves other staged 
 `commit` promotes staging to a key. An existing key remains unchanged, and its redundant staging is discarded.
 Concurrent competing uploads preserve the first published bytes. Duplicate commits of the same staging area are idempotent.
 `abortStaging` removes abandoned staging. `delete` removes committed bytes and tolerates absent keys.
+`createStagingReadStream` reads uncommitted staged bytes, optionally a range, and rejects for an unknown staging ID.
+`@hozon/blob` uses it to verify a transfer before commit. This method is required.
+`listStaging` is optional. It yields live staging areas with their last write time, so abandoned areas can be pruned.
+`commit` consumes the staging ID: a later `writeChunk` or `createStaging` with that ID starts an unrelated staging area.
 `BlobRange` uses inclusive start and end offsets.
 
 ## MemoryBlobBackend
@@ -42,6 +48,13 @@ Sequential staging copies chunks before passing them to Node streams.
 Positioned writes complete all bytes and reject zero progress.
 `getURL` returns a file URL for existing content, or `null` when absent.
 `has` returns `false` only for `ENOENT` and propagates other filesystem errors.
+`listStaging` reports each staging file's modification time.
+
+### File lock
+
+`createFileBlobLock({ directory, acquireTimeoutMs? })` returns a `BlobLock` that excludes other processes on the same host, one lock file per canonical blob ID, built on `@sozai/lock`.
+`directory` must be on a local filesystem. Its stale-lock reaping has a small documented exclusion gap.
+Processes on different hosts need a distributed `BlobLock`; none ships.
 
 Keys and staging IDs must be nonempty and differ from `.`.
 They must contain none of `..`, `/`, `\`, `:`, or NUL.

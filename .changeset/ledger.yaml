@@ -6,10 +6,26 @@
   dir: packages/blob-backend
   intents:
     - initial-blob-backend
+"@hozon/blob-backend@0.2.0":
+  dir: packages/blob-backend
+  intents:
+    - blob-backend-staging-read
+"@hozon/blob-id@0.1.0":
+  dir: packages/blob-id
+  intents:
+    - initial-blob-id
 "@hozon/blob-node-fs@0.1.0":
   dir: packages/blob-node-fs
   intents:
     - initial-blob-node-fs
+"@hozon/blob-node-fs@0.2.0":
+  dir: packages/blob-node-fs
+  intents:
+    - blob-node-fs-staging-read
+"@hozon/blob@0.1.0":
+  dir: packages/blob
+  intents:
+    - initial-blob
 "@hozon/conformance@0.1.0":
   dir: packages/conformance
   intents:
@@ -54,6 +70,10 @@
   dir: packages/store-blob
   intents:
     - initial-store-blob
+"@hozon/store-blob@0.2.0":
+  dir: packages/store-blob
+  intents:
+    - blob-store-staging-id
 "@hozon/store-log@0.1.0":
   dir: packages/store-log
   intents:

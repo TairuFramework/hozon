@@ -1,9 +1,32 @@
 import type { Adapter } from '@hozon/adapter'
 import type { Kysely } from '@hozon/db'
 import { chunk, withStoreTransaction } from '@hozon/db'
+import { b64uFromUTF, b64uToUTF } from '@sozai/codec'
 
 import type { BlobTables } from './tables.js'
-import type { BlobChunkInput, BlobStoreAPI } from './types.js'
+import type { BlobChunkInput, BlobEntry, BlobStoreAPI } from './types.js'
+
+function encodeCursor(createdAt: number, blobID: string): string {
+  return b64uFromUTF(JSON.stringify([createdAt, blobID]))
+}
+
+function decodeCursor(cursor: string): [number, string] {
+  try {
+    const value: unknown = JSON.parse(b64uToUTF(cursor))
+    if (
+      Array.isArray(value) &&
+      value.length === 2 &&
+      typeof value[0] === 'number' &&
+      Number.isFinite(value[0]) &&
+      typeof value[1] === 'string'
+    ) {
+      return [value[0], value[1]]
+    }
+  } catch {
+    // fall through
+  }
+  throw new Error('Invalid cursor')
+}
 
 export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): BlobStoreAPI {
   async function insertManifest(
@@ -40,6 +63,7 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
             state: entry.state,
             pinned: entry.pinned ? 1 : 0,
             created_at: entry.createdAt,
+            content_type: entry.contentType ?? null,
           })
           .onConflict((oc) => oc.column('blob_id').doNothing())
           .execute()
@@ -63,6 +87,7 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
             state: row.state,
             pinned: row.pinned === 1,
             createdAt: row.created_at,
+            contentType: row.content_type,
           }
     },
     async getChunkDigests(blobID) {
@@ -83,12 +108,13 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
     },
     async deleteEntry(blobID) {
       await withStoreTransaction(db, async (trx) => {
+        await trx.deleteFrom('blob_transfer_sessions').where('blob_id', '=', blobID).execute()
         await trx.deleteFrom('blob_transfers').where('blob_id', '=', blobID).execute()
         await trx.deleteFrom('blob_chunks').where('blob_id', '=', blobID).execute()
         await trx.deleteFrom('blob_entries').where('blob_id', '=', blobID).execute()
       })
     },
-    async beginTransfer(blobID, chunkSize, chunks) {
+    async beginTransfer({ blobID, chunkSize, chunks, stagingID }) {
       await withStoreTransaction(db, async (trx) => {
         let query = trx
           .selectFrom('blob_entries')
@@ -113,6 +139,23 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
           .where('blob_id', '=', blobID)
           .execute()
         await insertManifest(trx, blobID, chunks)
+        const existing = await trx
+          .selectFrom('blob_transfer_sessions')
+          .select('staging_id')
+          .where('blob_id', '=', blobID)
+          .executeTakeFirst()
+        // A new staging area holds none of the previous session's chunks.
+        if (existing !== undefined && existing.staging_id !== stagingID) {
+          await trx.deleteFrom('blob_transfers').where('blob_id', '=', blobID).execute()
+        }
+        const updatedAt = Date.now()
+        await trx
+          .insertInto('blob_transfer_sessions')
+          .values({ blob_id: blobID, staging_id: stagingID, updated_at: updatedAt })
+          .onConflict((oc) =>
+            oc.column('blob_id').doUpdateSet({ staging_id: stagingID, updated_at: updatedAt }),
+          )
+          .execute()
       })
     },
     async recordTransferChunk(blobID, index) {
@@ -134,6 +177,11 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
           .insertInto('blob_transfers')
           .values({ blob_id: blobID, index })
           .onConflict((oc) => oc.columns(['blob_id', 'index']).doNothing())
+          .execute()
+        await trx
+          .updateTable('blob_transfer_sessions')
+          .set({ updated_at: Date.now() })
+          .where('blob_id', '=', blobID)
           .execute()
       })
     },
@@ -175,7 +223,137 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
           .where('blob_id', '=', blobID)
           .execute()
         await trx.deleteFrom('blob_transfers').where('blob_id', '=', blobID).execute()
+        await trx.deleteFrom('blob_transfer_sessions').where('blob_id', '=', blobID).execute()
       })
+    },
+    async getTransfer(blobID) {
+      const session = await db
+        .selectFrom('blob_transfer_sessions')
+        .select(['staging_id', 'updated_at'])
+        .where('blob_id', '=', blobID)
+        .executeTakeFirst()
+      if (session === undefined) return null
+      const rows = await db
+        .selectFrom('blob_transfers')
+        .select('index')
+        .where('blob_id', '=', blobID)
+        .orderBy('index', 'asc')
+        .execute()
+      return {
+        stagingID: session.staging_id,
+        updatedAt: session.updated_at,
+        presentChunks: rows.map((row) => row.index),
+      }
+    },
+    async getTransferByStagingID(stagingID) {
+      const row = await db
+        .selectFrom('blob_transfer_sessions')
+        .select(['blob_id', 'updated_at'])
+        .where('staging_id', '=', stagingID)
+        .executeTakeFirst()
+      return row === undefined ? null : { blobID: row.blob_id, updatedAt: row.updated_at }
+    },
+    async touchTransfer(blobID) {
+      await db
+        .updateTable('blob_transfer_sessions')
+        .set({ updated_at: Date.now() })
+        .where('blob_id', '=', blobID)
+        .execute()
+    },
+    async listEntries(params) {
+      const { limit, cursor } = params
+      if (!Number.isInteger(limit) || limit < 1 || limit > 1000) {
+        throw new Error('Invalid limit: must be an integer between 1 and 1000')
+      }
+      let query = db.selectFrom('blob_entries').selectAll()
+      if (cursor !== undefined) {
+        const [createdAt, blobID] = decodeCursor(cursor)
+        query = query.where((eb) =>
+          eb.or([
+            eb('created_at', '>', createdAt),
+            eb.and([eb('created_at', '=', createdAt), eb('blob_id', '>', blobID)]),
+          ]),
+        )
+      }
+      const rows = await query
+        .orderBy('created_at', 'asc')
+        .orderBy('blob_id', 'asc')
+        .limit(limit + 1)
+        .execute()
+      const page = rows.slice(0, limit)
+      const entries: Array<BlobEntry> = page.map((row) => ({
+        blobID: row.blob_id,
+        contentLength: row.content_length,
+        encrypted: row.encrypted === 1,
+        keyID: row.key_id,
+        chunkSize: row.chunk_size,
+        state: row.state,
+        pinned: row.pinned === 1,
+        createdAt: row.created_at,
+        contentType: row.content_type,
+      }))
+      const last = page[page.length - 1]
+      const nextCursor =
+        rows.length > limit && last !== undefined
+          ? encodeCursor(last.created_at, last.blob_id)
+          : null
+      return { entries, nextCursor }
+    },
+    async promoteEntry(entry, chunks) {
+      await withStoreTransaction(db, async (trx) => {
+        let lock = trx
+          .selectFrom('blob_entries')
+          .select('blob_id')
+          .where('blob_id', '=', entry.blobID)
+        if (adapter.kind === 'postgres') lock = lock.forUpdate()
+        await lock.executeTakeFirst()
+        const values = {
+          content_length: entry.contentLength,
+          encrypted: entry.encrypted ? 1 : 0,
+          key_id: entry.keyID ?? null,
+          chunk_size: entry.chunkSize,
+          state: 'local' as const,
+          content_type: entry.contentType ?? null,
+        }
+        await trx
+          .insertInto('blob_entries')
+          .values({
+            blob_id: entry.blobID,
+            pinned: entry.pinned ? 1 : 0,
+            created_at: entry.createdAt,
+            ...values,
+          })
+          .onConflict((oc) => oc.column('blob_id').doUpdateSet(values))
+          .execute()
+        await trx.deleteFrom('blob_transfer_sessions').where('blob_id', '=', entry.blobID).execute()
+        await trx.deleteFrom('blob_transfers').where('blob_id', '=', entry.blobID).execute()
+        await trx.deleteFrom('blob_chunks').where('blob_id', '=', entry.blobID).execute()
+        await insertManifest(trx, entry.blobID, chunks)
+      })
+    },
+    async resetTransfer(blobID) {
+      await withStoreTransaction(db, async (trx) => {
+        let lock = trx.selectFrom('blob_entries').select('blob_id').where('blob_id', '=', blobID)
+        if (adapter.kind === 'postgres') lock = lock.forUpdate()
+        const entry = await lock.executeTakeFirst()
+        if (entry === undefined) return
+        await trx.deleteFrom('blob_transfer_sessions').where('blob_id', '=', blobID).execute()
+        await trx.deleteFrom('blob_transfers').where('blob_id', '=', blobID).execute()
+        await trx.deleteFrom('blob_chunks').where('blob_id', '=', blobID).execute()
+        await trx
+          .updateTable('blob_entries')
+          .set({ state: 'remote-only' })
+          .where('blob_id', '=', blobID)
+          .execute()
+      })
+    },
+    async fillContentType(blobID, contentType) {
+      await db
+        .updateTable('blob_entries')
+        .set({ content_type: contentType })
+        .where('blob_id', '=', blobID)
+        .where('content_type', 'is', null)
+        .execute()
     },
   }
 }
