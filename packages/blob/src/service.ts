@@ -4,6 +4,8 @@ import type { BlobIDCodec } from '@hozon/blob-id'
 import { blake3Codec } from '@hozon/blob-id'
 import type { StoreProvider } from '@hozon/db'
 import type { BlobEntry } from '@hozon/store-blob'
+import type { Runtime } from '@sozai/runtime'
+import { createRuntime } from '@sozai/runtime'
 
 import { assertChunkSize, type BlobLimits, DEFAULT_CHUNK_SIZE, resolveLimits } from './limits.js'
 import { deleteBlob, setBlobPinned } from './manage.js'
@@ -27,6 +29,7 @@ export type BlobServiceParams = {
   chunkSize?: number
   lock?: BlobLock
   limits?: Partial<BlobLimits>
+  runtime?: Runtime
 }
 
 export type BlobService = {
@@ -65,6 +68,7 @@ export function createBlobService(params: BlobServiceParams): BlobService {
     chunkSize,
     lock: params.lock ?? createMemoryBlobLock(),
     limits: Object.freeze(limits),
+    runtime: params.runtime ?? createRuntime(),
     activeWrites: new Set(),
   }
 

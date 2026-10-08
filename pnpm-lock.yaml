@@ -197,6 +197,9 @@ catalogs:
     '@playwright/test':
       specifier: 1.63.0
       version: 1.63.0
+    '@sozai/codec':
+      specifier: ^0.4.2
+      version: 0.4.2
     '@sozai/json':
       specifier: ^0.3.0
       version: 0.3.0
@@ -206,6 +209,9 @@ catalogs:
     '@sozai/log':
       specifier: ^0.4.0
       version: 0.4.0
+    '@sozai/runtime':
+      specifier: ^0.1.0
+      version: 0.1.0
     '@testcontainers/postgresql':
       specifier: ^12.1.0
       version: 12.2.0
@@ -305,6 +311,9 @@ importers:
       '@hozon/store-blob':
         specifier: workspace:^
         version: link:../store-blob
+      '@sozai/runtime':
+        specifier: 'catalog:'
+        version: 0.1.0
     devDependencies:
       '@hozon/blob-node-fs':
         specifier: workspace:^
@@ -608,6 +617,9 @@ importers:
       '@hozon/db':
         specifier: workspace:^
         version: link:../db
+      '@sozai/codec':
+        specifier: 'catalog:'
+        version: 0.4.2
     devDependencies:
       '@hozon/node-sqlite':
         specifier: workspace:^
@@ -630,6 +642,9 @@ importers:
       '@hozon/db':
         specifier: workspace:^
         version: link:../db
+      '@sozai/codec':
+        specifier: 'catalog:'
+        version: 0.4.2
       '@sozai/json':
         specifier: 'catalog:'
         version: 0.3.0
@@ -2247,6 +2262,9 @@ packages:
   '@sozai/async@0.4.0':
     resolution: {integrity: sha512-HmqButN7erxkluUaJ2LsW8Tpp8ftiII9qhBX1OMKGxOqPDFE/YHudMrJBhLW06mftv8r8Ze9uk7cMfbmsAwejw==}
 
+  '@sozai/codec@0.4.2':
+    resolution: {integrity: sha512-90L00VSUOqdwWr7sg2WkSP8JxS070p/QxVvRrpxEKp+7DLFR0KnPV169NgNyHOq2WjRx9NobruCzPYyZe1mjDg==}
+
   '@sozai/json@0.3.0':
     resolution: {integrity: sha512-ArThPadz4kZjDqVnHI+UROwervbL9riIEYQ4b0g9e9mtA22EZ54lvNgsNvEUHL+oK53tlhgmHsgO2w5FwCTrhg==}
 
@@ -2257,6 +2275,9 @@ packages:
     resolution: {integrity: sha512-t/r0WfnC3n94s21pw3/2YV/C/0WTKzbrtsNGv8gNdDeKBFJ0a9jYEo8MBpcLr1c1zn15S5k3Gpt9sf3VvFGPEQ==}
     peerDependencies:
       '@logtape/logtape': ^2.3.11
+
+  '@sozai/runtime@0.1.0':
+    resolution: {integrity: sha512-9WpqQ/UKDOlNWfiGCDjuW3hl9+sXrXuX2lbGE80ITbrhzueagwrEdboYkQhrHN8s8I/F8/ZM9hz+Fv3j7gUk2Q==}
 
   '@sqlite.org/sqlite-wasm@3.51.2-build9':
     resolution: {integrity: sha512-tj2Sa6X4gVZqS9SiT2xlEeChSUklSGq8Hz6zKNbHW6NRiGyrSXiFcspnrWru1wPBT76RX/VxweESKxawCxfDxg==}
@@ -6817,6 +6838,10 @@ snapshots:
 
   '@sozai/async@0.4.0': {}
 
+  '@sozai/codec@0.4.2':
+    dependencies:
+      '@sozai/json': 0.3.0
+
   '@sozai/json@0.3.0': {}
 
   '@sozai/lock@0.1.2':
@@ -6826,6 +6851,8 @@ snapshots:
   '@sozai/log@0.4.0(@logtape/logtape@2.4.0)':
     dependencies:
       '@logtape/logtape': 2.4.0
+
+  '@sozai/runtime@0.1.0': {}
 
   '@sqlite.org/sqlite-wasm@3.51.2-build9': {}
 

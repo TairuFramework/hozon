@@ -1,20 +1,18 @@
 import type { Adapter } from '@hozon/adapter'
 import type { Kysely } from '@hozon/db'
 import { chunk, withKeepSet, withStoreTransaction } from '@hozon/db'
+import { b64uFromUTF, b64uToUTF } from '@sozai/codec'
 
 import { categoryRange, encodeCategory } from './category.js'
 import type { LogTables } from './tables.js'
 import type { LogStore, TracedLog } from './types.js'
 
 function encodeCursor(timestamp: number, seq: number): string {
-  return btoa(JSON.stringify([timestamp, seq]))
-    .replaceAll('+', '-')
-    .replaceAll('/', '_')
-    .replace(/=+$/, '')
+  return b64uFromUTF(JSON.stringify([timestamp, seq]))
 }
 function decodeCursor(cursor: string): [number, number] {
   try {
-    const value: unknown = JSON.parse(atob(cursor.replaceAll('-', '+').replaceAll('_', '/')))
+    const value: unknown = JSON.parse(b64uToUTF(cursor))
     if (
       !Array.isArray(value) ||
       value.length !== 2 ||

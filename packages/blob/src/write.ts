@@ -4,6 +4,7 @@ import { hashStream } from '@hozon/blob-id'
 import type { StoreProvider } from '@hozon/db'
 import type { BlobChunkInput, BlobEntry, BlobEntryInput, BlobStoreAPI } from '@hozon/store-blob'
 import { getBlobStore } from '@hozon/store-blob'
+import type { Runtime } from '@sozai/runtime'
 
 import {
   BlobIDMismatchError,
@@ -33,6 +34,7 @@ export type WriteContext = {
   chunkSize: number
   lock: BlobLock
   limits: BlobLimits
+  runtime: Runtime
   // Staging IDs of writes in progress, which staging pruning must skip.
   activeWrites: Set<string>
 }
@@ -40,8 +42,8 @@ export type WriteContext = {
 export type RecordFn<T> = (tx: StoreProvider, entry: BlobEntry) => Promise<T>
 
 // Random staging ID: `prefix` (`w` for writes, `t` for transfers), a dash, 32 hex chars.
-export function createStagingID(prefix: 'w' | 't'): string {
-  const bytes = crypto.getRandomValues(new Uint8Array(16))
+export function createStagingID(runtime: Runtime, prefix: 'w' | 't'): string {
+  const bytes = runtime.getRandomValues(new Uint8Array(16))
   return `${prefix}-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}`
 }
 
@@ -134,7 +136,7 @@ export async function writeBlob<T>(
   }
 
   // Step 2: stream into a fresh staging area while hashing.
-  const stagingID = createStagingID('w')
+  const stagingID = createStagingID(ctx.runtime, 'w')
   ctx.activeWrites.add(stagingID)
   let staged = true
   const discardStaging = async (): Promise<void> => {

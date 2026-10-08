@@ -1,22 +1,18 @@
 import type { Adapter } from '@hozon/adapter'
 import type { Kysely } from '@hozon/db'
 import { chunk, withStoreTransaction } from '@hozon/db'
+import { b64uFromUTF, b64uToUTF } from '@sozai/codec'
 
 import type { BlobTables } from './tables.js'
 import type { BlobChunkInput, BlobEntry, BlobStoreAPI } from './types.js'
 
 function encodeCursor(createdAt: number, blobID: string): string {
-  const binary = Array.from(new TextEncoder().encode(JSON.stringify([createdAt, blobID])), (byte) =>
-    String.fromCharCode(byte),
-  ).join('')
-  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')
+  return b64uFromUTF(JSON.stringify([createdAt, blobID]))
 }
 
 function decodeCursor(cursor: string): [number, string] {
   try {
-    const binary = atob(cursor.replaceAll('-', '+').replaceAll('_', '/'))
-    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
-    const value: unknown = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes))
+    const value: unknown = JSON.parse(b64uToUTF(cursor))
     if (
       Array.isArray(value) &&
       value.length === 2 &&

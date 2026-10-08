@@ -29,7 +29,8 @@
   },
   "dependencies": {
     "@hozon/adapter": "workspace:^",
-    "@hozon/db": "workspace:^"
+    "@hozon/db": "workspace:^",
+    "@sozai/codec": "catalog:"
   },
   "devDependencies": {
     "@hozon/node-sqlite": "workspace:^",

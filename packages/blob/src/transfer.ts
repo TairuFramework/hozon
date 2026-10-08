@@ -3,6 +3,7 @@ import type { BlobIDCodec } from '@hozon/blob-id'
 import type { StoreProvider } from '@hozon/db'
 import type { BlobEntry, BlobStoreAPI, BlobTransfer } from '@hozon/store-blob'
 import { getBlobStore } from '@hozon/store-blob'
+import type { Runtime } from '@sozai/runtime'
 
 import {
   BlobIDMismatchError,
@@ -36,6 +37,7 @@ export type TransferContext = {
   chunkSize: number
   lock: BlobLock
   limits: BlobLimits
+  runtime: Runtime
 }
 
 type ActiveTransfer = {
@@ -229,7 +231,12 @@ export async function beginFetch(
       if (contentType !== undefined) await store.fillContentType(blobID, contentType)
     }
     const chunks = manifest.chunks.map((digest, index) => ({ index, digest }))
-    await store.beginTransfer({ blobID, chunkSize, chunks, stagingID: createStagingID('t') })
+    await store.beginTransfer({
+      blobID,
+      chunkSize,
+      chunks,
+      stagingID: createStagingID(ctx.runtime, 't'),
+    })
   })
 }
 

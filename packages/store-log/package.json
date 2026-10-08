@@ -30,6 +30,7 @@
   "dependencies": {
     "@hozon/adapter": "workspace:^",
     "@hozon/db": "workspace:^",
+    "@sozai/codec": "catalog:",
     "@sozai/json": "catalog:"
   },
   "devDependencies": {

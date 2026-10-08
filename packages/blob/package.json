@@ -31,7 +31,8 @@
     "@hozon/blob-backend": "workspace:^",
     "@hozon/blob-id": "workspace:^",
     "@hozon/db": "workspace:^",
-    "@hozon/store-blob": "workspace:^"
+    "@hozon/store-blob": "workspace:^",
+    "@sozai/runtime": "catalog:"
   },
   "devDependencies": {
     "@hozon/blob-node-fs": "workspace:^",
