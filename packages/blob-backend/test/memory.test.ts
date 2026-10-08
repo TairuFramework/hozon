@@ -1,4 +1,4 @@
-import { expect, test } from 'vitest'
+import { expect, test, vi } from 'vitest'
 
 import { MemoryBlobBackend } from '../src/memory.js'
 
@@ -133,4 +133,78 @@ test('abortStaging drops staged bytes and can be repeated', async () => {
   await backend.abortStaging('s1')
   await expect(backend.commit('s1', 'k')).rejects.toThrow('No staging area for s1')
   expect(await backend.has('k')).toBe(false)
+})
+
+test('createStagingReadStream reads sequential and out-of-order staging, with and without range', async () => {
+  const backend = new MemoryBlobBackend()
+  const writer = (await backend.createStaging('s1')).getWriter()
+  await writer.write(new Uint8Array([0, 1, 2]))
+  await writer.write(new Uint8Array([3, 4]))
+  await writer.close()
+  expect(await readBytes(await backend.createStagingReadStream('s1'))).toEqual([0, 1, 2, 3, 4])
+  expect(
+    await readBytes(await backend.createStagingReadStream('s1', { start: 1, end: 3 })),
+  ).toEqual([1, 2, 3])
+  await backend.writeChunk('s2', 4, new Uint8Array([4, 5, 6, 7]))
+  await backend.writeChunk('s2', 0, new Uint8Array([0, 1, 2, 3]))
+  expect(await readBytes(await backend.createStagingReadStream('s2'))).toEqual([
+    0, 1, 2, 3, 4, 5, 6, 7,
+  ])
+  expect(
+    await readBytes(await backend.createStagingReadStream('s2', { start: 2, end: 5 })),
+  ).toEqual([2, 3, 4, 5])
+})
+
+test('createStagingReadStream rejects for an unknown staging ID', async () => {
+  const backend = new MemoryBlobBackend()
+  await expect(backend.createStagingReadStream('missing')).rejects.toThrow()
+})
+
+async function listAll(backend: MemoryBlobBackend): Promise<Map<string, Date>> {
+  const out = new Map<string, Date>()
+  for await (const entry of backend.listStaging()) {
+    out.set(entry.stagingID, entry.modifiedAt)
+  }
+  return out
+}
+
+test('listStaging yields live staging areas and updates modifiedAt on every write', async () => {
+  vi.useFakeTimers()
+  try {
+    const backend = new MemoryBlobBackend()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+    const writer = (await backend.createStaging('s1')).getWriter()
+    await backend.writeChunk('s2', 0, new Uint8Array([1]))
+    let listed = await listAll(backend)
+    expect([...listed.keys()].sort()).toEqual(['s1', 's2'])
+    expect(listed.get('s1')?.toISOString()).toBe('2026-01-01T00:00:00.000Z')
+
+    vi.setSystemTime(new Date('2026-01-01T00:00:10Z'))
+    await writer.write(new Uint8Array([1]))
+    vi.setSystemTime(new Date('2026-01-01T00:00:20Z'))
+    await backend.writeChunk('s2', 1, new Uint8Array([2]))
+    listed = await listAll(backend)
+    expect(listed.get('s1')?.toISOString()).toBe('2026-01-01T00:00:10.000Z')
+    expect(listed.get('s2')?.toISOString()).toBe('2026-01-01T00:00:20.000Z')
+  } finally {
+    vi.useRealTimers()
+  }
+})
+
+test('committed and aborted staging IDs are no longer listed', async () => {
+  const backend = new MemoryBlobBackend()
+  await backend.writeChunk('s1', 0, new Uint8Array([1]))
+  await backend.writeChunk('s2', 0, new Uint8Array([2]))
+  await backend.commit('s1', 'k')
+  await backend.abortStaging('s2')
+  expect((await listAll(backend)).size).toBe(0)
+})
+
+test('writing to a committed staging ID starts an unrelated area', async () => {
+  const backend = new MemoryBlobBackend()
+  await backend.writeChunk('s1', 0, new Uint8Array([1, 2, 3]))
+  await backend.commit('s1', 'k')
+  await backend.writeChunk('s1', 0, new Uint8Array([9]))
+  expect(await readBytes(await backend.createReadStream('k'))).toEqual([1, 2, 3])
+  expect(await readBytes(await backend.createStagingReadStream('s1'))).toEqual([9])
 })

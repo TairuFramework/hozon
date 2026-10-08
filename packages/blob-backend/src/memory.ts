@@ -3,36 +3,57 @@ import type { BlobBackend, BlobRange } from './backend.js'
 // In-memory BlobBackend for tests and ephemeral use. Staging and committed
 // bytes live in Maps; nothing is persisted.
 type StagingSegment = { offset: number; bytes: Uint8Array }
+type StagingArea = { segments: Array<StagingSegment>; modifiedAt: Date }
 
 export class MemoryBlobBackend implements BlobBackend {
   // Staging holds offset-addressed segments so sequential writes (createStaging)
   // and out-of-order chunk writes (writeChunk) share one assembly path.
-  #staging = new Map<string, Array<StagingSegment>>()
+  #staging = new Map<string, StagingArea>()
   #committed = new Map<string, Uint8Array>()
 
-  #segments(stagingID: string): Array<StagingSegment> {
-    let segments = this.#staging.get(stagingID)
-    if (segments == null) {
-      segments = []
-      this.#staging.set(stagingID, segments)
+  #area(stagingID: string): StagingArea {
+    let area = this.#staging.get(stagingID)
+    if (area == null) {
+      area = { segments: [], modifiedAt: new Date() }
+      this.#staging.set(stagingID, area)
     }
-    return segments
+    return area
   }
 
   async createStaging(stagingID: string): Promise<WritableStream<Uint8Array>> {
-    const segments: Array<StagingSegment> = []
-    this.#staging.set(stagingID, segments)
+    const area: StagingArea = { segments: [], modifiedAt: new Date() }
+    this.#staging.set(stagingID, area)
     let offset = 0
     return new WritableStream<Uint8Array>({
       write(chunk) {
-        segments.push({ offset, bytes: new Uint8Array(chunk) })
+        area.segments.push({ offset, bytes: new Uint8Array(chunk) })
+        area.modifiedAt = new Date()
         offset += chunk.length
       },
     })
   }
 
   async writeChunk(stagingID: string, offset: number, bytes: Uint8Array): Promise<void> {
-    this.#segments(stagingID).push({ offset, bytes: new Uint8Array(bytes) })
+    const area = this.#area(stagingID)
+    area.segments.push({ offset, bytes: new Uint8Array(bytes) })
+    area.modifiedAt = new Date()
+  }
+
+  async createStagingReadStream(
+    stagingID: string,
+    range?: BlobRange,
+  ): Promise<ReadableStream<Uint8Array>> {
+    const area = this.#staging.get(stagingID)
+    if (area == null) {
+      throw new Error(`No staging area for ${stagingID}`)
+    }
+    return singleChunkStream(assemble(area.segments), range)
+  }
+
+  async *listStaging(): AsyncIterable<{ stagingID: string; modifiedAt: Date }> {
+    for (const [stagingID, area] of [...this.#staging]) {
+      yield { stagingID, modifiedAt: area.modifiedAt }
+    }
   }
 
   async commit(stagingID: string, key: string): Promise<void> {
@@ -40,11 +61,11 @@ export class MemoryBlobBackend implements BlobBackend {
       this.#staging.delete(stagingID)
       return
     }
-    const segments = this.#staging.get(stagingID)
-    if (segments == null) {
+    const area = this.#staging.get(stagingID)
+    if (area == null) {
       throw new Error(`No staging area for ${stagingID}`)
     }
-    this.#committed.set(key, assemble(segments))
+    this.#committed.set(key, assemble(area.segments))
     this.#staging.delete(stagingID)
   }
 
@@ -57,13 +78,7 @@ export class MemoryBlobBackend implements BlobBackend {
     if (bytes == null) {
       throw new Error(`No blob for key ${key}`)
     }
-    const slice = range == null ? bytes.slice() : bytes.slice(range.start, range.end + 1)
-    return new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(slice)
-        controller.close()
-      },
-    })
+    return singleChunkStream(bytes, range)
   }
 
   async has(key: string): Promise<boolean> {
@@ -78,6 +93,16 @@ export class MemoryBlobBackend implements BlobBackend {
   async getURL(_key: string): Promise<string | null> {
     return null
   }
+}
+
+function singleChunkStream(bytes: Uint8Array, range?: BlobRange): ReadableStream<Uint8Array> {
+  const slice = range == null ? bytes.slice() : bytes.slice(range.start, range.end + 1)
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(slice)
+      controller.close()
+    },
+  })
 }
 
 function assemble(segments: Array<StagingSegment>): Uint8Array {
