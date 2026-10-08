@@ -15,6 +15,7 @@ function entry(overrides: Partial<BlobEntryInput> = {}): BlobEntryInput {
     state: 'local',
     pinned: true,
     createdAt: Date.now(),
+    contentType: null,
     ...overrides,
   }
 }
@@ -70,7 +71,7 @@ describe.each(backends())('$name', (backend) => {
     const chunks = manifest(3)
     await store.insertEntry(input, [])
     expect(await store.getPresentChunkIndexes(input.blobID)).toEqual([])
-    await store.beginTransfer(input.blobID, 4, [...chunks].reverse())
+    await store.beginTransfer(input.blobID, 4, [...chunks].reverse(), 'stg-1')
     expect(await store.getEntry(input.blobID)).toEqual({ ...input, chunkSize: 4, state: 'partial' })
     expect(bytes(await store.getChunkDigests(input.blobID))).toEqual(
       bytes(chunks.map((chunk) => chunk.digest)),

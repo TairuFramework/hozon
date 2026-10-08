@@ -40,6 +40,7 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
             state: entry.state,
             pinned: entry.pinned ? 1 : 0,
             created_at: entry.createdAt,
+            content_type: entry.contentType ?? null,
           })
           .onConflict((oc) => oc.column('blob_id').doNothing())
           .execute()
@@ -63,6 +64,7 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
             state: row.state,
             pinned: row.pinned === 1,
             createdAt: row.created_at,
+            contentType: row.content_type,
           }
     },
     async getChunkDigests(blobID) {
@@ -83,12 +85,13 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
     },
     async deleteEntry(blobID) {
       await withStoreTransaction(db, async (trx) => {
+        await trx.deleteFrom('blob_transfer_sessions').where('blob_id', '=', blobID).execute()
         await trx.deleteFrom('blob_transfers').where('blob_id', '=', blobID).execute()
         await trx.deleteFrom('blob_chunks').where('blob_id', '=', blobID).execute()
         await trx.deleteFrom('blob_entries').where('blob_id', '=', blobID).execute()
       })
     },
-    async beginTransfer(blobID, chunkSize, chunks) {
+    async beginTransfer(blobID, chunkSize, chunks, stagingID) {
       await withStoreTransaction(db, async (trx) => {
         let query = trx
           .selectFrom('blob_entries')
@@ -113,6 +116,14 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
           .where('blob_id', '=', blobID)
           .execute()
         await insertManifest(trx, blobID, chunks)
+        const updatedAt = Date.now()
+        await trx
+          .insertInto('blob_transfer_sessions')
+          .values({ blob_id: blobID, staging_id: stagingID, updated_at: updatedAt })
+          .onConflict((oc) =>
+            oc.column('blob_id').doUpdateSet({ staging_id: stagingID, updated_at: updatedAt }),
+          )
+          .execute()
       })
     },
     async recordTransferChunk(blobID, index) {
@@ -134,6 +145,11 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
           .insertInto('blob_transfers')
           .values({ blob_id: blobID, index })
           .onConflict((oc) => oc.columns(['blob_id', 'index']).doNothing())
+          .execute()
+        await trx
+          .updateTable('blob_transfer_sessions')
+          .set({ updated_at: Date.now() })
+          .where('blob_id', '=', blobID)
           .execute()
       })
     },
@@ -175,7 +191,42 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
           .where('blob_id', '=', blobID)
           .execute()
         await trx.deleteFrom('blob_transfers').where('blob_id', '=', blobID).execute()
+        await trx.deleteFrom('blob_transfer_sessions').where('blob_id', '=', blobID).execute()
       })
+    },
+    async getTransfer(blobID) {
+      const session = await db
+        .selectFrom('blob_transfer_sessions')
+        .select(['staging_id', 'updated_at'])
+        .where('blob_id', '=', blobID)
+        .executeTakeFirst()
+      if (session === undefined) return null
+      const rows = await db
+        .selectFrom('blob_transfers')
+        .select('index')
+        .where('blob_id', '=', blobID)
+        .orderBy('index', 'asc')
+        .execute()
+      return {
+        stagingID: session.staging_id,
+        updatedAt: session.updated_at,
+        presentChunks: rows.map((row) => row.index),
+      }
+    },
+    async getTransferByStagingID(stagingID) {
+      const row = await db
+        .selectFrom('blob_transfer_sessions')
+        .select(['blob_id', 'updated_at'])
+        .where('staging_id', '=', stagingID)
+        .executeTakeFirst()
+      return row === undefined ? null : { blobID: row.blob_id, updatedAt: row.updated_at }
+    },
+    async touchTransfer(blobID) {
+      await db
+        .updateTable('blob_transfer_sessions')
+        .set({ updated_at: Date.now() })
+        .where('blob_id', '=', blobID)
+        .execute()
     },
   }
 }

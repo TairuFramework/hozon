@@ -50,5 +50,54 @@ export function blobStoreMigrations(ctx: MigrationContext): Record<string, Migra
         await db.schema.dropTable('blob_entries').execute()
       },
     },
+    '1-sessions': {
+      async up(db) {
+        await db.schema
+          .alterTable('blob_entries')
+          .addColumn('content_type', ctx.types.text)
+          .execute()
+        await db.schema
+          .createTable('blob_transfer_sessions')
+          .addColumn('blob_id', ctx.types.text, (column) => column.notNull())
+          .addColumn('staging_id', ctx.types.text, (column) => column.notNull().unique())
+          .addColumn('updated_at', ctx.types.bigint, (column) => column.notNull())
+          .addPrimaryKeyConstraint(`${ctx.tablePrefix}_blob_transfer_sessions_pkey`, ['blob_id'])
+          .addForeignKeyConstraint(
+            `${ctx.tablePrefix}_blob_transfer_sessions_entry_fkey`,
+            ['blob_id'],
+            'blob_entries',
+            ['blob_id'],
+            (constraint) => constraint.onDelete('cascade'),
+          )
+          .execute()
+        // Partial entries predate sessions and cannot be resumed: drop their progress.
+        await db
+          .deleteFrom('blob_transfers')
+          .where(
+            'blob_id',
+            'in',
+            db.selectFrom('blob_entries').select('blob_id').where('state', '=', 'partial'),
+          )
+          .execute()
+        await db
+          .deleteFrom('blob_chunks')
+          .where(
+            'blob_id',
+            'in',
+            db.selectFrom('blob_entries').select('blob_id').where('state', '=', 'partial'),
+          )
+          .execute()
+        await db
+          .updateTable('blob_entries')
+          .set({ state: 'remote-only' })
+          .where('state', '=', 'partial')
+          .execute()
+      },
+      // The backfill (partial entries reset to remote-only, manifests dropped) is not reversible.
+      async down(db) {
+        await db.schema.dropTable('blob_transfer_sessions').execute()
+        await db.schema.alterTable('blob_entries').dropColumn('content_type').execute()
+      },
+    },
   }
 }

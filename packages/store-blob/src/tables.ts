@@ -10,6 +10,7 @@ export type BlobEntryTable = {
   state: BlobState
   pinned: number
   created_at: number
+  content_type: string | null
 }
 
 // The manifest survives finalisation for range verification.
@@ -25,8 +26,16 @@ export type BlobTransferTable = {
   index: number
 }
 
+// One in-flight transfer per blob, addressed by its staging ID.
+export type BlobTransferSessionTable = {
+  blob_id: string
+  staging_id: string
+  updated_at: number
+}
+
 export type BlobTables = {
   blob_entries: BlobEntryTable
   blob_chunks: BlobChunkTable
   blob_transfers: BlobTransferTable
+  blob_transfer_sessions: BlobTransferSessionTable
 }
