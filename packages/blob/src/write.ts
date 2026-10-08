@@ -37,9 +37,10 @@ export type WriteContext = {
 
 export type RecordFn<T> = (tx: StoreProvider, entry: BlobEntry) => Promise<T>
 
-function createWriteStagingID(): string {
+// Random staging ID: `prefix` (`w` for writes, `t` for transfers), a dash, 32 hex chars.
+export function createStagingID(prefix: 'w' | 't'): string {
   const bytes = crypto.getRandomValues(new Uint8Array(16))
-  return `w-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}`
+  return `${prefix}-${Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')}`
 }
 
 function sizeLimiter(limit: number): TransformStream<Uint8Array, Uint8Array> {
@@ -122,7 +123,7 @@ export async function writeBlob<T>(
   }
 
   // Step 2: stream into a fresh staging area while hashing.
-  const stagingID = createWriteStagingID()
+  const stagingID = createStagingID('w')
   ctx.activeWrites.add(stagingID)
   let staged = true
   const discardStaging = async (): Promise<void> => {

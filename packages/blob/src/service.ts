@@ -8,6 +8,13 @@ import type { BlobEntry } from '@hozon/store-blob'
 import { assertChunkSize, type BlobLimits, DEFAULT_CHUNK_SIZE, resolveLimits } from './limits.js'
 import { deleteBlob, setBlobPinned } from './manage.js'
 import { createBlobReadStream, getChunkDigests, getEntry, hasBlob, listEntries } from './read.js'
+import {
+  beginFetch,
+  completeFetch,
+  getPresentChunks,
+  stageChunk,
+  type TransferManifest,
+} from './transfer.js'
 import { type WriteContext, type WriteOptions, type WriteResult, writeBlob } from './write.js'
 
 export type BlobServiceParams = {
@@ -37,6 +44,10 @@ export type BlobService = {
   createReadStream(id: string, range?: BlobRange): Promise<ReadableStream<Uint8Array>>
   setPinned(id: string, pinned: boolean): Promise<void>
   delete(id: string): Promise<boolean>
+  beginFetch(id: string, manifest: TransferManifest): Promise<void>
+  getPresentChunks(id: string): Promise<Array<number>>
+  stageChunk(id: string, index: number, bytes: Uint8Array): Promise<void>
+  completeFetch(id: string): Promise<BlobEntry>
   readonly codec: BlobIDCodec
   readonly limits: BlobLimits
 }
@@ -65,6 +76,10 @@ export function createBlobService(params: BlobServiceParams): BlobService {
     createReadStream: (id, range) => createBlobReadStream(ctx, id, range),
     setPinned: (id, pinned) => setBlobPinned(ctx, id, pinned),
     delete: (id) => deleteBlob(ctx, id),
+    beginFetch: (id, manifest) => beginFetch(ctx, id, manifest),
+    getPresentChunks: (id) => getPresentChunks(ctx, id),
+    stageChunk: (id, index, bytes) => stageChunk(ctx, id, index, bytes),
+    completeFetch: (id) => completeFetch(ctx, id),
     async write(stream, options = {}) {
       const { entry, created } = await writeBlob(ctx, stream, options)
       return { entry, created }

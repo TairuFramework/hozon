@@ -14,4 +14,5 @@ export {
 } from './errors.js'
 export { type BlobLimits, DEFAULT_CHUNK_SIZE, DEFAULT_LIMITS } from './limits.js'
 export { type BlobService, type BlobServiceParams, createBlobService } from './service.js'
+export type { TransferManifest } from './transfer.js'
 export type { WriteOptions, WriteResult } from './write.js'
