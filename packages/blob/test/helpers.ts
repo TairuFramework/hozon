@@ -10,6 +10,7 @@ import { HozonDB } from '@hozon/db'
 import { NodeSQLiteAdapter } from '@hozon/node-sqlite'
 import type { BlobStoreAPI } from '@hozon/store-blob'
 import { blobStoreDefinition, getBlobStore } from '@hozon/store-blob'
+import { fromB32, fromUTF, toB32, toUTF } from '@sozai/codec'
 
 import type { BlobLimits, BlobService } from '../src/index.js'
 import { createBlobService } from '../src/index.js'
@@ -117,50 +118,13 @@ export async function listStaging(backend: BlobBackend): Promise<Array<string>> 
   return ids
 }
 
-const BASE32 = 'abcdefghijklmnopqrstuvwxyz234567'
-
-function base32Encode(bytes: Uint8Array): string {
-  let out = ''
-  let buffer = 0
-  let bits = 0
-  for (const byte of bytes) {
-    buffer = (buffer << 8) | byte
-    bits += 8
-    while (bits >= 5) {
-      out += BASE32[(buffer >> (bits - 5)) & 31]
-      bits -= 5
-    }
-  }
-  if (bits > 0) out += BASE32[(buffer << (5 - bits)) & 31]
-  return out
-}
-
-function base32Decode(text: string): Uint8Array {
-  const out: Array<number> = []
-  let buffer = 0
-  let bits = 0
-  for (const char of text) {
-    const value = BASE32.indexOf(char)
-    if (value < 0) throw new Error(`Invalid base32 character ${char}`)
-    buffer = (buffer << 5) | value
-    bits += 5
-    if (bits >= 8) {
-      out.push((buffer >> (bits - 8)) & 255)
-      bits -= 8
-    }
-  }
-  return Uint8Array.from(out)
-}
-
 // Test codec embedding the content type: `<blake3 ID>-<base32(type)>`.
 export const mimeCodec: BlobIDCodec = {
   digestLength: blake3Codec.digestLength,
   createHasher: () => blake3Codec.createHasher(),
   encode(info: BlobIDInfo): string {
     const base = blake3Codec.encode(info)
-    return info.contentType === undefined
-      ? base
-      : `${base}-${base32Encode(new TextEncoder().encode(info.contentType))}`
+    return info.contentType === undefined ? base : `${base}-${toB32(fromUTF(info.contentType))}`
   },
   decode(id: string): BlobIDInfo {
     const [base, type, ...rest] = id.split('-')
@@ -168,7 +132,7 @@ export const mimeCodec: BlobIDCodec = {
     const info = blake3Codec.decode(base)
     if (type === undefined) return info
     try {
-      return { ...info, contentType: new TextDecoder().decode(base32Decode(type)) }
+      return { ...info, contentType: toUTF(fromB32(type)) }
     } catch (cause) {
       throw new InvalidBlobIDError(id, { cause })
     }

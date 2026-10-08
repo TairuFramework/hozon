@@ -127,7 +127,7 @@ describe.each(backends())('$name', (backend) => {
       await older.close()
 
       if (bytesBefore !== undefined) {
-        expect(Buffer.compare(await readFile(backend.location()), bytesBefore)).toBe(0)
+        expect(await readFile(backend.location())).toEqual(bytesBefore)
         const file = new DatabaseSync(backend.location(), { readOnly: true })
         try {
           expect(file.prepare('PRAGMA journal_mode').get()).toEqual({ journal_mode: 'delete' })

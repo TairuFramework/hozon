@@ -37,6 +37,7 @@
   "devDependencies": {
     "@hozon/blob-node-fs": "workspace:^",
     "@hozon/node-sqlite": "workspace:^",
+    "@sozai/codec": "catalog:",
     "@types/node": "catalog:",
     "del-cli": "catalog:",
     "vitest": "catalog:"

@@ -198,8 +198,8 @@ catalogs:
       specifier: 1.63.0
       version: 1.63.0
     '@sozai/codec':
-      specifier: ^0.4.2
-      version: 0.4.2
+      specifier: ^0.4.3
+      version: 0.4.3
     '@sozai/json':
       specifier: ^0.3.0
       version: 0.3.0
@@ -321,6 +321,9 @@ importers:
       '@hozon/node-sqlite':
         specifier: workspace:^
         version: link:../node-sqlite
+      '@sozai/codec':
+        specifier: 'catalog:'
+        version: 0.4.3
       '@types/node':
         specifier: 'catalog:'
         version: 26.6.4
@@ -348,6 +351,9 @@ importers:
       '@noble/hashes':
         specifier: 'catalog:'
         version: 2.4.0
+      '@sozai/codec':
+        specifier: 'catalog:'
+        version: 0.4.3
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -619,7 +625,7 @@ importers:
         version: link:../db
       '@sozai/codec':
         specifier: 'catalog:'
-        version: 0.4.2
+        version: 0.4.3
     devDependencies:
       '@hozon/node-sqlite':
         specifier: workspace:^
@@ -644,7 +650,7 @@ importers:
         version: link:../db
       '@sozai/codec':
         specifier: 'catalog:'
-        version: 0.4.2
+        version: 0.4.3
       '@sozai/json':
         specifier: 'catalog:'
         version: 0.3.0
@@ -2262,8 +2268,8 @@ packages:
   '@sozai/async@0.4.0':
     resolution: {integrity: sha512-HmqButN7erxkluUaJ2LsW8Tpp8ftiII9qhBX1OMKGxOqPDFE/YHudMrJBhLW06mftv8r8Ze9uk7cMfbmsAwejw==}
 
-  '@sozai/codec@0.4.2':
-    resolution: {integrity: sha512-90L00VSUOqdwWr7sg2WkSP8JxS070p/QxVvRrpxEKp+7DLFR0KnPV169NgNyHOq2WjRx9NobruCzPYyZe1mjDg==}
+  '@sozai/codec@0.4.3':
+    resolution: {integrity: sha512-C2WtBwspVIRtCS4AS4qXTQUxgTN2RjzKH/eK6nInh0/MeCZUBtkxrp40GwKy6VCA3lim2Ta8bFNXet9l8QbxCg==}
 
   '@sozai/json@0.3.0':
     resolution: {integrity: sha512-ArThPadz4kZjDqVnHI+UROwervbL9riIEYQ4b0g9e9mtA22EZ54lvNgsNvEUHL+oK53tlhgmHsgO2w5FwCTrhg==}
@@ -6838,7 +6844,7 @@ snapshots:
 
   '@sozai/async@0.4.0': {}
 
-  '@sozai/codec@0.4.2':
+  '@sozai/codec@0.4.3':
     dependencies:
       '@sozai/json': 0.3.0
 

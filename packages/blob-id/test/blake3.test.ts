@@ -1,6 +1,7 @@
+import { concatBytes, hexToBytes } from '@noble/hashes/utils.js'
+import { toB32 } from '@sozai/codec'
 import { describe, expect, test } from 'vitest'
 
-import { base32Encode } from '../src/base32.js'
 import { blake3Codec } from '../src/blake3.js'
 import { checkCodecConformance } from '../src/conformance.js'
 import { InvalidBlobIDError } from '../src/errors.js'
@@ -8,22 +9,6 @@ import type { BlobIDCodec, BlobIDInfo } from '../src/types.js'
 import { encodeVarint } from '../src/varint.js'
 
 const EMPTY_HEX = 'af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262'
-
-function hexToBytes(hex: string): Uint8Array {
-  const out = new Uint8Array(hex.length / 2)
-  for (let i = 0; i < out.length; i++) out[i] = Number.parseInt(hex.slice(i * 2, i * 2 + 2), 16)
-  return out
-}
-
-function concat(...parts: Array<Uint8Array>): Uint8Array {
-  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0))
-  let offset = 0
-  for (const part of parts) {
-    out.set(part, offset)
-    offset += part.length
-  }
-  return out
-}
 
 function digestOf(content: Uint8Array): Uint8Array {
   const hasher = blake3Codec.createHasher()
@@ -51,7 +36,7 @@ describe('blake3Codec', () => {
     const digest = blake3Codec.createHasher().digest()
     expect(digest).toEqual(hexToBytes(EMPTY_HEX))
     const id = blake3Codec.encode({ digest, contentLength: 0 })
-    expect(id).toBe(base32Encode(concat(encodeVarint(0), hexToBytes(EMPTY_HEX))))
+    expect(id).toBe(toB32(concatBytes(encodeVarint(0), hexToBytes(EMPTY_HEX))))
     expect(blake3Codec.decode(id)).toEqual({ digest: hexToBytes(EMPTY_HEX), contentLength: 0 })
   })
 
@@ -77,13 +62,27 @@ describe('blake3Codec', () => {
 
   test('rejects invalid IDs', () => {
     const valid = blake3Codec.encode(sample(1))
-    const short = base32Encode(concat(encodeVarint(1), new Uint8Array(31)))
+    const short = toB32(concatBytes(encodeVarint(1), new Uint8Array(31)))
     const bad = ['', 'x', '!!', short, `${valid}aa`, `${valid}a`]
     for (const id of bad) {
       expect(() => blake3Codec.decode(id), id).toThrow(InvalidBlobIDError)
       expect(() => blake3Codec.canonicalize(id), id).toThrow(InvalidBlobIDError)
     }
     expect(() => blake3Codec.decode('x')).toThrow('Invalid blob ID: "x"')
+  })
+
+  test('decode rejects uppercase and invalid base32 characters', () => {
+    const valid = blake3Codec.encode(sample(1))
+    for (const id of [valid.toUpperCase(), 'MY', 'm1', 'm=', 'm8', 'm-', 'm y']) {
+      expect(() => blake3Codec.decode(id), id).toThrow(InvalidBlobIDError)
+    }
+  })
+
+  test('decode rejects non-zero trailing bits and impossible base32 lengths', () => {
+    const valid = blake3Codec.encode({ digest: new Uint8Array(32), contentLength: 0 })
+    for (const id of [`${valid.slice(0, -1)}b`, 'mz', 'm']) {
+      expect(() => blake3Codec.decode(id), id).toThrow(InvalidBlobIDError)
+    }
   })
 
   test('passes conformance', () => {

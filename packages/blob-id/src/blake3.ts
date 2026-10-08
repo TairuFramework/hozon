@@ -1,6 +1,6 @@
 import { blake3 } from '@noble/hashes/blake3.js'
+import { fromB32, toB32 } from '@sozai/codec'
 
-import { base32Decode, base32Encode } from './base32.js'
 import { InvalidBlobIDError } from './errors.js'
 import type { BlobHasher, BlobIDCodec, BlobIDInfo } from './types.js'
 import { decodeVarint, encodeVarint } from './varint.js'
@@ -15,12 +15,12 @@ function encode(info: BlobIDInfo): string {
   const bytes = new Uint8Array(prefix.length + DIGEST_LENGTH)
   bytes.set(prefix, 0)
   bytes.set(info.digest, prefix.length)
-  return base32Encode(bytes)
+  return toB32(bytes)
 }
 
 function decode(id: string): BlobIDInfo {
   try {
-    const bytes = base32Decode(id)
+    const bytes = fromB32(id)
     const { value, length } = decodeVarint(bytes)
     if (bytes.length !== length + DIGEST_LENGTH) {
       throw new RangeError('Unexpected ID length')
