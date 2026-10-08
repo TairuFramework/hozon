@@ -93,6 +93,55 @@ describe.each(backends())('$name', (backend) => {
     )
   })
 
+  test('listEntries pages by (createdAt, blobID)', async () => {
+    const store = await openStore()
+    for (const id of ['b3', 'b1', 'b5', 'b2', 'b4']) {
+      await store.insertEntry(entry({ blobID: id, createdAt: 1000 }), [])
+    }
+    const first = await store.listEntries({ limit: 2 })
+    expect(first.entries.map((e) => e.blobID)).toEqual(['b1', 'b2'])
+    const second = await store.listEntries({ limit: 2, cursor: first.nextCursor as string })
+    expect(second.entries.map((e) => e.blobID)).toEqual(['b3', 'b4'])
+    const third = await store.listEntries({ limit: 2, cursor: second.nextCursor as string })
+    expect(third.entries.map((e) => e.blobID)).toEqual(['b5'])
+    expect(third.nextCursor).toBeNull()
+    await expect(store.listEntries({ limit: 2, cursor: 'not-a-cursor!' })).rejects.toThrow()
+    await expect(store.listEntries({ limit: 0 })).rejects.toThrow()
+  })
+
+  test('promoteEntry replaces a partial entry atomically', async () => {
+    const store = await openStore()
+    await store.insertEntry(entry({ state: 'remote-only', pinned: true, createdAt: 5 }), [])
+    await store.beginTransfer('blob-1', 4, manifest(3), 'stg-1')
+    await store.recordTransferChunk('blob-1', 0)
+    const { state: _state, ...input } = entry({ chunkSize: 6, createdAt: 99, pinned: false })
+    await store.promoteEntry(input, manifest(2))
+    expect(await store.getEntry('blob-1')).toMatchObject({
+      state: 'local',
+      chunkSize: 6,
+      pinned: true,
+      createdAt: 5,
+    })
+    expect(await store.getChunkDigests('blob-1')).toHaveLength(2)
+    expect(await store.getTransfer('blob-1')).toBeNull()
+    const { state: _s, ...fresh } = entry({ blobID: 'blob-2' })
+    await store.promoteEntry(fresh, manifest(3))
+    expect((await store.getEntry('blob-2'))?.state).toBe('local')
+    expect(await store.getChunkDigests('blob-2')).toHaveLength(3)
+  })
+
+  test('resetTransfer returns a partial entry to remote-only', async () => {
+    const store = await openStore()
+    await store.insertEntry(entry({ state: 'remote-only' }), [])
+    await store.beginTransfer('blob-1', 4, manifest(3), 'stg-1')
+    await store.recordTransferChunk('blob-1', 0)
+    await store.resetTransfer('blob-1')
+    expect((await store.getEntry('blob-1'))?.state).toBe('remote-only')
+    expect(await store.getChunkDigests('blob-1')).toEqual([])
+    expect(await store.getTransfer('blob-1')).toBeNull()
+    await store.resetTransfer('missing')
+  })
+
   test('custom kubun table prefix supports an entry round trip', async () => {
     const store = await openStore('kubun')
     const input = entry()

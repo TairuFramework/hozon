@@ -54,4 +54,10 @@ export type BlobStoreAPI = {
   getTransfer(blobID: string): Promise<BlobTransfer | null>
   getTransferByStagingID(stagingID: string): Promise<{ blobID: string; updatedAt: number } | null>
   touchTransfer(blobID: string): Promise<void>
+  listEntries(params: {
+    limit: number
+    cursor?: string
+  }): Promise<{ entries: Array<BlobEntry>; nextCursor: string | null }>
+  promoteEntry(entry: Omit<BlobEntryInput, 'state'>, chunks: Array<BlobChunkInput>): Promise<void>
+  resetTransfer(blobID: string): Promise<void>
 }

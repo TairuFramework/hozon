@@ -345,3 +345,74 @@ test('beginTransfer with a new staging ID clears previous progress', async () =>
   expect((await store.getTransfer('b1'))?.presentChunks).toEqual([])
   expect(await store.getPresentChunkIndexes('b1')).toEqual([])
 })
+
+test('listEntries pages by (createdAt, blobID) with an opaque cursor', async () => {
+  for (const id of ['b3', 'b1', 'b5', 'b2', 'b4']) {
+    await store.insertEntry(entry({ blobID: id }), [])
+  }
+  const first = await store.listEntries({ limit: 2 })
+  expect(first.entries.map((e) => e.blobID)).toEqual(['b1', 'b2'])
+  expect(first.nextCursor).not.toBeNull()
+  const second = await store.listEntries({ limit: 2, cursor: first.nextCursor as string })
+  expect(second.entries.map((e) => e.blobID)).toEqual(['b3', 'b4'])
+  const third = await store.listEntries({ limit: 2, cursor: second.nextCursor as string })
+  expect(third.entries.map((e) => e.blobID)).toEqual(['b5'])
+  expect(third.nextCursor).toBeNull()
+})
+test('listEntries orders by createdAt first and rejects bad input', async () => {
+  await store.insertEntry(entry({ blobID: 'a', createdAt: 20 }), [])
+  await store.insertEntry(entry({ blobID: 'z', createdAt: 10 }), [])
+  const result = await store.listEntries({ limit: 10 })
+  expect(result.entries.map((e) => e.blobID)).toEqual(['z', 'a'])
+  expect(result.nextCursor).toBeNull()
+  await expect(store.listEntries({ limit: 2, cursor: 'not-a-cursor!' })).rejects.toThrow()
+  await expect(store.listEntries({ limit: 0 })).rejects.toThrow()
+  await expect(store.listEntries({ limit: 1001 })).rejects.toThrow()
+})
+
+test('promoteEntry inserts a local entry with manifest when absent', async () => {
+  const { state: _state, ...input } = entry({ contentType: 'text/plain' })
+  await store.promoteEntry(input, manifest())
+  expect(await store.getEntry('b1')).toEqual({
+    ...entry({ contentType: 'text/plain' }),
+    encrypted: false,
+    keyID: null,
+    pinned: false,
+  })
+  expect(bytes(await store.getChunkDigests('b1'))).toEqual(bytes(manifest().map((c) => c.digest)))
+})
+test('promoteEntry replaces a partial entry and keeps pinned and createdAt', async () => {
+  await store.insertEntry(entry({ state: 'remote-only', pinned: true, createdAt: 5 }), [])
+  await store.beginTransfer('b1', 4, manifest(3), 'stg-1')
+  await store.recordTransferChunk('b1', 0)
+  const { state: _state, ...input } = entry({ chunkSize: 6, createdAt: 99, pinned: false })
+  await store.promoteEntry(input, manifest(2))
+  expect(await store.getEntry('b1')).toMatchObject({
+    state: 'local',
+    chunkSize: 6,
+    pinned: true,
+    createdAt: 5,
+  })
+  expect(await store.getChunkDigests('b1')).toHaveLength(2)
+  expect(await store.getTransfer('b1')).toBeNull()
+  expect(await store.getPresentChunkIndexes('b1')).toEqual([])
+})
+test('promoteEntry works on a remote-only stub with chunkSize 0', async () => {
+  await store.insertEntry(entry({ state: 'remote-only', chunkSize: 0 }), [])
+  const { state: _state, ...input } = entry()
+  await store.promoteEntry(input, manifest())
+  expect(await store.getEntry('b1')).toMatchObject({ state: 'local', chunkSize: 4 })
+  expect(await store.getChunkDigests('b1')).toHaveLength(3)
+})
+
+test('resetTransfer returns a partial entry to remote-only', async () => {
+  await store.insertEntry(entry({ state: 'remote-only' }), [])
+  await store.beginTransfer('b1', 4, manifest(), 'stg-1')
+  await store.recordTransferChunk('b1', 0)
+  await store.resetTransfer('b1')
+  expect((await store.getEntry('b1'))?.state).toBe('remote-only')
+  expect(await store.getChunkDigests('b1')).toEqual([])
+  expect(await store.getTransfer('b1')).toBeNull()
+  expect(await store.getPresentChunkIndexes('b1')).toEqual([])
+  await store.resetTransfer('missing')
+})
