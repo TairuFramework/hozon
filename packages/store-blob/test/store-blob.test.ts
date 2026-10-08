@@ -416,3 +416,13 @@ test('resetTransfer returns a partial entry to remote-only', async () => {
   expect(await store.getPresentChunkIndexes('b1')).toEqual([])
   await store.resetTransfer('missing')
 })
+
+test('fillContentType sets a null content type only', async () => {
+  await store.insertEntry(entry(), [])
+  await store.fillContentType('b1', 'image/png')
+  expect((await store.getEntry('b1'))?.contentType).toBe('image/png')
+  await store.fillContentType('b1', 'text/plain')
+  expect((await store.getEntry('b1'))?.contentType).toBe('image/png')
+  await store.fillContentType('missing', 'text/plain')
+  expect(await store.getEntry('missing')).toBeNull()
+})

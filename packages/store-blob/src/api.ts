@@ -351,5 +351,13 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
           .execute()
       })
     },
+    async fillContentType(blobID, contentType) {
+      await db
+        .updateTable('blob_entries')
+        .set({ content_type: contentType })
+        .where('blob_id', '=', blobID)
+        .where('content_type', 'is', null)
+        .execute()
+    },
   }
 }

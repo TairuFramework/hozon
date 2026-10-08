@@ -41,6 +41,7 @@ Finalisation rejects missing chunks with `Cannot finalize transfer <blobID>: <co
 Entries carry an optional `contentType` (`string | null`).
 `listEntries({ limit, cursor })` pages entries by `(createdAt, blobID)` with an opaque cursor; `limit` is 1 to 1000.
 `promoteEntry(entry, chunks)` atomically replaces an entry's manifest and marks it `local`, keeping `pinned` and `createdAt` and clearing transfers and session.
+`fillContentType(blobID, contentType)` sets the content type only when the stored one is null.
 `resetTransfer(blobID)` atomically drops the session, progress, and manifest and sets the entry to `remote-only`.
 The `1-sessions` migration resets existing `partial` entries to `remote-only`, dropping their manifests; this is not reversible.
 Manifest chunks reference entries, and transfer rows reference manifest chunks, with cascading deletion preventing orphan progress.

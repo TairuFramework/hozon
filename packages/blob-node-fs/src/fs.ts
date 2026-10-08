@@ -58,8 +58,14 @@ export class FSBlobBackend implements BlobBackend {
       close() {
         return writer.close()
       },
-      abort(reason) {
-        return writer.abort(reason)
+      async abort(reason) {
+        // The file opens lazily: wait for it to close so a following
+        // abortStaging cannot run before the file exists.
+        const closed = nodeStream.closed
+          ? Promise.resolve()
+          : new Promise<void>((resolve) => nodeStream.once('close', () => resolve()))
+        await writer.abort(reason)
+        await closed
       },
     })
   }

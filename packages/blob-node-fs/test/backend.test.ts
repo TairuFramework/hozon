@@ -124,6 +124,15 @@ describe.each(backends)('$name', ({ create }) => {
     await expect(backend.commit('stg-abort', 'contentkey0002')).rejects.toThrow()
   })
 
+  test('abortStaging after aborting a fresh staging stream leaves no staging area', async () => {
+    const ws = await backend.createStaging('stg-early-abort')
+    await ws.abort(new Error('source failed'))
+    await backend.abortStaging('stg-early-abort')
+    const ids: Array<string> = []
+    for await (const area of backend.listStaging?.() ?? []) ids.push(area.stagingID)
+    expect(ids).not.toContain('stg-early-abort')
+  })
+
   test('delete removes committed bytes', async () => {
     await backend.delete(key)
     expect(await backend.has(key)).toBe(false)

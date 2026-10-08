@@ -60,4 +60,6 @@ export type BlobStoreAPI = {
   }): Promise<{ entries: Array<BlobEntry>; nextCursor: string | null }>
   promoteEntry(entry: Omit<BlobEntryInput, 'state'>, chunks: Array<BlobChunkInput>): Promise<void>
   resetTransfer(blobID: string): Promise<void>
+  // Sets the content type only when the stored one is null.
+  fillContentType(blobID: string, contentType: string): Promise<void>
 }
