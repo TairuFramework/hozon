@@ -5,7 +5,12 @@ import { b64uFromUTF, b64uToUTF } from '@sozai/codec'
 
 import { categoryRange, encodeCategory } from './category.js'
 import type { LogTables } from './tables.js'
-import type { LogStore, TracedLog } from './types.js'
+import type { LogStore, StoredLog, TracedLog } from './types.js'
+
+function decodeLog(data: StoredLog | string): StoredLog {
+  // Decode only the JSON column; nested JSON-looking strings are payload values.
+  return typeof data === 'string' ? (JSON.parse(data) as StoredLog) : data
+}
 
 function encodeCursor(timestamp: number, seq: number): string {
   return b64uFromUTF(JSON.stringify([timestamp, seq]))
@@ -84,7 +89,7 @@ export function createLogStoreAPI(db: Kysely<LogTables>, adapter: Adapter): LogS
       const page = rows.slice(0, limit)
       const last = page.at(-1)
       return {
-        logs: page.map((row) => row.data),
+        logs: page.map((row) => decodeLog(row.data)),
         ...(rows.length > limit && last !== undefined
           ? { cursor: encodeCursor(last.timestamp, last.seq) }
           : {}),
@@ -99,7 +104,7 @@ export function createLogStoreAPI(db: Kysely<LogTables>, adapter: Adapter): LogS
         .orderBy('seq')
         .execute()
       // addLogs enforces paired IDs for every traced row.
-      return rows.map((row) => row.data as TracedLog)
+      return rows.map((row) => decodeLog(row.data) as TracedLog)
     },
     async deleteByTrace(traceIDs) {
       if (traceIDs.length === 0) return 0

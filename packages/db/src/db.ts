@@ -1,6 +1,6 @@
 import type { Adapter, ColumnTypes, Functions } from '@hozon/adapter'
 import { getLogger, type Logger } from '@sozai/log'
-import { Kysely, ParseJSONResultsPlugin, sql } from 'kysely'
+import { Kysely, sql } from 'kysely'
 import { type Migration, Migrator } from 'kysely/migration'
 
 import { withTransactionalDDL } from './dialect.js'
@@ -113,7 +113,6 @@ export class HozonDB implements StoreProvider {
         this.#adapter.kind === 'sqlite'
           ? withTransactionalDDL(this.#adapter.dialect)
           : this.#adapter.dialect,
-      plugins: [new ParseJSONResultsPlugin()],
     })
     this.#storeDB = this.#db.withPlugin(this.#defaultPlugin)
     this.#logger = params.logger ?? getLogger(['hozon', 'db'])

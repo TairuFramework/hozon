@@ -1,5 +1,8 @@
 # Telemetry store
 
+`getSpans` decodes the JSON `data` column once.
+JSON-looking strings in span and event attributes remain strings. Nested objects and arrays retain their structure.
+
 `@hozon/store-telemetry` exports `TELEMETRY_STORE`, `telemetryStoreDefinition`, `getTelemetryStore`, `TelemetryTables`, `StoredSpan`, and `TelemetryStore`.
 
 ```ts

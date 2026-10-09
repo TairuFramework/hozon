@@ -1,5 +1,8 @@
 # Log store
 
+`queryLogs` and `getTraceLogs` decode the JSON `data` column once.
+JSON-looking strings in `properties`, messages, and other payload fields remain strings. Nested objects and arrays retain their structure.
+
 `@hozon/store-log` exports `LOG_STORE`, `logStoreDefinition`, `getLogStore`, `LogTables`, `LogLevel`, `StoredLog`, `TracedLog`, `QueryLogsParams`, `LogStore`, `isTracedLog`, `encodeCategory`, and `categoryRange`.
 
 ```ts

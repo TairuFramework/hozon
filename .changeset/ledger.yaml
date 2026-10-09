@@ -30,6 +30,10 @@
   dir: packages/conformance
   intents:
     - initial-conformance
+"@hozon/conformance@0.1.3":
+  dir: packages/conformance
+  intents:
+    - json-column-decoding
 "@hozon/db@0.1.0":
   dir: packages/db
   intents:
@@ -38,6 +42,10 @@
   dir: packages/db
   intents:
     - table-prefix-db
+"@hozon/db@0.2.3":
+  dir: packages/db
+  intents:
+    - json-column-decoding
 "@hozon/expo@0.1.0":
   dir: packages/expo
   intents:
@@ -82,6 +90,10 @@
   dir: packages/store-log
   intents:
     - table-prefix-stores
+"@hozon/store-log@0.2.2":
+  dir: packages/store-log
+  intents:
+    - json-column-decoding
 "@hozon/store-telemetry@0.1.0":
   dir: packages/store-telemetry
   intents:
@@ -90,3 +102,7 @@
   dir: packages/store-telemetry
   intents:
     - table-prefix-stores
+"@hozon/store-telemetry@0.2.2":
+  dir: packages/store-telemetry
+  intents:
+    - json-column-decoding

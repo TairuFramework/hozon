@@ -69,6 +69,29 @@ test('uses a custom table prefix', async () => {
   expect(await store.getSpans('trace-one')).toEqual([])
 })
 
+test.each([false, true])(
+  'preserves JSON-looking strings in span data (transaction: %s)',
+  async (transaction) => {
+    const input = span({
+      name: '{"span":1}',
+      attributes: { payload: '{"a":1}', list: '[1,2]', nested: { payload: '{"b":2}' } },
+      events: [{ name: '[1,2]', time: 1.5, attributes: { payload: '{"a":1}' } }],
+    })
+    const check = async (scoped: TelemetryStore) => {
+      await scoped.addSpans([input])
+      const result = await scoped.getSpans(input.traceID)
+      expect(result[0]?.attributes.payload).toBe('{"a":1}')
+      expect(result).toEqual([input])
+    }
+    if (transaction) {
+      await db.withTransaction(async (tx) => check(await getTelemetryStore(tx)))
+    } else {
+      await check(store)
+    }
+    expect(await store.getSpans(input.traceID)).toEqual([input])
+  },
+)
+
 test('round-trips fractional times and isolates every nested boundary', async () => {
   const spans = [span()]
   await store.addSpans(spans)

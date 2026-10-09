@@ -9,6 +9,6 @@ export type TelemetryTables = {
     span_id: string
     start_time: number
     end_time: number
-    data: ColumnType<StoredSpan, unknown, unknown>
+    data: ColumnType<StoredSpan | string, unknown, unknown>
   }
 }

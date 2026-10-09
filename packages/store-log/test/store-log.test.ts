@@ -205,6 +205,33 @@ test('deletes and protects more than 500 trace IDs with duplicates', async () =>
   expect(await store.deleteBefore(2, { keepTraceIDs: [...ids, ...ids] })).toBe(0)
   expect(await store.deleteByTrace([...ids, ...ids])).toBe(1201)
 })
+test.each([false, true])(
+  'preserves JSON-looking strings in log data (transaction: %s)',
+  async (transaction) => {
+    const input = {
+      ...log(1, '{"message":1}', 'trace'),
+      properties: {
+        payload: '[1,2]',
+        object: '{"a":1}',
+        nested: { list: ['[1,2]', { payload: '{"a":1}' }] },
+      },
+    }
+    const check = async (scoped: LogStore) => {
+      await scoped.addLogs([input])
+      const result = await scoped.queryLogs({ limit: 10 })
+      expect(result.logs[0]?.properties.payload).toBe('[1,2]')
+      expect(result.logs).toEqual([input])
+      expect(await scoped.getTraceLogs('trace')).toEqual([input])
+    }
+    if (transaction) {
+      await db.withTransaction(async (tx) => check(await getLogStore(tx)))
+    } else {
+      await check(store)
+    }
+    expect(await store.getTraceLogs('trace')).toEqual([input])
+  },
+)
+
 test('round trips non-ASCII and nested JSON properties', async () => {
   const input = {
     ...log(1),

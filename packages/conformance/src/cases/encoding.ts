@@ -10,7 +10,11 @@ const values = {
   binary: new Uint8Array([0, 1, 127, 128, 255]),
   boolean: true,
   double: 0.1 + 0.2,
-  json: { text: '雪 🐈', nested: { list: [1, null, true, { value: 'é' }] } },
+  json: {
+    text: '雪 🐈',
+    payload: '{"a":1}',
+    nested: { list: [1, null, true, '[1,2]', { value: 'é' }] },
+  },
   serial: 1,
   text: '雪 🐈 café',
   timestamp: new Date('2026-01-02T03:04:05.678Z'),
@@ -87,7 +91,9 @@ export const encodingCases: Array<ConformanceCase> = (
       } else if (type === 'bigint' && adapter.kind === 'postgres') {
         // postgres.js preserves int8 precision by returning text by default.
         assert.equal(String(row.value), String(input))
-      } else if (type === 'binary' || type === 'json') {
+      } else if (type === 'json') {
+        assert.deepEqual(typeof row.value === 'string' ? JSON.parse(row.value) : row.value, input)
+      } else if (type === 'binary') {
         assert.deepEqual(row.value, input)
       } else {
         assert.equal(row.value, input)

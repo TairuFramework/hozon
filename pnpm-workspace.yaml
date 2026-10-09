@@ -32,7 +32,7 @@ catalog:
   '@opentelemetry/core': ^2.12.0
   '@opentelemetry/sdk-trace-base': ^2.12.0
   '@opentelemetry/sdk-trace-web': ^2.12.0
-  '@playwright/test': 1.63.0
+  '@playwright/test': 1.64.0
   '@sozai/codec': ^0.4.3
   '@sozai/json': ^0.3.0
   '@sozai/lock': ^0.1.2
@@ -44,7 +44,7 @@ catalog:
   '@types/react-dom': ~19.3.0
   '@vitejs/plugin-react': ^6.1.1
   del-cli: ^7.0.0
-  electron: ^44.6.0
+  electron: ^44.7.0
   expo: ^57.0.27
   expo-sqlite: ~57.0.4
   expo-status-bar: ^57.0.1

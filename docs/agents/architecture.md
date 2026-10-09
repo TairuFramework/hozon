@@ -23,6 +23,8 @@ An adapter supplies a Kysely dialect, column types, value encoders, and query pr
 
 A store registers migrations and a `createAPI` function with `HozonDB`. Stores use fixed `hozon_` table names. The configurable table prefix applies to migration and savepoint names only.
 
+Stores decode known JSON columns once when a driver returns text. `HozonDB` leaves driver results untouched, preserving nested strings and plain text columns.
+
 `HozonDB` checks registered store schemas before driver preparation and migrations. SQLite migrations run transactionally; a failed migration rolls back and can retry on the next open. A store method that needs atomicity uses `withStoreTransaction`. Store methods must not call `.transaction()` directly.
 
 ## Preflight order

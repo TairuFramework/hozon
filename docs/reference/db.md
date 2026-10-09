@@ -78,6 +78,14 @@ const logs = await getLogStore(db)
 await db.close()
 ```
 
+## JSON results
+
+`HozonDB` leaves query results in the driver's native representation. It does not install a global JSON results parser.
+Stores decode known JSON columns once with `JSON.parse` when the driver returns text.
+They retain objects already decoded by the driver, including PostgreSQL JSONB results.
+Nested strings remain strings even when they contain valid JSON. Plain text columns remain text.
+Custom stores must decode their own JSON columns at the read boundary.
+
 ## Table prefixes
 
 `tablePrefix` configures store tables and migration tables for the whole database.

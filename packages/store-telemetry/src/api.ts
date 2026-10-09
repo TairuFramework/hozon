@@ -3,7 +3,7 @@ import type { Kysely } from '@hozon/db'
 import { chunk, withKeepSet, withStoreTransaction } from '@hozon/db'
 
 import type { TelemetryTables } from './tables.js'
-import type { TelemetryStore } from './types.js'
+import type { StoredSpan, TelemetryStore } from './types.js'
 
 export function createTelemetryStoreAPI(
   db: Kysely<TelemetryTables>,
@@ -55,7 +55,10 @@ export function createTelemetryStoreAPI(
         .orderBy('start_time')
         .orderBy('seq')
         .execute()
-      return rows.map((row) => row.data)
+      // Decode only the JSON column; nested JSON-looking strings are payload values.
+      return rows.map((row) =>
+        typeof row.data === 'string' ? (JSON.parse(row.data) as StoredSpan) : row.data,
+      )
     },
     async deleteByTrace(traceIDs) {
       if (traceIDs.length === 0) return 0

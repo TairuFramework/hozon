@@ -25,6 +25,18 @@ describe.each(backends())('$name', (backend) => {
     await backend.cleanup()
   })
 
+  test('JSON-looking attribute strings persist across reopen', async () => {
+    const first = await openStore()
+    const input = sampleSpan('trace', 'span', 1, {
+      attributes: { payload: '{"a":1}', nested: { payload: '[1,2]' } },
+      events: [{ name: 'event', time: 1.5, attributes: { payload: '[1,2]' } }],
+    })
+    await first.store.addSpans([input])
+    await first.db.close()
+    const second = await openStore(true)
+    expect(await second.store.getSpans('trace')).toEqual([input])
+  })
+
   test('batch insert stores every span with nested payloads', async () => {
     const { store } = await openStore()
     const spans = Array.from({ length: 250 }, (_, index) =>

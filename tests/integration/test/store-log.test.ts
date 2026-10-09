@@ -32,6 +32,19 @@ describe.each(backends())('$name', (backend) => {
     await backend.cleanup()
   })
 
+  test('JSON-looking property strings persist across reopen', async () => {
+    const first = await openStore()
+    const input = {
+      ...tracedLog(1, '{"message":1}', 'trace'),
+      properties: { payload: '[1,2]', nested: { payload: '{"a":1}' } },
+    }
+    await first.store.addLogs([input])
+    await first.db.close()
+    const second = await openStore(true)
+    expect((await second.store.queryLogs({ limit: 10 })).logs).toEqual([input])
+    expect(await second.store.getTraceLogs('trace')).toEqual([input])
+  })
+
   test('batch insert keeps every log in insertion order', async () => {
     const { store } = await openStore()
     const logs = Array.from({ length: 300 }, (_, index) =>

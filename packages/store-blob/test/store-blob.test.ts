@@ -45,6 +45,13 @@ test('insertEntry then getEntry returns the mapped entry', async () => {
   expect(BLOB_STORE).toBe('blob')
   expect(await store.getEntry('missing')).toBeNull()
 })
+test('preserves JSON-looking plain text columns', async () => {
+  const input = entry({ encrypted: false, pinned: false, keyID: '[1,2]', contentType: '{"a":1}' })
+  await store.insertEntry(input, [])
+  expect(await store.getEntry(input.blobID)).toEqual(input)
+  expect((await store.listEntries({ limit: 10 })).entries).toEqual([input])
+})
+
 test('optional metadata defaults to false and null', async () => {
   await store.insertEntry(entry(), [])
   expect(await store.getEntry('b1')).toEqual({

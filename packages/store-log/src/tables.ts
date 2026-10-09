@@ -10,6 +10,6 @@ export type LogTables = {
     category: string
     trace_id: string | null
     span_id: string | null
-    data: ColumnType<StoredLog, unknown, unknown>
+    data: ColumnType<StoredLog | string, unknown, unknown>
   }
 }
