@@ -13,7 +13,7 @@ type StoredLog = {
 type TracedLog = StoredLog & { traceID: string; spanID: string }
 type QueryLogsParams = {
   from?: number; to?: number; levels?: Array<LogLevel>; categoryPrefix?: Array<string>
-  traceID?: string; limit: number; cursor?: string
+  traceID?: string; spanID?: string; order?: 'asc' | 'desc'; limit: number; cursor?: string
 }
 type LogStore = {
   addLogs(logs: Array<StoredLog>): Promise<void>
@@ -36,11 +36,11 @@ function encodeCategory(segments: Array<string>): string
 function categoryRange(prefix: Array<string>): { gte: string; lt: string }
 ```
 
-The `logs` table (default physical name `hozon_logs`) has columns are `seq` (serial primary key), `timestamp` (double), `level`, `category`, nullable `trace_id` and `span_id`, and JSON `data`. Indexes cover timestamp, trace plus timestamp and sequence, and level plus timestamp. Trace and span IDs must be both present or both absent. `addLogs` validates the whole batch before writing.
+The `logs` table (default physical name `hozon_logs`) has columns are `seq` (serial primary key), `timestamp` (double), `level`, `category`, nullable `trace_id` and `span_id`, and JSON `data`. Indexes cover timestamp, trace plus timestamp and sequence, trace plus span, timestamp and sequence, and level plus timestamp. Trace and span IDs must be both present or both absent. `addLogs` validates the whole batch before writing.
 
 Category segments are joined with U+001F and a trailing U+001F. For example, `['a', 'b']` encodes as `a\u001fb\u001f`, while `['a.b']` encodes as `a.b\u001f`. Segments containing U+001F are rejected. Prefix queries use a lexicographic range; PostgreSQL's `category` column uses `COLLATE "C"` for correct prefix ordering.
 
-`queryLogs` orders by `(timestamp, seq)`. Its opaque URL-safe base64 cursor encodes that pair and continues strictly after it. Limits are required and capped at 1000. `getTraceLogs` returns all records for a trace in chronological order.
+`queryLogs` orders by `(timestamp, seq)`, ascending by default or newest first with `order: 'desc'`. Its opaque URL-safe base64 cursor encodes that pair and continues strictly after it in the requested order. `spanID` narrows a trace query to one span and requires `traceID`. Limits are required and capped at 1000. `getTraceLogs` returns all records for a trace in chronological order.
 
 Retention and batching rules are shared with the telemetry store; see [Stores](../stores.md#retention-and-batching).
 See [log integration](../telemetry.md) for LogTape and OpenTelemetry adapters.

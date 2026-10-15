@@ -107,6 +107,46 @@ test('cursor paginates equal timestamps without gaps or repeats', async () => {
   expect([...first.logs, ...second.logs, ...third.logs]).toEqual(logs)
   expect(third.cursor).toBeUndefined()
 })
+test('desc order pages newest first through equal timestamps', async () => {
+  const logs = [
+    ...Array.from({ length: 5 }, (_, i) => log(1, `a${i}`)),
+    ...Array.from({ length: 3 }, (_, i) => log(2, `b${i}`)),
+  ]
+  await store.addLogs(logs)
+  const first = await store.queryLogs({ limit: 3, order: 'desc' })
+  const second = await store.queryLogs({ limit: 3, order: 'desc', cursor: first.cursor })
+  const third = await store.queryLogs({ limit: 3, order: 'desc', cursor: second.cursor })
+  expect([first.logs.length, second.logs.length, third.logs.length]).toEqual([3, 3, 2])
+  expect([...first.logs, ...second.logs, ...third.logs]).toEqual(logs.toReversed())
+  expect(third.cursor).toBeUndefined()
+})
+test('filters trace logs by span in either order', async () => {
+  const span = (timestamp: number, spanID: string, traceID = 'trace') => ({
+    ...log(timestamp, `${traceID}/${spanID}@${timestamp}`),
+    traceID,
+    spanID,
+  })
+  const logs = [span(1, 'x'), span(2, 'y'), span(3, 'x'), span(4, 'x', 'other'), log(5)]
+  await store.addLogs(logs)
+  expect((await store.queryLogs({ limit: 10, traceID: 'trace', spanID: 'x' })).logs).toEqual([
+    logs[0],
+    logs[2],
+  ])
+  const newest = await store.queryLogs({ limit: 1, traceID: 'trace', spanID: 'x', order: 'desc' })
+  expect(newest.logs).toEqual([logs[2]])
+  const older = await store.queryLogs({
+    limit: 1,
+    traceID: 'trace',
+    spanID: 'x',
+    order: 'desc',
+    cursor: newest.cursor,
+  })
+  expect(older.logs).toEqual([logs[0]])
+  expect(older.cursor).toBeUndefined()
+})
+test('rejects spanID without traceID', async () => {
+  await expect(store.queryLogs({ limit: 10, spanID: 'span' })).rejects.toThrow(TypeError)
+})
 test('limit is capped at 1000 and inserts are batched', async () => {
   await store.addLogs(Array.from({ length: 1005 }, (_, i) => log(i)))
   const page = await store.queryLogs({ limit: 2000 })
@@ -301,6 +341,7 @@ test('migration creates the table columns and required indexes', () => {
   for (const [name, expected] of [
     ['hozon_logs_timestamp', ['timestamp']],
     ['hozon_logs_trace_timestamp_seq', ['trace_id', 'timestamp', 'seq']],
+    ['hozon_logs_trace_span_timestamp_seq', ['trace_id', 'span_id', 'timestamp', 'seq']],
     ['hozon_logs_level_timestamp', ['level', 'timestamp']],
   ] as const) {
     const columns = adapter.database.prepare(`PRAGMA index_info(${name})`).all()

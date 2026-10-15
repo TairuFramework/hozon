@@ -20,6 +20,10 @@ export type QueryLogsParams = {
   levels?: Array<LogLevel>
   categoryPrefix?: Array<string>
   traceID?: string
+  /** Requires traceID. */
+  spanID?: string
+  /** Defaults to 'asc'. */
+  order?: 'asc' | 'desc'
   limit: number
   cursor?: string
 }

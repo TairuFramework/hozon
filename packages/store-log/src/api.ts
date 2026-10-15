@@ -59,6 +59,10 @@ export function createLogStoreAPI(db: Kysely<LogTables>, adapter: Adapter): LogS
     async queryLogs(params) {
       if (!Number.isInteger(params.limit) || params.limit <= 0)
         throw new RangeError('Log limit must be a positive integer')
+      if (params.spanID !== undefined && params.traceID === undefined)
+        throw new TypeError('Log spanID filter requires traceID')
+      const order = params.order ?? 'asc'
+      const after = order === 'asc' ? '>' : '<'
       const limit = Math.min(params.limit, 1000)
       let query = db.selectFrom('logs').select(['timestamp', 'seq', 'data'])
       if (params.from !== undefined) query = query.where('timestamp', '>=', params.from)
@@ -72,18 +76,19 @@ export function createLogStoreAPI(db: Kysely<LogTables>, adapter: Adapter): LogS
         query = query.where('category', '>=', gte).where('category', '<', lt)
       }
       if (params.traceID !== undefined) query = query.where('trace_id', '=', params.traceID)
+      if (params.spanID !== undefined) query = query.where('span_id', '=', params.spanID)
       if (params.cursor !== undefined) {
         const [timestamp, seq] = decodeCursor(params.cursor)
         query = query.where((eb) =>
           eb.or([
-            eb('timestamp', '>', timestamp),
-            eb.and([eb('timestamp', '=', timestamp), eb('seq', '>', seq)]),
+            eb('timestamp', after, timestamp),
+            eb.and([eb('timestamp', '=', timestamp), eb('seq', after, seq)]),
           ]),
         )
       }
       const rows = await query
-        .orderBy('timestamp')
-        .orderBy('seq')
+        .orderBy('timestamp', order)
+        .orderBy('seq', order)
         .limit(limit + 1)
         .execute()
       const page = rows.slice(0, limit)

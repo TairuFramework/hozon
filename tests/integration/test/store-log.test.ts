@@ -154,6 +154,44 @@ describe.each(backends())('$name', (backend) => {
     expect(pages.flat()).toEqual(logs)
   })
 
+  test('queryLogs pages one trace span newest first', async () => {
+    const { store } = await openStore()
+    const spanLog = (timestamp: number, message: string, spanID: string, traceID = 'trace') =>
+      sampleLog(timestamp, message, { traceID, spanID })
+    const logs = [
+      spanLog(1, 'old', 'x'),
+      spanLog(2, 'tie a', 'x'),
+      spanLog(2, 'other span', 'y'),
+      spanLog(2, 'tie b', 'x'),
+      spanLog(3, 'other trace', 'x', 'other'),
+      sampleLog(4, 'untraced'),
+      spanLog(5, 'new', 'x'),
+    ]
+    await store.addLogs(logs)
+    const pages: Array<Array<StoredLog>> = []
+    let cursor: string | undefined
+    do {
+      const page = await store.queryLogs({
+        traceID: 'trace',
+        spanID: 'x',
+        order: 'desc',
+        limit: 2,
+        cursor,
+      })
+      pages.push(page.logs)
+      cursor = page.cursor
+    } while (cursor !== undefined)
+    expect(pages.map((page) => page.map((log) => log.message))).toEqual([
+      ['new', 'tie b'],
+      ['tie a', 'old'],
+    ])
+    expect(
+      (await store.queryLogs({ traceID: 'trace', order: 'desc', limit: 10 })).logs.map(
+        (log) => log.message,
+      ),
+    ).toEqual(['new', 'tie b', 'other span', 'tie a', 'old'])
+  })
+
   test('getTraceLogs returns only the trace, ordered', async () => {
     const { store } = await openStore()
     const logs = [

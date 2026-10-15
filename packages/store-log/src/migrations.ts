@@ -32,6 +32,11 @@ export function logStoreMigrations(ctx: MigrationContext): Record<string, Migrat
           .columns(['trace_id', 'timestamp', 'seq'])
           .execute()
         await db.schema
+          .createIndex(`${ctx.tablePrefix}_logs_trace_span_timestamp_seq`)
+          .on('logs')
+          .columns(['trace_id', 'span_id', 'timestamp', 'seq'])
+          .execute()
+        await db.schema
           .createIndex(`${ctx.tablePrefix}_logs_level_timestamp`)
           .on('logs')
           .columns(['level', 'timestamp'])
