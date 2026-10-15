@@ -1,4 +1,5 @@
 export { BLOB_STORE, blobStoreDefinition, getBlobStore } from './definition.js'
+export { InvalidCursorError } from './errors.js'
 export type {
   BlobChunkTable,
   BlobEntryTable,

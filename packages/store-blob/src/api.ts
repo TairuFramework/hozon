@@ -3,6 +3,7 @@ import type { Kysely } from '@hozon/db'
 import { chunk, withStoreTransaction } from '@hozon/db'
 import { b64uFromUTF, b64uToUTF } from '@sozai/codec'
 
+import { InvalidCursorError } from './errors.js'
 import type { BlobTables } from './tables.js'
 import type { BlobChunkInput, BlobEntry, BlobStoreAPI } from './types.js'
 
@@ -25,7 +26,7 @@ function decodeCursor(cursor: string): [number, string] {
   } catch {
     // fall through
   }
-  throw new Error('Invalid cursor')
+  throw new InvalidCursorError()
 }
 
 export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): BlobStoreAPI {

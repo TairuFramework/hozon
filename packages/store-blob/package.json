@@ -1,6 +1,6 @@
 {
   "name": "@hozon/store-blob",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Content-addressed blob metadata and resumable transfer store for Hozon",
   "repository": {
     "type": "git",

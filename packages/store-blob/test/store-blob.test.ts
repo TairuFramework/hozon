@@ -3,7 +3,7 @@ import { NodeSQLiteAdapter } from '@hozon/node-sqlite'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
 import { blobStoreDefinition } from '../src/definition.js'
-import { BLOB_STORE, getBlobStore } from '../src/index.js'
+import { BLOB_STORE, getBlobStore, InvalidCursorError } from '../src/index.js'
 import type { BlobChunkInput, BlobEntryInput, BlobStoreAPI } from '../src/types.js'
 
 let db: HozonDB
@@ -399,7 +399,9 @@ test('listEntries orders by createdAt first and rejects bad input', async () => 
   const result = await store.listEntries({ limit: 10 })
   expect(result.entries.map((e) => e.blobID)).toEqual(['z', 'a'])
   expect(result.nextCursor).toBeNull()
-  await expect(store.listEntries({ limit: 2, cursor: 'not-a-cursor!' })).rejects.toThrow()
+  await expect(store.listEntries({ limit: 2, cursor: 'not-a-cursor!' })).rejects.toThrow(
+    InvalidCursorError,
+  )
   await expect(store.listEntries({ limit: 0 })).rejects.toThrow()
   await expect(store.listEntries({ limit: 1001 })).rejects.toThrow()
 })

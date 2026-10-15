@@ -1,5 +1,6 @@
 export { BlobLockTimeoutError } from '@hozon/blob-backend'
 export { InvalidBlobIDError } from '@hozon/blob-id'
+export { InvalidCursorError } from '@hozon/store-blob'
 
 export {
   BlobIDMismatchError,
