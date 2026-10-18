@@ -27,7 +27,7 @@ class PostgresAdapter extends AbstractPostgresAdapter {
   coerceFilterValue(value: unknown): unknown
   close(): Promise<void>
 }
-type ExpoAdapterParams = { database: string }
+type ExpoAdapterParams = { database: string; encryptionKey?: Uint8Array }
 class ExpoAdapter extends AbstractSQLiteAdapter<SQLiteTypes> {
   constructor(params: ExpoAdapterParams)
   get database(): SQLiteDatabase
@@ -55,7 +55,7 @@ Electron applications can use `node:sqlite` in the main process. Mark `node:sqli
 
 ## Expo SQLite
 
-`ExpoAdapter({ database })` opens an Expo SQLite database and enables foreign keys. Booleans serialize as `1` or `0`; dates serialize as ISO strings.
+`ExpoAdapter({ database, encryptionKey? })` opens an Expo SQLite database and enables foreign keys. `encryptionKey` is a raw 32-byte SQLCipher key. It requires `useSQLCipher: true` in the `expo-sqlite` config plugin. The adapter throws if SQLCipher is not linked or the key does not match the file. Booleans serialize as `1` or `0`; dates serialize as ISO strings.
 
 Hermes cannot compile Kysely's `FileMigrationProvider` because its dynamic import uses a variable path (kysely#1628, imported through `kysely/migration`). Wrap the Metro config with `withHozonMetroConfig` from `@hozon/expo/metro`. See the [Expo README](../../packages/expo/README.md).
 

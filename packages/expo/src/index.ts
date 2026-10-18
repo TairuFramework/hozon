@@ -3,10 +3,16 @@ import { openDatabaseSync, type SQLiteDatabase } from 'expo-sqlite'
 import type { Dialect } from 'kysely'
 
 import { ExpoDialect } from './driver.js'
+import { applyEncryptionKey } from './encryption.js'
 
 export type ExpoAdapterParams = {
   /** expo-sqlite database name, for example `hozon.db`. */
   database: string
+  /**
+   * Raw 32-byte SQLCipher key. Requires `useSQLCipher: true` in the expo-sqlite config
+   * plugin. Store it outside the database, for example in `expo-secure-store`.
+   */
+  encryptionKey?: Uint8Array
 }
 
 export class ExpoAdapter extends AbstractSQLiteAdapter<{
@@ -22,6 +28,9 @@ export class ExpoAdapter extends AbstractSQLiteAdapter<{
     super()
     this.#database = openDatabaseSync(params.database)
     try {
+      if (params.encryptionKey != null) {
+        applyEncryptionKey(this.#database, params.encryptionKey)
+      }
       this.#database.execSync('PRAGMA foreign_keys = ON')
     } catch (error) {
       this.#database.closeSync()

@@ -13,6 +13,24 @@ import { ExpoAdapter } from '@hozon/expo'
 const db = new HozonDB({ adapter: new ExpoAdapter({ database: 'hozon.db' }) })
 ```
 
+## Encryption at rest
+
+Pass a raw 32-byte `encryptionKey` to encrypt the database file with SQLCipher. Enable SQLCipher
+in the `expo-sqlite` config plugin first:
+
+```json
+{ "expo": { "plugins": [["expo-sqlite", { "useSQLCipher": true }]] } }
+```
+
+```ts
+const adapter = new ExpoAdapter({ database: 'hozon.db', encryptionKey })
+```
+
+The adapter throws if SQLCipher is not linked, so the file is never left in plaintext by mistake,
+and throws `file is not a database` when the key does not match. Keep the key outside the
+database, for example in `expo-secure-store`. An existing plaintext database is not encrypted in
+place.
+
 ## Metro setup
 
 Kysely's migration entry re-exports `FileMigrationProvider`, which Hermes cannot compile
