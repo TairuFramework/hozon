@@ -25,7 +25,7 @@ versioning:
 catalog:
   '@electron-forge/cli': ^8.0.1
   '@electron-forge/plugin-vite': ^8.0.1
-  '@logtape/logtape': ^2.4.1
+  '@logtape/logtape': ^2.4.2
   '@noble/hashes': ^2.4.0
   '@opentelemetry/api': ^1.9.1
   '@opentelemetry/context-async-hooks': ^2.12.0
@@ -46,10 +46,10 @@ catalog:
   '@vitejs/plugin-react': ^6.1.1
   del-cli: ^8.0.1
   electron: ^44.9.0
-  expo: ^58.0.14
+  expo: ^58.0.16
   expo-sqlite: ~58.0.13
   expo-status-bar: ^58.0.3
-  kysely: ^0.29.6
+  kysely: ^0.29.7
   kysely-postgres-js: ^5.0.0
   postgres: ^3.4.8
   react: 19.3.0

@@ -2,29 +2,35 @@ import { type ConformanceResult, runConformance, summarize } from '@hozon/confor
 import { HozonDB } from '@hozon/db'
 import { ExpoAdapter } from '@hozon/expo'
 import { StackContextManager } from '@opentelemetry/sdk-trace-web'
-import { deleteDatabaseAsync } from 'expo-sqlite'
+import { deleteDatabaseAsync, openDatabaseSync } from 'expo-sqlite'
 import { StatusBar } from 'expo-status-bar'
 import { runStoreScenario, type ScenarioPhase, setupTelemetry } from 'hozon-test-scenarios'
 import { useState } from 'react'
 import { Button, ScrollView, StyleSheet, Text, View } from 'react-native'
 
 const DATABASE = 'hozon-e2e.db'
+const ENCRYPTED_DATABASE = 'hozon-e2e-encrypted.db'
+// Fixed test keys: the verify phase reopens the file written by a previous launch.
+const ENCRYPTION_KEY = Uint8Array.from({ length: 32 }, (_, i) => i)
+const WRONG_KEY = Uint8Array.from({ length: 32 }, (_, i) => 255 - i)
 
 type Report = {
   conformance: Array<ConformanceResult>
   stores: Array<ConformanceResult>
+  encryption: Array<ConformanceResult>
   error: string | null
 }
 
-async function runConformancePhase(): Promise<Array<ConformanceResult>> {
+async function runConformancePhase(encryptionKey?: Uint8Array): Promise<Array<ConformanceResult>> {
+  const prefix = encryptionKey ? 'encrypted-' : ''
   let count = 0
   let current: string | undefined
-  return await runConformance({
+  const results = await runConformance({
     async createAdapter() {
-      current = `case-${count++}.db`
+      current = `${prefix}case-${count++}.db`
       // A previous run may have been interrupted before cleanup.
       await deleteDatabaseAsync(current).catch(() => {})
-      return new ExpoAdapter({ database: current })
+      return new ExpoAdapter({ database: current, encryptionKey })
     },
     async cleanup() {
       // The case already closed its adapter, so the file can be deleted.
@@ -34,19 +40,88 @@ async function runConformancePhase(): Promise<Array<ConformanceResult>> {
       await deleteDatabaseAsync(database)
     },
   })
+  return results.map((result) => ({ ...result, name: `${prefix}${result.name}` }))
 }
 
-async function runPhase(phase: ScenarioPhase): Promise<Report> {
-  const conformance = await runConformancePhase()
-  const db = new HozonDB({ adapter: new ExpoAdapter({ database: DATABASE }) })
+async function runStorePhase(params: {
+  database: string
+  encryptionKey?: Uint8Array
+  phase: ScenarioPhase
+  runID: string
+}): Promise<Array<ConformanceResult>> {
+  const adapter = new ExpoAdapter({
+    database: params.database,
+    encryptionKey: params.encryptionKey,
+  })
+  const db = new HozonDB({ adapter })
   const telemetry = await setupTelemetry({ contextManager: new StackContextManager(), db })
   try {
-    const stores = await runStoreScenario({ db, phase, runID: 'expo' })
-    return { conformance, stores, error: null }
+    return await runStoreScenario({ db, phase: params.phase, runID: params.runID })
   } finally {
     await telemetry.teardown()
     await db.close()
   }
+}
+
+async function check(name: string, fn: () => void | Promise<void>): Promise<ConformanceResult> {
+  try {
+    await fn()
+    return { name, ok: true }
+  } catch (error) {
+    return { name, ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+function expectThrows(fn: () => void, pattern: RegExp): void {
+  try {
+    fn()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (pattern.test(message)) return
+    throw new Error(`Unexpected error: ${message}`, { cause: error })
+  }
+  throw new Error('Expected an error')
+}
+
+// Runs after the encrypted store scenario, so the file exists in both phases.
+async function runEncryptionChecks(): Promise<Array<ConformanceResult>> {
+  return [
+    await check('encryption-rejects-wrong-key', () => {
+      expectThrows(
+        () => new ExpoAdapter({ database: ENCRYPTED_DATABASE, encryptionKey: WRONG_KEY }),
+        /file is not a database/,
+      )
+    }),
+    await check('encryption-unreadable-without-key', () => {
+      const database = openDatabaseSync(ENCRYPTED_DATABASE)
+      try {
+        expectThrows(
+          () => database.getAllSync('SELECT count(*) FROM sqlite_master'),
+          /file is not a database/,
+        )
+      } finally {
+        database.closeSync()
+      }
+    }),
+  ]
+}
+
+async function runPhase(phase: ScenarioPhase): Promise<Report> {
+  const conformance = [
+    ...(await runConformancePhase()),
+    ...(await runConformancePhase(ENCRYPTION_KEY)),
+  ]
+  const stores = await runStorePhase({ database: DATABASE, phase, runID: 'expo' })
+  const encryption = [
+    ...(await runStorePhase({
+      database: ENCRYPTED_DATABASE,
+      encryptionKey: ENCRYPTION_KEY,
+      phase,
+      runID: 'expo-encrypted',
+    })),
+    ...(await runEncryptionChecks()),
+  ]
+  return { conformance, stores, encryption, error: null }
 }
 
 export default function App() {
@@ -62,13 +137,14 @@ export default function App() {
         setReport({
           conformance: [],
           stores: [],
+          encryption: [],
           error: error instanceof Error ? error.message : String(error),
         }),
       )
       .finally(() => setRunning(false))
   }
 
-  const results = report ? [...report.conformance, ...report.stores] : []
+  const results = report ? [...report.conformance, ...report.stores, ...report.encryption] : []
   return (
     <View style={styles.container}>
       <StatusBar style="auto" />
@@ -95,6 +171,7 @@ export default function App() {
             {summarize(report.conformance).line('Conformance')}
           </Text>
           <Text testID="stores-summary">{summarize(report.stores).line('Stores')}</Text>
+          <Text testID="encryption-summary">{summarize(report.encryption).line('Encryption')}</Text>
         </>
       ) : null}
       <ScrollView style={styles.results}>

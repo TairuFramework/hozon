@@ -17,6 +17,14 @@
       },
       "predictiveBackGestureEnabled": false,
       "package": "dev.hozon.e2e"
-    }
+    },
+    "plugins": [
+      [
+        "expo-sqlite",
+        {
+          "useSQLCipher": true
+        }
+      ]
+    ]
   }
 }

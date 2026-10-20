@@ -7,6 +7,7 @@ appId: dev.hozon.e2e
 - extendedWaitUntil:
     visible:
       id: "done"
-    timeout: 120000
+    timeout: 240000
 - assertVisible: "Conformance: OK.*"
 - assertVisible: "Stores: OK.*"
+- assertVisible: "Encryption: OK.*"

@@ -7,8 +7,9 @@ appId: dev.hozon.e2e
 - extendedWaitUntil:
     visible:
       id: "done"
-    timeout: 120000
+    timeout: 240000
 - assertVisible: "Stores: OK.*"
+- assertVisible: "Encryption: OK.*"
 - stopApp
 - launchApp
 - tapOn:
@@ -16,5 +17,6 @@ appId: dev.hozon.e2e
 - extendedWaitUntil:
     visible:
       id: "done"
-    timeout: 120000
+    timeout: 240000
 - assertVisible: "Stores: OK.*"
+- assertVisible: "Encryption: OK.*"

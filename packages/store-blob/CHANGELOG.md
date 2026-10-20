@@ -1,5 +1,14 @@
 # @hozon/store-blob
 
+## 0.2.2
+
+### Patch Changes
+
+- Add getEntries and batch getEntry reads.
+
+- Updated dependencies:
+  - @hozon/db@0.3.0
+
 ## 0.2.0
 
 ### Minor Changes

@@ -1,6 +1,6 @@
 {
   "name": "@hozon/blob",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Content-addressed blob service with verified writes for Hozon",
   "repository": {
     "type": "git",
