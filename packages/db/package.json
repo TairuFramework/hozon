@@ -29,6 +29,7 @@
   },
   "dependencies": {
     "@hozon/adapter": "workspace:^",
+    "@sozai/async": "catalog:",
     "@sozai/log": "catalog:",
     "kysely": "catalog:"
   },

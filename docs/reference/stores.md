@@ -12,6 +12,8 @@ Store packages import Kysely types, `sql`, and `Migration` from `@hozon/db`, not
 | Telemetry | `@hozon/store-telemetry` | `telemetry` | `spans`, `keep_telemetry` | [Telemetry store](stores/telemetry.md) |
 | Blobs | `@hozon/store-blob` | `blob` | `blob_entries`, `blob_chunks`, `blob_transfers` | [Blob store](stores/blob.md) |
 
+`getEntry` on the blob store batches concurrent reads; see [Batch loading and scopes](db.md#batch-loading-and-scopes).
+
 Blob bytes are stored outside the database by a `BlobBackend`; see [Blob backends](blob-backends.md).
 
 ## Retention and batching

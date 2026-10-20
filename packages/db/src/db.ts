@@ -3,8 +3,10 @@ import { getLogger, type Logger } from '@sozai/log'
 import { Kysely, sql } from 'kysely'
 import { type Migration, Migrator } from 'kysely/migration'
 
+import type { BatchLoader, BatchLoaderParams } from './batch-loader.js'
 import { withTransactionalDDL } from './dialect.js'
 import { HozonDBClosedError, InvalidTablePrefixError, SavepointOverlapError } from './errors.js'
+import { LoaderRegistry } from './loader-registry.js'
 import { checkStore } from './preflight.js'
 import { TablePrefixPlugin } from './table-prefix.js'
 
@@ -13,6 +15,10 @@ export type MigrationContext = {
   kind: Adapter['kind']
   types: ColumnTypes
   functions: Functions
+}
+
+export type StoreContext = {
+  createLoader<TKey, TValue>(params: BatchLoaderParams<TKey, TValue>): BatchLoader<TKey, TValue>
 }
 
 export type StoreDefinition<Tables, API> = {
@@ -25,7 +31,7 @@ export type StoreDefinition<Tables, API> = {
    * tables are not namespaced: the store must keep them collision-free.
    */
   unprefixedTables?: (name: string) => boolean
-  createAPI: (db: Kysely<Tables>, adapter: Adapter) => API
+  createAPI: (db: Kysely<Tables>, adapter: Adapter, context: StoreContext) => API
 }
 
 export type StoreProvider<Stores extends Record<string, unknown> = Record<string, unknown>> = {
@@ -63,6 +69,9 @@ export type StoreProvider<Stores extends Record<string, unknown> = Record<string
   withTransaction<NestedStores extends Record<string, unknown>, R>(
     fn: (tx: StoreProvider<NestedStores>) => Promise<R>,
   ): Promise<R>
+  withScope?<NestedStores extends Record<string, unknown>, R>(
+    fn: (scope: StoreProvider<NestedStores>) => Promise<R>,
+  ): Promise<R>
   /** Roll back only this unit of work when called inside a transaction. */
   withSavepoint?<NestedStores extends Record<string, unknown>, R>(
     fn: (tx: StoreProvider<NestedStores>) => Promise<R>,
@@ -80,7 +89,11 @@ type StoredDefinition = {
   migrations: Record<string, Migration> | ((ctx: MigrationContext) => Record<string, Migration>)
   dependsOn?: Array<string>
   unprefixedTables?: (name: string) => boolean
-  createAPI: (db: Kysely<Record<string, unknown>>, adapter: Adapter) => unknown
+  createAPI: (
+    db: Kysely<Record<string, unknown>>,
+    adapter: Adapter,
+    context: StoreContext,
+  ) => unknown
 }
 
 export class HozonDB implements StoreProvider {
@@ -97,6 +110,7 @@ export class HozonDB implements StoreProvider {
   #storePlugins = new Map<string, TablePrefixPlugin>()
   #logger: Logger
   #migrated: Map<string, Promise<void>> = new Map()
+  #loaders = new LoaderRegistry({ remember: false })
   #storeAPIs: Map<string, unknown> = new Map()
   #stores: Map<string, StoredDefinition> = new Map()
 
@@ -145,11 +159,7 @@ export class HozonDB implements StoreProvider {
       if (store == null) {
         throw new Error(`Store "${name}" is not registered`)
       }
-      const storeDB =
-        store.unprefixedTables == null
-          ? this.#storeDB
-          : this.#db.withPlugin(this.#getStorePlugin(store))
-      this.#storeAPIs.set(name, store.createAPI(storeDB, this.#adapter))
+      this.#storeAPIs.set(name, this.#createStoreAPI(store, this.#db, this.#storeDB, this.#loaders))
     }
     return this.#storeAPIs.get(name) as T
   }
@@ -165,6 +175,44 @@ export class HozonDB implements StoreProvider {
   // Each standalone op auto-commits, so there is nothing to roll back — no-op.
   onRollback(_fn: () => void): void {}
 
+  async withScope<Stores extends Record<string, unknown>, R>(
+    fn: (scope: StoreProvider<Stores>) => Promise<R>,
+  ): Promise<R> {
+    this.#assertOpen()
+    const registry = new LoaderRegistry({ remember: true })
+    const storeAPIs = new Map<string, unknown>()
+    const provider: StoreProvider<Stores> = {
+      getStore: async <S extends keyof Stores & string>(name: S): Promise<Stores[S]> => {
+        this.#assertOpen()
+        await this.#ensurePreflight()
+        await this.#ensureMigrated(name)
+        this.#assertOpen()
+        if (!storeAPIs.has(name)) {
+          const store = this.#stores.get(name)
+          if (store == null) throw new Error(`Store "${name}" is not registered`)
+          storeAPIs.set(name, this.#createStoreAPI(store, this.#db, this.#storeDB, registry))
+        }
+        return storeAPIs.get(name) as Stores[S]
+      },
+      hasStore: (name) => this.hasStore(name),
+      onCommit: (hook) => hook(),
+      onRollback: () => {},
+      withScope: async <NestedStores extends Record<string, unknown>, R>(
+        nestedFn: (scope: StoreProvider<NestedStores>) => Promise<R>,
+      ): Promise<R> => {
+        return await nestedFn(provider as unknown as StoreProvider<NestedStores>)
+      },
+      withTransaction: async (nestedFn) => {
+        return await this.#withTransaction(nestedFn, () => registry.clearAll())
+      },
+    }
+    try {
+      return await fn(provider)
+    } finally {
+      registry.close()
+    }
+  }
+
   /**
    * Runs `fn` inside a DB transaction and provides a scoped `StoreProvider`.
    * Concurrent calls on the same `HozonDB` instance are supported — the
@@ -177,6 +225,13 @@ export class HozonDB implements StoreProvider {
   async withTransaction<Stores extends Record<string, unknown>, R>(
     fn: (tx: StoreProvider<Stores>) => Promise<R>,
   ): Promise<R> {
+    return await this.#withTransaction(fn)
+  }
+
+  async #withTransaction<Stores extends Record<string, unknown>, R>(
+    fn: (tx: StoreProvider<Stores>) => Promise<R>,
+    beforeHooks?: () => void,
+  ): Promise<R> {
     // Migrate every registered store before opening the transaction. Stores
     // are internal and known up front, so a broken migration should fail fast
     // at startup rather than leave a runtime partition where one store's
@@ -187,6 +242,7 @@ export class HozonDB implements StoreProvider {
     const commitHooks: Array<() => void> = []
     const rollbackHooks: Array<() => void> = []
 
+    const registry = new LoaderRegistry({ remember: true })
     let result: R
     let savepointID = 0
     try {
@@ -211,11 +267,7 @@ export class HozonDB implements StoreProvider {
                 if (store == null) {
                   throw new Error(`Store "${name}" is not registered`)
                 }
-                const storeDB =
-                  store.unprefixedTables == null
-                    ? txStoreDB
-                    : txKysely.withPlugin(this.#getStorePlugin(store))
-                txStoreAPIs.set(name, store.createAPI(storeDB, this.#adapter))
+                txStoreAPIs.set(name, this.#createStoreAPI(store, txKysely, txStoreDB, registry))
               }
               return txStoreAPIs.get(name) as Stores[S]
             },
@@ -225,6 +277,11 @@ export class HozonDB implements StoreProvider {
             },
             onRollback: (hook: () => void) => {
               scopedRollbackHooks.push(hook)
+            },
+            withScope: async <NestedStores extends Record<string, unknown>, R>(
+              nestedFn: (scope: StoreProvider<NestedStores>) => Promise<R>,
+            ): Promise<R> => {
+              return await nestedFn(provider as unknown as StoreProvider<NestedStores>)
             },
             withTransaction: async <NestedStores extends Record<string, unknown>, R>(
               nestedFn: (tx: StoreProvider<NestedStores>) => Promise<R>,
@@ -247,18 +304,23 @@ export class HozonDB implements StoreProvider {
                   savepointCommitHooks,
                   savepointRollbackHooks,
                 )
+                registry.dispatchAll()
                 await sql.raw(`SAVEPOINT ${name}`).execute(trx)
                 try {
                   const value = await nestedFn(
                     scopedProvider as unknown as StoreProvider<NestedStores>,
                   )
+                  registry.dispatchAll()
                   await sql.raw(`RELEASE SAVEPOINT ${name}`).execute(trx)
                   scopedCommitHooks.push(...savepointCommitHooks)
                   scopedRollbackHooks.push(...savepointRollbackHooks)
                   return value
                 } catch (error) {
+                  registry.dispatchAll()
                   await sql.raw(`ROLLBACK TO SAVEPOINT ${name}`).execute(trx)
+                  registry.dispatchAll()
                   await sql.raw(`RELEASE SAVEPOINT ${name}`).execute(trx)
+                  registry.clearAll()
                   this.#runHooks(savepointRollbackHooks, 'rollback')
                   throw error
                 }
@@ -270,9 +332,14 @@ export class HozonDB implements StoreProvider {
           return provider
         }
 
-        return await fn(createScopedProvider(commitHooks, rollbackHooks))
+        try {
+          return await fn(createScopedProvider(commitHooks, rollbackHooks))
+        } finally {
+          registry.dispatchAll()
+        }
       })
     } catch (err) {
+      registry.close()
       // Kysely issues ROLLBACK and rejects `execute()` when the callback
       // throws, so the DB is already reverted here. Run the rollback hooks to
       // drop any in-memory state that was eagerly advanced expecting a commit
@@ -283,6 +350,8 @@ export class HozonDB implements StoreProvider {
       throw err
     }
 
+    registry.close()
+    beforeHooks?.()
     // The transaction has committed; post-commit hooks are best-effort side
     // effects (event emission, cache invalidation). A throwing hook must not
     // skip the remaining hooks or make the caller observe a durable write as a
@@ -358,6 +427,21 @@ export class HozonDB implements StoreProvider {
       this.#migrations.set(store.name, migrations)
     }
     return migrations
+  }
+
+  // Hands stores only createLoader, so they cannot reach close/dispatchAll/clearAll.
+  // Stores on the default plugin must share one Kysely instance: keep-set locks key on it.
+  #createStoreAPI(
+    store: StoredDefinition,
+    kysely: Kysely<Record<string, unknown>>,
+    defaultDB: Kysely<Record<string, unknown>>,
+    registry: LoaderRegistry,
+  ): unknown {
+    const storeDB =
+      store.unprefixedTables == null ? defaultDB : kysely.withPlugin(this.#getStorePlugin(store))
+    return store.createAPI(storeDB, this.#adapter, {
+      createLoader: (params) => registry.createLoader(params),
+    })
   }
 
   #getStorePlugin(store: StoredDefinition): TablePrefixPlugin {

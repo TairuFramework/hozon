@@ -12,6 +12,7 @@ import {
   BlobWriteAbortedError,
   ContentTypeMismatchError,
 } from './errors.js'
+import { getFreshEntry } from './fresh.js'
 import type { BlobLimits } from './limits.js'
 
 export type WriteOptions = {
@@ -180,7 +181,7 @@ export async function writeBlob<T>(
     return await ctx.lock.withLock(blobID, async () => {
       throwIfAborted(signal)
       const store = await getBlobStore(ctx.db)
-      const existing = await store.getEntry(blobID)
+      const existing = await getFreshEntry(store, blobID)
 
       if (existing?.state === 'local') {
         await discardStaging()
@@ -188,7 +189,7 @@ export async function writeBlob<T>(
         const fill = async (target: BlobStoreAPI): Promise<BlobEntry> => {
           if (existing.contentType !== null || contentType === undefined) return existing
           await target.fillContentType(blobID, contentType)
-          return (await target.getEntry(blobID)) ?? existing
+          return (await getFreshEntry(target, blobID)) ?? existing
         }
         const { entry, result } = await record(ctx, fn, fill)
         return { entry, created: false, result }
@@ -215,7 +216,7 @@ export async function writeBlob<T>(
       }))
       const promote = async (target: BlobStoreAPI): Promise<BlobEntry> => {
         await target.promoteEntry(input, chunks)
-        const entry = await target.getEntry(blobID)
+        const entry = await getFreshEntry(target, blobID)
         if (entry === null) throw new Error(`Blob entry ${blobID} missing after promotion`)
         return entry
       }

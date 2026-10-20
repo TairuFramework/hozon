@@ -13,6 +13,7 @@ import {
   InvalidManifestError,
   TransferIncompleteError,
 } from './errors.js'
+import { getFreshEntry } from './fresh.js'
 import type { BlobLimits } from './limits.js'
 import { createStagingID } from './write.js'
 
@@ -170,7 +171,7 @@ async function stagingExists(
 // Lock held: the transfer of a `partial` entry, or BlobNotFoundError.
 async function requireTransfer(ctx: TransferContext, blobID: string): Promise<ActiveTransfer> {
   const store = await getBlobStore(ctx.db)
-  const entry = await store.getEntry(blobID)
+  const entry = await getFreshEntry(store, blobID)
   const transfer = entry?.state === 'partial' ? await store.getTransfer(blobID) : null
   if (entry === null || transfer === null) {
     throw new BlobNotFoundError(blobID, { cause: new Error('No active transfer') })
@@ -189,7 +190,7 @@ export async function beginFetch(
   const chunkSize = manifest.contentLength === 0 ? ctx.chunkSize : manifest.chunkSize
   await ctx.lock.withLock(blobID, async () => {
     const store = await getBlobStore(ctx.db)
-    const entry = await store.getEntry(blobID)
+    const entry = await getFreshEntry(store, blobID)
     if (entry?.state === 'local') return
     // A stub with another length could never complete against this manifest.
     if (entry !== null && entry.contentLength !== manifest.contentLength) {
@@ -244,7 +245,7 @@ export async function getPresentChunks(ctx: TransferContext, id: string): Promis
   const blobID = ctx.codec.canonicalize(id)
   return await ctx.lock.withLock(blobID, async () => {
     const store = await getBlobStore(ctx.db)
-    const entry = await store.getEntry(blobID)
+    const entry = await getFreshEntry(store, blobID)
     if (entry?.state !== 'partial') return []
     const transfer = await store.getTransfer(blobID)
     if (transfer === null) return []
@@ -360,7 +361,7 @@ export async function completeFetch(ctx: TransferContext, id: string): Promise<B
       },
       digests.map((digest, index) => ({ index, digest })),
     )
-    const promoted = await store.getEntry(blobID)
+    const promoted = await getFreshEntry(store, blobID)
     if (promoted === null) throw new Error(`Blob entry ${blobID} missing after promotion`)
     return promoted
   })

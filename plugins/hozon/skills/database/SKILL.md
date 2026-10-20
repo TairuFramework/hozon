@@ -1,11 +1,13 @@
 ---
 name: database
-description: Use when working with HozonDB, StoreDefinition, tablePrefix, TablePrefixPlugin, blob stores, store registration, migrations, transactions, or savepoints.
+description: Use when working with HozonDB, StoreDefinition, tablePrefix, TablePrefixPlugin, blob stores, store registration, migrations, transactions, savepoints, batch loading, scopes, withScope, or createBatchLoader.
 ---
 
 # Hozon database
 
 Use these references for the database runtime API and its lifecycle rules. They are the source of truth; do not duplicate their details here.
+
+For batch loading, load scopes (`withScope`) and `createBatchLoader`, see "Batch loading and scopes" in `../../../../docs/reference/db.md`.
 
 ## Store table prefixes
 

@@ -27,3 +27,10 @@ export class HozonDBClosedError extends Error {
     this.name = 'HozonDBClosedError'
   }
 }
+
+export class BatchLimitError extends Error {
+  constructor(size: number, limit: number) {
+    super(`Batch of ${size} keys exceeds limit ${limit}`)
+    this.name = 'BatchLimitError'
+  }
+}
