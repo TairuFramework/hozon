@@ -1,3 +1,5 @@
+import type { BatchReadOptions } from '@hozon/db'
+
 export type BlobState = 'local' | 'partial' | 'remote-only'
 
 export type BlobEntryInput = {
@@ -46,6 +48,11 @@ export type BlobTransfer = {
 export type BlobStoreAPI = {
   insertEntry(entry: BlobEntryInput, chunks: Array<BlobChunkInput>): Promise<void>
   getEntry(blobID: string): Promise<BlobEntry | null>
+  // Reads fresh rows in one query; never uses the batched or remembered `getEntry` values.
+  getEntries(
+    blobIDs: Array<string>,
+    options?: BatchReadOptions,
+  ): Promise<Map<string, BlobEntry | null>>
   getChunkDigests(blobID: string): Promise<Array<Uint8Array>>
   setPinned(blobID: string, pinned: boolean): Promise<void>
   deleteEntry(blobID: string): Promise<void>

@@ -1,4 +1,4 @@
-import { HozonDB } from '@hozon/db'
+import { BatchLimitError, HozonDB } from '@hozon/db'
 import { NodeSQLiteAdapter } from '@hozon/node-sqlite'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
@@ -461,4 +461,69 @@ test('fillContentType sets a null content type only', async () => {
   expect((await store.getEntry('b1'))?.contentType).toBe('image/png')
   await store.fillContentType('missing', 'text/plain')
   expect(await store.getEntry('missing')).toBeNull()
+})
+
+function entryQueryCount(prepare: { mock: { calls: Array<Array<unknown>> } }): number {
+  return prepare.mock.calls.filter(([sql]) =>
+    /select .* from "hozon_blob_entries"/i.test(String(sql)),
+  ).length
+}
+test('getEntries returns every requested key with null for missing', async () => {
+  await store.insertEntry(entry({ blobID: 'a' }), [])
+  const result = await store.getEntries(['a', 'zz', 'a'])
+  expect(result.size).toBe(2)
+  expect(result.get('a')).toEqual({
+    ...entry({ blobID: 'a' }),
+    contentType: null,
+    encrypted: false,
+    keyID: null,
+    pinned: false,
+  })
+  expect(result.get('zz')).toBeNull()
+})
+test('getEntries throws BatchLimitError above 500 unique IDs or above batchLimit', async () => {
+  const ids = Array.from({ length: 501 }, (_, index) => `id-${index}`)
+  await expect(store.getEntries(ids)).rejects.toBeInstanceOf(BatchLimitError)
+  await expect(store.getEntries(['a', 'b', 'c'], { batchLimit: 2 })).rejects.toBeInstanceOf(
+    BatchLimitError,
+  )
+  await expect(
+    store.getEntries([...ids.slice(0, 500), ...ids.slice(0, 10)]),
+  ).resolves.toBeInstanceOf(Map)
+})
+test('getEntries returns an empty map for empty input', async () => {
+  const prepare = vi.spyOn(adapter.database, 'prepare')
+  const result = await store.getEntries([])
+  expect(result.size).toBe(0)
+  expect(entryQueryCount(prepare)).toBe(0)
+})
+test('concurrent getEntry calls run one query', async () => {
+  await store.insertEntry(entry({ blobID: 'a' }), [])
+  const prepare = vi.spyOn(adapter.database, 'prepare')
+  const results = await Promise.all([
+    store.getEntry('a'),
+    store.getEntry('zz'),
+    store.getEntry('a'),
+  ])
+  expect(results.map((item) => item?.blobID ?? null)).toEqual(['a', null, 'a'])
+  expect(entryQueryCount(prepare)).toBe(1)
+})
+test('getEntry inside a scope sees setPinned', async () => {
+  await store.insertEntry(entry({ blobID: 'a' }), [])
+  await db.withScope<{ blob: BlobStoreAPI }, void>(async (scope) => {
+    const scoped = await scope.getStore('blob')
+    expect((await scoped.getEntry('a'))?.pinned).toBe(false)
+    await scoped.setPinned('a', true)
+    expect((await scoped.getEntry('a'))?.pinned).toBe(true)
+  })
+})
+test('getEntries bypasses remembered values inside a scope', async () => {
+  await store.insertEntry(entry({ blobID: 'a' }), [])
+  await db.withScope<{ blob: BlobStoreAPI }, void>(async (scope) => {
+    const scoped = await scope.getStore('blob')
+    expect((await scoped.getEntry('a'))?.pinned).toBe(false)
+    await store.setPinned('a', true)
+    expect((await scoped.getEntry('a'))?.pinned).toBe(false)
+    expect((await scoped.getEntries(['a'])).get('a')?.pinned).toBe(true)
+  })
 })

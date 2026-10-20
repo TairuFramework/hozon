@@ -1,6 +1,6 @@
 import type { Adapter } from '@hozon/adapter'
-import type { Kysely } from '@hozon/db'
-import { chunk, withStoreTransaction } from '@hozon/db'
+import type { BatchReadOptions, Kysely, Selectable, StoreContext } from '@hozon/db'
+import { assertBatchSize, chunk, withStoreTransaction } from '@hozon/db'
 import { b64uFromUTF, b64uToUTF } from '@sozai/codec'
 
 import { InvalidCursorError } from './errors.js'
@@ -29,7 +29,63 @@ function decodeCursor(cursor: string): [number, string] {
   throw new InvalidCursorError()
 }
 
-export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): BlobStoreAPI {
+// The entry query binds only the IDs.
+const ENTRY_BATCH_MAX = 500
+
+type EntryRow = Selectable<BlobTables['blob_entries']>
+
+function toEntry(row: EntryRow): BlobEntry {
+  return {
+    blobID: row.blob_id,
+    contentLength: row.content_length,
+    encrypted: row.encrypted === 1,
+    keyID: row.key_id,
+    chunkSize: row.chunk_size,
+    state: row.state,
+    pinned: row.pinned === 1,
+    createdAt: row.created_at,
+    contentType: row.content_type,
+  }
+}
+
+export function createBlobStoreAPI(
+  db: Kysely<BlobTables>,
+  adapter: Adapter,
+  context: StoreContext,
+): BlobStoreAPI {
+  async function getEntries(
+    blobIDs: Array<string>,
+    options?: BatchReadOptions,
+  ): Promise<Map<string, BlobEntry | null>> {
+    const unique = [...new Set(blobIDs)]
+    assertBatchSize(unique.length, ENTRY_BATCH_MAX, options?.batchLimit)
+    const result = new Map<string, BlobEntry | null>()
+    if (unique.length === 0) return result
+    const rows = await db
+      .selectFrom('blob_entries')
+      .selectAll()
+      .where('blob_id', 'in', unique)
+      .execute()
+    for (const id of unique) result.set(id, null)
+    for (const row of rows) result.set(row.blob_id, toEntry(row))
+    return result
+  }
+
+  const entries = context.createLoader<string, BlobEntry>({
+    load: (ids) => getEntries(ids),
+    maxBatchSize: ENTRY_BATCH_MAX,
+  })
+
+  // Flushes pending reads before the write and drops the remembered entry afterwards.
+  async function mutate<T>(blobID: string, run: () => Promise<T>): Promise<T> {
+    entries.dispatch()
+    try {
+      return await run()
+    } finally {
+      entries.clear(blobID)
+    }
+  }
+
   async function insertManifest(
     trx: Kysely<BlobTables>,
     blobID: string,
@@ -52,45 +108,29 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
 
   return {
     async insertEntry(entry, chunks) {
-      await withStoreTransaction(db, async (trx) => {
-        await trx
-          .insertInto('blob_entries')
-          .values({
-            blob_id: entry.blobID,
-            content_length: entry.contentLength,
-            encrypted: entry.encrypted ? 1 : 0,
-            key_id: entry.keyID ?? null,
-            chunk_size: entry.chunkSize,
-            state: entry.state,
-            pinned: entry.pinned ? 1 : 0,
-            created_at: entry.createdAt,
-            content_type: entry.contentType ?? null,
-          })
-          .onConflict((oc) => oc.column('blob_id').doNothing())
-          .execute()
-        await insertManifest(trx, entry.blobID, chunks)
+      return mutate(entry.blobID, async () => {
+        await withStoreTransaction(db, async (trx) => {
+          await trx
+            .insertInto('blob_entries')
+            .values({
+              blob_id: entry.blobID,
+              content_length: entry.contentLength,
+              encrypted: entry.encrypted ? 1 : 0,
+              key_id: entry.keyID ?? null,
+              chunk_size: entry.chunkSize,
+              state: entry.state,
+              pinned: entry.pinned ? 1 : 0,
+              created_at: entry.createdAt,
+              content_type: entry.contentType ?? null,
+            })
+            .onConflict((oc) => oc.column('blob_id').doNothing())
+            .execute()
+          await insertManifest(trx, entry.blobID, chunks)
+        })
       })
     },
-    async getEntry(blobID) {
-      const row = await db
-        .selectFrom('blob_entries')
-        .selectAll()
-        .where('blob_id', '=', blobID)
-        .executeTakeFirst()
-      return row === undefined
-        ? null
-        : {
-            blobID: row.blob_id,
-            contentLength: row.content_length,
-            encrypted: row.encrypted === 1,
-            keyID: row.key_id,
-            chunkSize: row.chunk_size,
-            state: row.state,
-            pinned: row.pinned === 1,
-            createdAt: row.created_at,
-            contentType: row.content_type,
-          }
-    },
+    getEntry: (blobID) => entries.load(blobID),
+    getEntries,
     async getChunkDigests(blobID) {
       const rows = await db
         .selectFrom('blob_chunks')
@@ -101,89 +141,100 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
       return rows.map((row) => row.digest)
     },
     async setPinned(blobID, pinned) {
-      await db
-        .updateTable('blob_entries')
-        .set({ pinned: pinned ? 1 : 0 })
-        .where('blob_id', '=', blobID)
-        .execute()
+      return mutate(blobID, async () => {
+        await db
+          .updateTable('blob_entries')
+          .set({ pinned: pinned ? 1 : 0 })
+          .where('blob_id', '=', blobID)
+          .execute()
+      })
     },
     async deleteEntry(blobID) {
-      await withStoreTransaction(db, async (trx) => {
-        await trx.deleteFrom('blob_transfer_sessions').where('blob_id', '=', blobID).execute()
-        await trx.deleteFrom('blob_transfers').where('blob_id', '=', blobID).execute()
-        await trx.deleteFrom('blob_chunks').where('blob_id', '=', blobID).execute()
-        await trx.deleteFrom('blob_entries').where('blob_id', '=', blobID).execute()
+      return mutate(blobID, async () => {
+        await withStoreTransaction(db, async (trx) => {
+          await trx.deleteFrom('blob_transfer_sessions').where('blob_id', '=', blobID).execute()
+          await trx.deleteFrom('blob_transfers').where('blob_id', '=', blobID).execute()
+          await trx.deleteFrom('blob_chunks').where('blob_id', '=', blobID).execute()
+          await trx.deleteFrom('blob_entries').where('blob_id', '=', blobID).execute()
+        })
       })
     },
     async beginTransfer({ blobID, chunkSize, chunks, stagingID }) {
-      await withStoreTransaction(db, async (trx) => {
-        let query = trx
-          .selectFrom('blob_entries')
-          .select(['blob_id', 'chunk_size'])
-          .where('blob_id', '=', blobID)
-        if (adapter.kind === 'postgres') query = query.forUpdate()
-        const entry = await query.executeTakeFirst()
-        if (entry === undefined) throw new Error(`Blob entry ${blobID} not found`)
-        if (entry.chunk_size !== chunkSize) {
-          const manifest = await trx
-            .selectFrom('blob_chunks')
-            .select('index')
+      return mutate(blobID, async () => {
+        await withStoreTransaction(db, async (trx) => {
+          let query = trx
+            .selectFrom('blob_entries')
+            .select(['blob_id', 'chunk_size'])
+            .where('blob_id', '=', blobID)
+          if (adapter.kind === 'postgres') query = query.forUpdate()
+          const entry = await query.executeTakeFirst()
+          if (entry === undefined) throw new Error(`Blob entry ${blobID} not found`)
+          if (entry.chunk_size !== chunkSize) {
+            const manifest = await trx
+              .selectFrom('blob_chunks')
+              .select('index')
+              .where('blob_id', '=', blobID)
+              .executeTakeFirst()
+            if (manifest !== undefined) {
+              throw new Error(
+                `Cannot change chunk size for blob ${blobID}: manifest already exists`,
+              )
+            }
+          }
+          await trx
+            .updateTable('blob_entries')
+            .set({ chunk_size: chunkSize, state: 'partial' })
+            .where('blob_id', '=', blobID)
+            .execute()
+          await insertManifest(trx, blobID, chunks)
+          const existing = await trx
+            .selectFrom('blob_transfer_sessions')
+            .select('staging_id')
             .where('blob_id', '=', blobID)
             .executeTakeFirst()
-          if (manifest !== undefined) {
-            throw new Error(`Cannot change chunk size for blob ${blobID}: manifest already exists`)
+          // A new staging area holds none of the previous session's chunks.
+          if (existing !== undefined && existing.staging_id !== stagingID) {
+            await trx.deleteFrom('blob_transfers').where('blob_id', '=', blobID).execute()
           }
-        }
-        await trx
-          .updateTable('blob_entries')
-          .set({ chunk_size: chunkSize, state: 'partial' })
-          .where('blob_id', '=', blobID)
-          .execute()
-        await insertManifest(trx, blobID, chunks)
-        const existing = await trx
-          .selectFrom('blob_transfer_sessions')
-          .select('staging_id')
-          .where('blob_id', '=', blobID)
-          .executeTakeFirst()
-        // A new staging area holds none of the previous session's chunks.
-        if (existing !== undefined && existing.staging_id !== stagingID) {
-          await trx.deleteFrom('blob_transfers').where('blob_id', '=', blobID).execute()
-        }
-        const updatedAt = Date.now()
-        await trx
-          .insertInto('blob_transfer_sessions')
-          .values({ blob_id: blobID, staging_id: stagingID, updated_at: updatedAt })
-          .onConflict((oc) =>
-            oc.column('blob_id').doUpdateSet({ staging_id: stagingID, updated_at: updatedAt }),
-          )
-          .execute()
+          const updatedAt = Date.now()
+          await trx
+            .insertInto('blob_transfer_sessions')
+            .values({ blob_id: blobID, staging_id: stagingID, updated_at: updatedAt })
+            .onConflict((oc) =>
+              oc.column('blob_id').doUpdateSet({ staging_id: stagingID, updated_at: updatedAt }),
+            )
+            .execute()
+        })
       })
     },
     async recordTransferChunk(blobID, index) {
-      await withStoreTransaction(db, async (trx) => {
-        const entry = await trx
-          .selectFrom('blob_entries')
-          .select('blob_id')
-          .where('blob_id', '=', blobID)
-          .executeTakeFirst()
-        if (entry === undefined) throw new Error(`Blob entry ${blobID} not found`)
-        const chunk = await trx
-          .selectFrom('blob_chunks')
-          .select('index')
-          .where('blob_id', '=', blobID)
-          .where('index', '=', index)
-          .executeTakeFirst()
-        if (chunk === undefined) throw new Error(`Blob chunk ${blobID} at index ${index} not found`)
-        await trx
-          .insertInto('blob_transfers')
-          .values({ blob_id: blobID, index })
-          .onConflict((oc) => oc.columns(['blob_id', 'index']).doNothing())
-          .execute()
-        await trx
-          .updateTable('blob_transfer_sessions')
-          .set({ updated_at: Date.now() })
-          .where('blob_id', '=', blobID)
-          .execute()
+      return mutate(blobID, async () => {
+        await withStoreTransaction(db, async (trx) => {
+          const entry = await trx
+            .selectFrom('blob_entries')
+            .select('blob_id')
+            .where('blob_id', '=', blobID)
+            .executeTakeFirst()
+          if (entry === undefined) throw new Error(`Blob entry ${blobID} not found`)
+          const chunk = await trx
+            .selectFrom('blob_chunks')
+            .select('index')
+            .where('blob_id', '=', blobID)
+            .where('index', '=', index)
+            .executeTakeFirst()
+          if (chunk === undefined)
+            throw new Error(`Blob chunk ${blobID} at index ${index} not found`)
+          await trx
+            .insertInto('blob_transfers')
+            .values({ blob_id: blobID, index })
+            .onConflict((oc) => oc.columns(['blob_id', 'index']).doNothing())
+            .execute()
+          await trx
+            .updateTable('blob_transfer_sessions')
+            .set({ updated_at: Date.now() })
+            .where('blob_id', '=', blobID)
+            .execute()
+        })
       })
     },
     async getPresentChunkIndexes(blobID) {
@@ -196,35 +247,39 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
       return rows.map((row) => row.index)
     },
     async finalizeTransfer(blobID) {
-      await withStoreTransaction(db, async (trx) => {
-        const entry = await trx
-          .selectFrom('blob_entries')
-          .select('blob_id')
-          .where('blob_id', '=', blobID)
-          .executeTakeFirst()
-        if (entry === undefined) throw new Error(`Blob entry ${blobID} not found`)
-        const manifest = await trx
-          .selectFrom('blob_chunks')
-          .select('index')
-          .where('blob_id', '=', blobID)
-          .execute()
-        const present = await trx
-          .selectFrom('blob_transfers')
-          .select('index')
-          .where('blob_id', '=', blobID)
-          .execute()
-        const presentSet = new Set(present.map((row) => row.index))
-        const missing = manifest.filter((row) => !presentSet.has(row.index))
-        if (missing.length > 0) {
-          throw new Error(`Cannot finalize transfer ${blobID}: ${missing.length} chunk(s) missing`)
-        }
-        await trx
-          .updateTable('blob_entries')
-          .set({ state: 'local' })
-          .where('blob_id', '=', blobID)
-          .execute()
-        await trx.deleteFrom('blob_transfers').where('blob_id', '=', blobID).execute()
-        await trx.deleteFrom('blob_transfer_sessions').where('blob_id', '=', blobID).execute()
+      return mutate(blobID, async () => {
+        await withStoreTransaction(db, async (trx) => {
+          const entry = await trx
+            .selectFrom('blob_entries')
+            .select('blob_id')
+            .where('blob_id', '=', blobID)
+            .executeTakeFirst()
+          if (entry === undefined) throw new Error(`Blob entry ${blobID} not found`)
+          const manifest = await trx
+            .selectFrom('blob_chunks')
+            .select('index')
+            .where('blob_id', '=', blobID)
+            .execute()
+          const present = await trx
+            .selectFrom('blob_transfers')
+            .select('index')
+            .where('blob_id', '=', blobID)
+            .execute()
+          const presentSet = new Set(present.map((row) => row.index))
+          const missing = manifest.filter((row) => !presentSet.has(row.index))
+          if (missing.length > 0) {
+            throw new Error(
+              `Cannot finalize transfer ${blobID}: ${missing.length} chunk(s) missing`,
+            )
+          }
+          await trx
+            .updateTable('blob_entries')
+            .set({ state: 'local' })
+            .where('blob_id', '=', blobID)
+            .execute()
+          await trx.deleteFrom('blob_transfers').where('blob_id', '=', blobID).execute()
+          await trx.deleteFrom('blob_transfer_sessions').where('blob_id', '=', blobID).execute()
+        })
       })
     },
     async getTransfer(blobID) {
@@ -255,11 +310,13 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
       return row === undefined ? null : { blobID: row.blob_id, updatedAt: row.updated_at }
     },
     async touchTransfer(blobID) {
-      await db
-        .updateTable('blob_transfer_sessions')
-        .set({ updated_at: Date.now() })
-        .where('blob_id', '=', blobID)
-        .execute()
+      return mutate(blobID, async () => {
+        await db
+          .updateTable('blob_transfer_sessions')
+          .set({ updated_at: Date.now() })
+          .where('blob_id', '=', blobID)
+          .execute()
+      })
     },
     async listEntries(params) {
       const { limit, cursor } = params
@@ -282,17 +339,7 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
         .limit(limit + 1)
         .execute()
       const page = rows.slice(0, limit)
-      const entries: Array<BlobEntry> = page.map((row) => ({
-        blobID: row.blob_id,
-        contentLength: row.content_length,
-        encrypted: row.encrypted === 1,
-        keyID: row.key_id,
-        chunkSize: row.chunk_size,
-        state: row.state,
-        pinned: row.pinned === 1,
-        createdAt: row.created_at,
-        contentType: row.content_type,
-      }))
+      const entries = page.map(toEntry)
       const last = page[page.length - 1]
       const nextCursor =
         rows.length > limit && last !== undefined
@@ -301,60 +348,69 @@ export function createBlobStoreAPI(db: Kysely<BlobTables>, adapter: Adapter): Bl
       return { entries, nextCursor }
     },
     async promoteEntry(entry, chunks) {
-      await withStoreTransaction(db, async (trx) => {
-        let lock = trx
-          .selectFrom('blob_entries')
-          .select('blob_id')
-          .where('blob_id', '=', entry.blobID)
-        if (adapter.kind === 'postgres') lock = lock.forUpdate()
-        await lock.executeTakeFirst()
-        const values = {
-          content_length: entry.contentLength,
-          encrypted: entry.encrypted ? 1 : 0,
-          key_id: entry.keyID ?? null,
-          chunk_size: entry.chunkSize,
-          state: 'local' as const,
-          content_type: entry.contentType ?? null,
-        }
-        await trx
-          .insertInto('blob_entries')
-          .values({
-            blob_id: entry.blobID,
-            pinned: entry.pinned ? 1 : 0,
-            created_at: entry.createdAt,
-            ...values,
-          })
-          .onConflict((oc) => oc.column('blob_id').doUpdateSet(values))
-          .execute()
-        await trx.deleteFrom('blob_transfer_sessions').where('blob_id', '=', entry.blobID).execute()
-        await trx.deleteFrom('blob_transfers').where('blob_id', '=', entry.blobID).execute()
-        await trx.deleteFrom('blob_chunks').where('blob_id', '=', entry.blobID).execute()
-        await insertManifest(trx, entry.blobID, chunks)
+      return mutate(entry.blobID, async () => {
+        await withStoreTransaction(db, async (trx) => {
+          let lock = trx
+            .selectFrom('blob_entries')
+            .select('blob_id')
+            .where('blob_id', '=', entry.blobID)
+          if (adapter.kind === 'postgres') lock = lock.forUpdate()
+          await lock.executeTakeFirst()
+          const values = {
+            content_length: entry.contentLength,
+            encrypted: entry.encrypted ? 1 : 0,
+            key_id: entry.keyID ?? null,
+            chunk_size: entry.chunkSize,
+            state: 'local' as const,
+            content_type: entry.contentType ?? null,
+          }
+          await trx
+            .insertInto('blob_entries')
+            .values({
+              blob_id: entry.blobID,
+              pinned: entry.pinned ? 1 : 0,
+              created_at: entry.createdAt,
+              ...values,
+            })
+            .onConflict((oc) => oc.column('blob_id').doUpdateSet(values))
+            .execute()
+          await trx
+            .deleteFrom('blob_transfer_sessions')
+            .where('blob_id', '=', entry.blobID)
+            .execute()
+          await trx.deleteFrom('blob_transfers').where('blob_id', '=', entry.blobID).execute()
+          await trx.deleteFrom('blob_chunks').where('blob_id', '=', entry.blobID).execute()
+          await insertManifest(trx, entry.blobID, chunks)
+        })
       })
     },
     async resetTransfer(blobID) {
-      await withStoreTransaction(db, async (trx) => {
-        let lock = trx.selectFrom('blob_entries').select('blob_id').where('blob_id', '=', blobID)
-        if (adapter.kind === 'postgres') lock = lock.forUpdate()
-        const entry = await lock.executeTakeFirst()
-        if (entry === undefined) return
-        await trx.deleteFrom('blob_transfer_sessions').where('blob_id', '=', blobID).execute()
-        await trx.deleteFrom('blob_transfers').where('blob_id', '=', blobID).execute()
-        await trx.deleteFrom('blob_chunks').where('blob_id', '=', blobID).execute()
-        await trx
-          .updateTable('blob_entries')
-          .set({ state: 'remote-only' })
-          .where('blob_id', '=', blobID)
-          .execute()
+      return mutate(blobID, async () => {
+        await withStoreTransaction(db, async (trx) => {
+          let lock = trx.selectFrom('blob_entries').select('blob_id').where('blob_id', '=', blobID)
+          if (adapter.kind === 'postgres') lock = lock.forUpdate()
+          const entry = await lock.executeTakeFirst()
+          if (entry === undefined) return
+          await trx.deleteFrom('blob_transfer_sessions').where('blob_id', '=', blobID).execute()
+          await trx.deleteFrom('blob_transfers').where('blob_id', '=', blobID).execute()
+          await trx.deleteFrom('blob_chunks').where('blob_id', '=', blobID).execute()
+          await trx
+            .updateTable('blob_entries')
+            .set({ state: 'remote-only' })
+            .where('blob_id', '=', blobID)
+            .execute()
+        })
       })
     },
     async fillContentType(blobID, contentType) {
-      await db
-        .updateTable('blob_entries')
-        .set({ content_type: contentType })
-        .where('blob_id', '=', blobID)
-        .where('content_type', 'is', null)
-        .execute()
+      return mutate(blobID, async () => {
+        await db
+          .updateTable('blob_entries')
+          .set({ content_type: contentType })
+          .where('blob_id', '=', blobID)
+          .where('content_type', 'is', null)
+          .execute()
+      })
     },
   }
 }

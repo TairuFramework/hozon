@@ -27,6 +27,10 @@ type BlobTransfer = { stagingID: string; updatedAt: number; presentChunks: Array
 type BlobStoreAPI = {
   insertEntry(entry: BlobEntryInput, chunks: Array<BlobChunkInput>): Promise<void>
   getEntry(blobID: string): Promise<BlobEntry | null>
+  getEntries(
+    blobIDs: Array<string>,
+    options?: BatchReadOptions,
+  ): Promise<Map<string, BlobEntry | null>>
   getChunkDigests(blobID: string): Promise<Array<Uint8Array>>
   setPinned(blobID: string, pinned: boolean): Promise<void>
   deleteEntry(blobID: string): Promise<void>
@@ -69,6 +73,10 @@ Flags use integer 0/1 columns. `key_id` and `content_type` are nullable text, an
 Manifest conflicts on `(blob_id, index)` preserve existing digests.
 `getEntry` returns camelCase fields and boolean flags, or `null` when absent.
 Omitted `encrypted` and `pinned` default to `false`. Omitted `keyID` and `contentType` default to `null`.
+`getEntry` batches concurrent calls into one query, and inside a scope remembers results until a mutation of that blob.
+`getEntries` dedupes the IDs and runs one query. It returns every requested ID, with `null` for absent entries, and an empty `Map` for empty input without querying.
+It always reads fresh rows, ignoring batched and remembered `getEntry` values.
+It throws `BatchLimitError` above 500 unique IDs or above `options.batchLimit`.
 `getChunkDigests` returns digests in ascending index order.
 `setPinned` updates the flag. `deleteEntry` atomically removes entry, manifest, transfer, and session rows.
 
