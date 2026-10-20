@@ -468,6 +468,7 @@ function entryQueryCount(prepare: { mock: { calls: Array<Array<unknown>> } }): n
     /select .* from "hozon_blob_entries"/i.test(String(sql)),
   ).length
 }
+
 test('getEntries returns every requested key with null for missing', async () => {
   await store.insertEntry(entry({ blobID: 'a' }), [])
   const result = await store.getEntries(['a', 'zz', 'a'])
@@ -527,3 +528,67 @@ test('getEntries bypasses remembered values inside a scope', async () => {
     expect((await scoped.getEntries(['a'])).get('a')?.pinned).toBe(true)
   })
 })
+
+test('getEntry outside a scope reads fresh after a batch settles', async () => {
+  await store.insertEntry(entry(), [])
+  expect((await store.getEntry('b1'))?.contentType).toBeNull()
+  adapter.database.exec("UPDATE hozon_blob_entries SET content_type = 'text/plain'")
+  expect((await store.getEntry('b1'))?.contentType).toBe('text/plain')
+})
+
+type MutationName =
+  | 'insertEntry'
+  | 'setPinned'
+  | 'deleteEntry'
+  | 'beginTransfer'
+  | 'recordTransferChunk'
+  | 'finalizeTransfer'
+  | 'touchTransfer'
+  | 'promoteEntry'
+  | 'resetTransfer'
+  | 'fillContentType'
+
+function withoutState(input: BlobEntryInput): Omit<BlobEntryInput, 'state'> {
+  const { state: _state, ...rest } = input
+  return rest
+}
+
+const mutations: Record<MutationName, (target: BlobStoreAPI) => Promise<void>> = {
+  insertEntry: (target) => target.insertEntry(entry(), []),
+  setPinned: (target) => target.setPinned('b1', true),
+  deleteEntry: (target) => target.deleteEntry('b1'),
+  beginTransfer: (target) =>
+    target.beginTransfer({ blobID: 'b1', chunkSize: 4, chunks: manifest(), stagingID: 'stg-2' }),
+  recordTransferChunk: (target) => target.recordTransferChunk('b1', 0),
+  finalizeTransfer: (target) => target.finalizeTransfer('b1'),
+  touchTransfer: (target) => target.touchTransfer('b1'),
+  promoteEntry: (target) => target.promoteEntry(withoutState(entry()), []),
+  resetTransfer: (target) => target.resetTransfer('b1'),
+  fillContentType: (target) => target.fillContentType('b1', 'text/plain'),
+}
+
+test.each(Object.keys(mutations) as Array<MutationName>)(
+  '%s clears the remembered entry inside a scope',
+  async (name) => {
+    await store.insertEntry(entry({ state: 'remote-only' }), manifest())
+    await store.beginTransfer({
+      blobID: 'b1',
+      chunkSize: 4,
+      chunks: manifest(),
+      stagingID: 'stg-1',
+    })
+    for (const { index } of manifest()) await store.recordTransferChunk('b1', index)
+    const prepare = vi.spyOn(adapter.database, 'prepare')
+    await db.withScope<{ blob: BlobStoreAPI }, void>(async (scope) => {
+      const scoped = await scope.getStore('blob')
+      await scoped.getEntry('b1')
+      await scoped.getEntry('b1')
+      const primed = entryQueryCount(prepare)
+      expect(primed).toBe(1)
+      await mutations[name](scoped)
+      const afterMutation = entryQueryCount(prepare)
+      await scoped.getEntry('b1')
+      expect(entryQueryCount(prepare)).toBe(afterMutation + 1)
+    })
+  },
+)
