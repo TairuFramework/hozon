@@ -171,7 +171,7 @@ async function stagingExists(
 // Lock held: the transfer of a `partial` entry, or BlobNotFoundError.
 async function requireTransfer(ctx: TransferContext, blobID: string): Promise<ActiveTransfer> {
   const store = await getBlobStore(ctx.db)
-  const entry = await store.getEntry(blobID)
+  const entry = await getFreshEntry(store, blobID)
   const transfer = entry?.state === 'partial' ? await store.getTransfer(blobID) : null
   if (entry === null || transfer === null) {
     throw new BlobNotFoundError(blobID, { cause: new Error('No active transfer') })

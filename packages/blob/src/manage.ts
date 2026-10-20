@@ -4,6 +4,7 @@ import type { StoreProvider } from '@hozon/db'
 import { getBlobStore } from '@hozon/store-blob'
 
 import { BlobNotFoundError } from './errors.js'
+import { getFreshEntry } from './fresh.js'
 
 export type ManageContext = {
   db: StoreProvider
@@ -20,7 +21,7 @@ export async function setBlobPinned(
   const blobID = ctx.codec.canonicalize(id)
   await ctx.lock.withLock(blobID, async () => {
     const store = await getBlobStore(ctx.db)
-    if ((await store.getEntry(blobID)) === null) throw new BlobNotFoundError(blobID)
+    if ((await getFreshEntry(store, blobID)) === null) throw new BlobNotFoundError(blobID)
     await store.setPinned(blobID, pinned)
   })
 }
@@ -29,7 +30,7 @@ export async function deleteBlob(ctx: ManageContext, id: string): Promise<boolea
   const blobID = ctx.codec.canonicalize(id)
   return await ctx.lock.withLock(blobID, async () => {
     const store = await getBlobStore(ctx.db)
-    const entry = await store.getEntry(blobID)
+    const entry = await getFreshEntry(store, blobID)
     if (entry === null) return false
     const transfer = entry.state === 'partial' ? await store.getTransfer(blobID) : null
     // The row goes first: a crash then leaves orphaned bytes, never a row without bytes.
