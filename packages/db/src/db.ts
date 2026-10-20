@@ -159,11 +159,7 @@ export class HozonDB implements StoreProvider {
       if (store == null) {
         throw new Error(`Store "${name}" is not registered`)
       }
-      const storeDB =
-        store.unprefixedTables == null
-          ? this.#storeDB
-          : this.#db.withPlugin(this.#getStorePlugin(store))
-      this.#storeAPIs.set(name, store.createAPI(storeDB, this.#adapter, this.#loaders))
+      this.#storeAPIs.set(name, this.#createStoreAPI(store, this.#db, this.#storeDB, this.#loaders))
     }
     return this.#storeAPIs.get(name) as T
   }
@@ -194,11 +190,7 @@ export class HozonDB implements StoreProvider {
         if (!storeAPIs.has(name)) {
           const store = this.#stores.get(name)
           if (store == null) throw new Error(`Store "${name}" is not registered`)
-          const storeDB =
-            store.unprefixedTables == null
-              ? this.#storeDB
-              : this.#db.withPlugin(this.#getStorePlugin(store))
-          storeAPIs.set(name, store.createAPI(storeDB, this.#adapter, registry))
+          storeAPIs.set(name, this.#createStoreAPI(store, this.#db, this.#storeDB, registry))
         }
         return storeAPIs.get(name) as Stores[S]
       },
@@ -275,11 +267,7 @@ export class HozonDB implements StoreProvider {
                 if (store == null) {
                   throw new Error(`Store "${name}" is not registered`)
                 }
-                const storeDB =
-                  store.unprefixedTables == null
-                    ? txStoreDB
-                    : txKysely.withPlugin(this.#getStorePlugin(store))
-                txStoreAPIs.set(name, store.createAPI(storeDB, this.#adapter, registry))
+                txStoreAPIs.set(name, this.#createStoreAPI(store, txKysely, txStoreDB, registry))
               }
               return txStoreAPIs.get(name) as Stores[S]
             },
@@ -439,6 +427,21 @@ export class HozonDB implements StoreProvider {
       this.#migrations.set(store.name, migrations)
     }
     return migrations
+  }
+
+  // Hands stores only createLoader, so they cannot reach close/dispatchAll/clearAll.
+  // Stores on the default plugin must share one Kysely instance: keep-set locks key on it.
+  #createStoreAPI(
+    store: StoredDefinition,
+    kysely: Kysely<Record<string, unknown>>,
+    defaultDB: Kysely<Record<string, unknown>>,
+    registry: LoaderRegistry,
+  ): unknown {
+    const storeDB =
+      store.unprefixedTables == null ? defaultDB : kysely.withPlugin(this.#getStorePlugin(store))
+    return store.createAPI(storeDB, this.#adapter, {
+      createLoader: (params) => registry.createLoader(params),
+    })
   }
 
   #getStorePlugin(store: StoredDefinition): TablePrefixPlugin {
