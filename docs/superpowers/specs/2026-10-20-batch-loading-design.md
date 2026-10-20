@@ -79,6 +79,9 @@ getEntry(id: string): Promise<BlobEntry | null>
 - Dedupes the IDs, splits them by a `batchSize` option, and calls the batch read once per chunk.
 - Yields `{ keys, results }` per chunk, so batch boundaries and query count stay visible.
 - Runs chunks sequentially. Memory stays bounded to one batch.
+- Accepts an optional `signal`. Aborting stops further chunks and makes the generator throw `signal.reason`.
+- Builder's choice: build on `prefetchOrdered` from `@sozai/async` with `window: 1`, or implement directly. Adding the `@sozai/async` dependency to `@hozon/db` is acceptable.
+- No window option for now. Parallel chunk queries only help postgres with a pool, because SQLite, Expo, and transactions serialise queries. A window option can be added later.
 
 ### Loader helper
 
