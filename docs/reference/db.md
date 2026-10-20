@@ -55,6 +55,28 @@ class HozonDB implements StoreProvider {
 }
 function withStoreTransaction<DB, R>(db: Kysely<DB>, fn: (trx: Kysely<DB>) => Promise<R>): Promise<R>
 function chunk<T>(items: Array<T>, size?: number): Array<Array<T>>
+function assertBatchSize(size: number, max: number, batchLimit?: number): void
+function iterateBatches<TKey, TValue>(
+  keys: Iterable<TKey>,
+  load: (chunk: Array<TKey>) => Promise<Map<TKey, TValue | null>>,
+  options: IterateBatchesOptions,
+): AsyncGenerator<{ keys: Array<TKey>; results: Map<TKey, TValue | null> }>
+function createBatchLoader<TKey, TValue>(
+  params: BatchLoaderParams<TKey, TValue> & { remember: () => boolean },
+): BatchLoader<TKey, TValue>
+type BatchLoaderParams<TKey, TValue> = {
+  load: (keys: Array<TKey>) => Promise<Map<TKey, TValue | null>>
+  maxBatchSize: number
+}
+type BatchLoader<TKey, TValue> = {
+  load(key: TKey): Promise<TValue | null>
+  clear(key: TKey): void
+  clearAll(): void
+  dispatch(): void
+}
+type StoreContext = {
+  createLoader<TKey, TValue>(params: BatchLoaderParams<TKey, TValue>): BatchLoader<TKey, TValue>
+}
 ```
 
 The helper and error constructors have these declarations:
@@ -65,6 +87,7 @@ function withKeepSet<DB, R>(
   params: { table: string; ids: Array<string> },
   fn: (selectKeep: () => SelectQueryBuilder<{ keep: { trace_id: string } }, 'keep', { trace_id: string }>) => Promise<R>,
 ): Promise<R>
+class BatchLimitError extends Error { constructor(size: number, limit: number) }
 class HozonDBClosedError extends Error { constructor() }
 class InvalidTablePrefixError extends Error { constructor(prefix: string) }
 class SavepointOverlapError extends Error { constructor() }
@@ -140,6 +163,8 @@ Stores receive a `StoreContext` as the third `createAPI` argument. Existing two-
 `context.createLoader({ load, maxBatchSize })` creates a per-store loader with `load(key)`, `dispatch()`, `clear(key)`, and `clearAll()`.
 Same-tick calls coalesce into batches, split at `maxBatchSize`. Duplicate pending keys share a promise.
 Sequential `await` loops do not batch. Start reads together, for example with `Promise.all`, to combine them.
+A store's `load` must issue its query synchronously, without awaiting anything first, because boundary ordering relies on this.
+It returns a `Map`, and keys with no record resolve `null`.
 
 Base provider loaders remember no settled results. `db.withScope(fn)` gives the callback its own store instances and remembers results until the callback settles.
 Transactions also remember results, sharing loaders across savepoints. Nested `withScope` calls on a scope or transaction provider run inline.

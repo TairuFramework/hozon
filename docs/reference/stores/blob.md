@@ -73,7 +73,7 @@ Flags use integer 0/1 columns. `key_id` and `content_type` are nullable text, an
 Manifest conflicts on `(blob_id, index)` preserve existing digests.
 `getEntry` returns camelCase fields and boolean flags, or `null` when absent.
 Omitted `encrypted` and `pinned` default to `false`. Omitted `keyID` and `contentType` default to `null`.
-`getEntry` batches concurrent calls into one query, and inside a scope remembers results until a mutation of that blob.
+`getEntry` batches concurrent calls into one query. Inside a scope or transaction it remembers results until a mutation of that blob through the same scoped store; writes through other providers can leave them stale (see "Batch loading and scopes" in [db.md](../db.md)).
 `getEntries` dedupes the IDs and runs one query. It returns every requested ID, with `null` for absent entries, and an empty `Map` for empty input without querying.
 It always reads fresh rows, ignoring batched and remembered `getEntry` values.
 It throws `BatchLimitError` above 500 unique IDs or above `options.batchLimit`.
