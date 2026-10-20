@@ -23,7 +23,13 @@ export {
   type BatchLoaderParams,
   createBatchLoader,
 } from './batch-loader.js'
-export type { HozonDBParams, MigrationContext, StoreDefinition, StoreProvider } from './db.js'
+export type {
+  HozonDBParams,
+  MigrationContext,
+  StoreContext,
+  StoreDefinition,
+  StoreProvider,
+} from './db.js'
 export { HozonDB } from './db.js'
 export {
   BatchLimitError,
