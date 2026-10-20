@@ -69,6 +69,7 @@ getEntry(id: string): Promise<BlobEntry | null>
 - Every requested ID is a key in the returned `Map`. `null` means not found. Therefore `results.size` equals the number of unique requested IDs.
 - Duplicate input IDs are allowed and deduped.
 - An empty input returns an empty `Map` without a query.
+- The batch read never reads or populates remembered results. It always queries. This makes it the fresh-read path.
 - Each store declares a maximum batch size per batch read. The maximum is 500 minus any other parameters the query binds.
 - `options.batchLimit` can lower the limit for one call. A value above the store maximum throws.
 - More unique IDs than the effective limit throws `BatchLimitError`. The batch read never chunks internally.
@@ -94,6 +95,7 @@ A `@hozon/db` helper, provisionally `createBatchLoader`, turns a batch read into
 - Outside a scope, an ID's entry is dropped when its batch dispatches. The next call reads fresh.
 - Inside a scope, settled results stay remembered until the scope ends or a write clears them.
 - The loader exposes `clear(id)` and `clearAll()` for write methods.
+- Each ID has a generation counter. `clear(id)` and `clearAll()` bump it. A batch result is remembered only when the ID's generation is unchanged since dispatch. A late or superseded query therefore never restores a stale value, even when batches settle out of order (decided by the spec author).
 
 ### Scopes
 
@@ -106,11 +108,14 @@ A `@hozon/db` helper, provisionally `createBatchLoader`, turns a batch read into
 - A scope store instance used after `fn` settles keeps working without memory. It batches but remembers nothing (decided by the spec author).
 - `withTransaction` called on a scope provider opens a transaction with its own memory. After that transaction commits, the outer scope's memory is cleared entirely.
 - A savepoint rollback clears the memory of every store instance in the transaction. Writes rolled back must not stay remembered.
+- At every savepoint creation, release, and rollback, and before transaction commit or rollback, pending batches dispatch first. Generations bump on rollback, so pre-rollback reads never repopulate memory (decided by the spec author).
+- Internal memory invalidation after a commit or rollback runs before any user `onCommit` or `onRollback` hook, including savepoint rollback hooks. A hook reading through a scoped store must never see a pre-commit value (decided by the spec author).
 
 ### Writes
 
-- Every write method that can change a batched entity clears the affected IDs, or calls `clearAll()` when the affected IDs are unknown.
-- A write dispatches any pending batch for that store before it executes. This keeps program order: a read started before a write never observes the write.
+- Every write method that can change a batched entity clears the affected IDs when the write completes, or calls `clearAll()` when the affected IDs are unknown. Generations make the clear safe against reads in flight during the write.
+- A write dispatches any pending batch for that store before it executes. On a single connection (SQLite, Expo, any transaction) this keeps program order: a read started before a write never observes the write.
+- On a postgres pool outside a transaction, dispatch order is not execution order. A read and a write started concurrently stay unordered, as they are today. Writes do not wait for earlier reads (decided by the spec author).
 
 ### First adopter: `store-blob`
 
@@ -118,7 +123,7 @@ A `@hozon/db` helper, provisionally `createBatchLoader`, turns a batch read into
 - Clear on every blob mutation: `insertEntry`, `setPinned`, `deleteEntry`, `beginTransfer`, `recordTransferChunk`, `finalizeTransfer`, `promoteEntry`, `resetTransfer`, `fillContentType`, `touchTransfer`.
 - `getTransfer` stays unbatched. A batched form would load every present chunk index for up to 500 blobs, an unbounded result (decided by the spec author).
 - `packages/blob` keeps calling `getEntry` as it does now. Its repeated reads of the same ID inside one operation benefit once the caller runs inside a scope or a transaction.
-- `packages/blob` re-reads state after taking `BlobLock` to get a fresh view, for example in `prune.ts` and `write.ts`. Those re-reads must not return remembered values. Clear the blob store's memory when `BlobLock` is acquired (decided by the spec author).
+- `packages/blob` re-reads state after taking `BlobLock` to get a fresh view, for example in `prune.ts` and `write.ts`. Those re-reads must not return remembered values. Under a lock, read entries with `getEntries([id])`, which always queries. `getTransfer` stays unbatched and is already fresh (decided by the spec author).
 
 ## Constraints
 
