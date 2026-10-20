@@ -48,11 +48,14 @@ export function createBatchLoader<TKey, TValue>(
   // Both counters only grow, so their sum changes whenever either is bumped.
   const keyGenerations = new Map<TKey, number>()
   let globalGeneration = 0
+  // Per-key bumps only matter to in-flight chunks; dropping them when idle bounds the map.
+  let inFlight = 0
 
   const generationOf = (key: TKey): number => globalGeneration + (keyGenerations.get(key) ?? 0)
 
   async function dispatchChunk(entries: Array<[TKey, Deferred<TValue>]>): Promise<void> {
     const generations = entries.map(([key]) => generationOf(key))
+    inFlight++
     try {
       const results = await load(entries.map(([key]) => key))
       const shouldRemember = remember()
@@ -65,6 +68,9 @@ export function createBatchLoader<TKey, TValue>(
       })
     } catch (error) {
       for (const [, deferred] of entries) deferred.reject(error)
+    } finally {
+      inFlight--
+      if (inFlight === 0) keyGenerations.clear()
     }
   }
 
@@ -75,7 +81,7 @@ export function createBatchLoader<TKey, TValue>(
     for (const part of chunk(entries, maxBatchSize)) void dispatchChunk(part)
   }
 
-  return {
+  const loader: BatchLoader<TKey, TValue> = {
     load(key) {
       if (remember() && remembered.has(key)) {
         return Promise.resolve(remembered.get(key) as TValue | null)
@@ -94,7 +100,7 @@ export function createBatchLoader<TKey, TValue>(
       return deferred.promise
     },
     clear(key) {
-      keyGenerations.set(key, (keyGenerations.get(key) ?? 0) + 1)
+      if (inFlight > 0) keyGenerations.set(key, (keyGenerations.get(key) ?? 0) + 1)
       remembered.delete(key)
     },
     clearAll() {
@@ -103,4 +109,13 @@ export function createBatchLoader<TKey, TValue>(
     },
     dispatch,
   }
+  generationProbes.set(loader, () => keyGenerations.size)
+  return loader
+}
+
+const generationProbes = new WeakMap<object, () => number>()
+
+/** Test probe: number of per-key generation entries a loader currently tracks. */
+export function trackedGenerationCount(loader: object): number {
+  return generationProbes.get(loader)?.() ?? 0
 }

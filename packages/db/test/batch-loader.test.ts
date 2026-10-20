@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
-import { createBatchLoader } from '../src/batch-loader.js'
+import { createBatchLoader, trackedGenerationCount } from '../src/batch-loader.js'
 
 type Deferred<T> = {
   promise: Promise<T>
@@ -34,6 +34,20 @@ function setup(options: { maxBatchSize?: number; remember?: boolean } = {}) {
 }
 
 describe('createBatchLoader', () => {
+  test('does not track key generations when nothing is in flight', async () => {
+    const { loader, state } = setup({ remember: true })
+    for (let i = 0; i < 100; i++) loader.clear(`k${i}`)
+    expect(trackedGenerationCount(loader)).toBe(0)
+
+    state.remember = true
+    const pending = loader.load('a')
+    loader.dispatch()
+    loader.clear('a')
+    expect(trackedGenerationCount(loader)).toBe(1)
+    await pending
+    expect(trackedGenerationCount(loader)).toBe(0)
+  })
+
   test('merges same-tick loads into one call', async () => {
     const { loader, calls } = setup()
     const values = await Promise.all(['a', 'b', 'c'].map((id) => loader.load(id)))
