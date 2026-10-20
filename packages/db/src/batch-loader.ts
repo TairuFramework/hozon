@@ -1,3 +1,5 @@
+import { type Deferred, defer } from '@sozai/async'
+
 import { chunk } from './keep-set.js'
 
 export type BatchLoaderParams<TKey, TValue> = {
@@ -10,22 +12,6 @@ export type BatchLoader<TKey, TValue> = {
   clear(key: TKey): void
   clearAll(): void
   dispatch(): void
-}
-
-type Deferred<TValue> = {
-  promise: Promise<TValue | null>
-  resolve: (value: TValue | null) => void
-  reject: (error: unknown) => void
-}
-
-function createDeferred<TValue>(): Deferred<TValue> {
-  let resolve!: (value: TValue | null) => void
-  let reject!: (error: unknown) => void
-  const promise = new Promise<TValue | null>((res, rej) => {
-    resolve = res
-    reject = rej
-  })
-  return { promise, resolve, reject }
 }
 
 // Runs after the microtask queue drains, so loads chained behind a few awaits still coalesce.
@@ -42,7 +28,7 @@ export function createBatchLoader<TKey, TValue>(
   params: BatchLoaderParams<TKey, TValue> & { remember: () => boolean },
 ): BatchLoader<TKey, TValue> {
   const { load, maxBatchSize, remember } = params
-  let pending = new Map<TKey, Deferred<TValue>>()
+  let pending = new Map<TKey, Deferred<TValue | null>>()
   let scheduled = false
   const remembered = new Map<TKey, TValue | null>()
   // Both counters only grow, so their sum changes whenever either is bumped.
@@ -53,7 +39,7 @@ export function createBatchLoader<TKey, TValue>(
 
   const generationOf = (key: TKey): number => globalGeneration + (keyGenerations.get(key) ?? 0)
 
-  async function dispatchChunk(entries: Array<[TKey, Deferred<TValue>]>): Promise<void> {
+  async function dispatchChunk(entries: Array<[TKey, Deferred<TValue | null>]>): Promise<void> {
     const generations = entries.map(([key]) => generationOf(key))
     inFlight++
     try {
@@ -88,7 +74,7 @@ export function createBatchLoader<TKey, TValue>(
       }
       const existing = pending.get(key)
       if (existing != null) return existing.promise
-      const deferred = createDeferred<TValue>()
+      const deferred = defer<TValue | null>()
       pending.set(key, deferred)
       if (!scheduled) {
         scheduled = true
