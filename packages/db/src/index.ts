@@ -18,6 +18,11 @@ export {
   type IterateBatchesOptions,
   iterateBatches,
 } from './batch.js'
+export {
+  type BatchLoader,
+  type BatchLoaderParams,
+  createBatchLoader,
+} from './batch-loader.js'
 export type { HozonDBParams, MigrationContext, StoreDefinition, StoreProvider } from './db.js'
 export { HozonDB } from './db.js'
 export {
