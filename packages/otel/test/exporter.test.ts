@@ -1,7 +1,7 @@
 import { NodeSQLiteAdapter } from '@hozon/node-sqlite'
 import { context, trace } from '@opentelemetry/api'
 import { ExportResultCode } from '@opentelemetry/core'
-import { BasicTracerProvider, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base'
+import { SimpleSpanProcessor, TracerProvider } from '@opentelemetry/sdk-trace'
 import { afterEach, expect, test, vi } from 'vitest'
 
 const { getReporter, report } = vi.hoisted(() => ({ getReporter: vi.fn(), report: vi.fn() }))
@@ -31,7 +31,7 @@ async function createStore() {
 test('stores span fields and drains writes on forceFlush', async () => {
   const store = await createStore()
   const exporter = createTelemetrySpanExporter(store)
-  const provider = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] })
+  const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] })
   const tracer = provider.getTracer('test')
   const parent = tracer.startSpan('parent', { kind: 2, startTime: [1, 0] })
   const child = tracer.startSpan(

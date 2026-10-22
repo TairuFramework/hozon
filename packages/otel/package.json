@@ -1,6 +1,6 @@
 {
   "name": "@hozon/otel",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "OpenTelemetry span exporter for Hozon telemetry stores",
   "repository": {
     "type": "git",
@@ -37,14 +37,14 @@
     "@hozon/db": "workspace:^",
     "@hozon/node-sqlite": "workspace:^",
     "@opentelemetry/api": "catalog:",
-    "@opentelemetry/sdk-trace-base": "catalog:",
+    "@opentelemetry/sdk-trace": "catalog:",
     "@types/node": "catalog:",
     "del-cli": "catalog:",
     "vitest": "catalog:"
   },
   "peerDependencies": {
     "@opentelemetry/api": "catalog:",
-    "@opentelemetry/sdk-trace-base": "catalog:"
+    "@opentelemetry/sdk-trace": "catalog:"
   },
   "publishConfig": {
     "access": "public"

@@ -15,7 +15,7 @@
     "@hozon/conformance": "workspace:^",
     "@hozon/db": "workspace:^",
     "@hozon/expo": "workspace:^",
-    "@opentelemetry/sdk-trace-web": "catalog:",
+    "@opentelemetry/sdk-trace": "catalog:",
     "expo": "catalog:",
     "expo-sqlite": "catalog:",
     "expo-status-bar": "catalog:",

@@ -1,7 +1,7 @@
 import { type ConformanceResult, runConformance, summarize } from '@hozon/conformance'
 import { HozonDB } from '@hozon/db'
 import { SQLocalAdapter } from '@hozon/sqlocal'
-import { StackContextManager } from '@opentelemetry/sdk-trace-web'
+import { StackContextManager } from '@opentelemetry/sdk-trace'
 import { runStoreScenario, type ScenarioPhase, setupTelemetry } from 'hozon-test-scenarios'
 import { useState } from 'react'
 

@@ -1,7 +1,7 @@
 import { type ConformanceResult, runConformance, summarize } from '@hozon/conformance'
 import { HozonDB } from '@hozon/db'
 import { ExpoAdapter } from '@hozon/expo'
-import { StackContextManager } from '@opentelemetry/sdk-trace-web'
+import { StackContextManager } from '@opentelemetry/sdk-trace'
 import { deleteDatabaseAsync, openDatabaseSync } from 'expo-sqlite'
 import { StatusBar } from 'expo-status-bar'
 import { runStoreScenario, type ScenarioPhase, setupTelemetry } from 'hozon-test-scenarios'

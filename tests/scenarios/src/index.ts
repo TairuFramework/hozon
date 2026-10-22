@@ -17,7 +17,7 @@ import {
 } from '@hozon/store-telemetry'
 import { configure, getConsoleSink, getLogger, reset } from '@logtape/logtape'
 import { type ContextManager, context, SpanKind, SpanStatusCode, trace } from '@opentelemetry/api'
-import { BasicTracerProvider, BatchSpanProcessor } from '@opentelemetry/sdk-trace-base'
+import { BatchSpanProcessor, TracerProvider } from '@opentelemetry/sdk-trace'
 
 export type ScenarioPhase = 'write' | 'verify'
 
@@ -33,7 +33,7 @@ export type SetupTelemetryParams = {
 }
 
 export type Telemetry = {
-  provider: BasicTracerProvider
+  provider: TracerProvider
   teardown(): Promise<void>
 }
 
@@ -328,8 +328,8 @@ export async function runStoreScenario(
 /** Registers `contextManager` and a provider exporting to the database's telemetry store. */
 export async function setupTelemetry(params: SetupTelemetryParams): Promise<Telemetry> {
   const { telemetry } = await getStores(params.db)
-  const provider = new BasicTracerProvider({
-    spanProcessors: [new BatchSpanProcessor(createTelemetrySpanExporter(telemetry))],
+  const provider = new TracerProvider({
+    spanProcessors: [new BatchSpanProcessor({ exporter: createTelemetrySpanExporter(telemetry) })],
   })
   context.setGlobalContextManager(params.contextManager.enable())
   trace.setGlobalTracerProvider(provider)

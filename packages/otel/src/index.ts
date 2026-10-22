@@ -1,7 +1,7 @@
 import type { StoredSpan, TelemetryStore } from '@hozon/store-telemetry'
 import type { Attributes, HrTime } from '@opentelemetry/api'
 import { ExportResultCode } from '@opentelemetry/core'
-import type { ReadableSpan, SpanExporter } from '@opentelemetry/sdk-trace-base'
+import type { ReadableSpan, SpanExporter } from '@opentelemetry/sdk-trace'
 import { toJSONValue } from '@sozai/json'
 import { getReporter } from '@sozai/log'
 

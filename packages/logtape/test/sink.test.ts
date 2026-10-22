@@ -2,7 +2,7 @@ import type { LogStore, StoredLog } from '@hozon/store-log'
 import type { LogRecord } from '@logtape/logtape'
 import { context, trace } from '@opentelemetry/api'
 import { AsyncLocalStorageContextManager } from '@opentelemetry/context-async-hooks'
-import { BasicTracerProvider } from '@opentelemetry/sdk-trace-base'
+import { TracerProvider } from '@opentelemetry/sdk-trace'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
 const { getReporter, report } = vi.hoisted(() => ({ getReporter: vi.fn(), report: vi.fn() }))
@@ -15,7 +15,7 @@ import { createLogStoreSink } from '../src/index.js'
 
 let batches: Array<Array<StoredLog>>
 let store: LogStore
-let provider: BasicTracerProvider
+let provider: TracerProvider
 let manager: AsyncLocalStorageContextManager
 
 beforeEach(() => {
@@ -25,7 +25,7 @@ beforeEach(() => {
       batches.push(logs)
     }),
   } as unknown as LogStore
-  provider = new BasicTracerProvider()
+  provider = new TracerProvider()
   manager = new AsyncLocalStorageContextManager()
   context.setGlobalContextManager(manager.enable())
   trace.setGlobalTracerProvider(provider)

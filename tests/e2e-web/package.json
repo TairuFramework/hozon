@@ -16,7 +16,7 @@
     "@hozon/db": "workspace:^",
     "@hozon/sqlocal": "workspace:^",
     "@opentelemetry/api": "catalog:",
-    "@opentelemetry/sdk-trace-web": "catalog:",
+    "@opentelemetry/sdk-trace": "catalog:",
     "hozon-test-scenarios": "workspace:^",
     "react": "catalog:",
     "react-dom": "catalog:",

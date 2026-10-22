@@ -1,6 +1,6 @@
 {
   "name": "@hozon/logtape",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Logtape sink for Hozon log stores",
   "repository": {
     "type": "git",
@@ -36,7 +36,7 @@
     "@logtape/logtape": "catalog:",
     "@opentelemetry/api": "catalog:",
     "@opentelemetry/context-async-hooks": "catalog:",
-    "@opentelemetry/sdk-trace-base": "catalog:",
+    "@opentelemetry/sdk-trace": "catalog:",
     "@types/node": "catalog:",
     "del-cli": "catalog:",
     "vitest": "catalog:"

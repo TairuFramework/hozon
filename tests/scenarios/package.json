@@ -29,7 +29,7 @@
     "@hozon/store-telemetry": "workspace:^",
     "@logtape/logtape": "catalog:",
     "@opentelemetry/api": "catalog:",
-    "@opentelemetry/sdk-trace-base": "catalog:"
+    "@opentelemetry/sdk-trace": "catalog:"
   },
   "devDependencies": {
     "del-cli": "catalog:"

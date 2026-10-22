@@ -3,7 +3,7 @@
 OpenTelemetry span exporter that writes spans to an `@hozon/store-telemetry` store.
 
 ```sh
-pnpm add @hozon/otel @opentelemetry/api @opentelemetry/sdk-trace-base @hozon/store-telemetry
+pnpm add @hozon/otel @opentelemetry/api @opentelemetry/sdk-trace @hozon/store-telemetry
 ```
 
 ```ts
