@@ -42,7 +42,7 @@
   dir: packages/conformance
   intents:
     - json-column-decoding
-"@hozon/conformance@0.1.5":
+"@hozon/conformance@0.2.0":
   dir: packages/conformance
   intents:
     - tiny-tools-throw

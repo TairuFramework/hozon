@@ -1,14 +1,18 @@
 # @hozon/conformance
 
-## 0.1.5
+## 0.2.0
 
-### Patch Changes
+### Minor Changes
+
+- Align with the breaking @hozon/db 0.4.0 and @hozon/adapter 0.2.0 releases.
 
 - Exercise sync, search, savepoint loader invalidation, released-provider child hooks, and root SQL from scoped shutdown hooks through every portable driver harness.
 
 - Updated dependencies:
   - @hozon/adapter@0.2.0
   - @hozon/db@0.4.0
+  - @hozon/store-log@0.3.0
+  - @hozon/store-telemetry@0.3.0
 
 ## 0.1.4
 

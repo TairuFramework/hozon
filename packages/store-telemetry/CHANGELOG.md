@@ -1,8 +1,10 @@
 # @hozon/store-telemetry
 
-## 0.2.4
+## 0.3.0
 
-### Patch Changes
+### Minor Changes
+
+- Align with the breaking @hozon/db 0.4.0 and @hozon/adapter 0.2.0 releases.
 
 - Updated dependencies:
   - @hozon/adapter@0.2.0

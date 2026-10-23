@@ -1,11 +1,14 @@
 # @hozon/blob
 
-## 0.1.2
+## 0.2.0
 
-### Patch Changes
+### Minor Changes
+
+- Align with the breaking @hozon/db 0.4.0 and @hozon/adapter 0.2.0 releases.
 
 - Updated dependencies:
   - @hozon/db@0.4.0
+  - @hozon/store-blob@0.3.0
 
 ## 0.1.1
 
