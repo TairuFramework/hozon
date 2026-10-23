@@ -242,8 +242,12 @@ const rootWriter = await context.root.getStore('writer') as WriterAPI
 context.onClose(async () => { await rootWriter.flush() })
 ```
 
-Commit and rollback hooks registered through released savepoint providers forward to the current parent.
-Child savepoints opened through released providers also use that parent, including its hook registration methods.
+Settled savepoint providers and the store APIs bound to them throw `SavepointReleasedError` after release or rollback.
+This includes store lookup, hook registration, transaction and scope callbacks, child savepoints, and key locks.
+Lock-scoped providers derived from the savepoint share its lifetime.
+Bound context methods such as `compareWrite` and `createLoader` also reject further use.
+Hooks registered while the savepoint was open still move to the parent on release.
+`onClose` registration remains root-owned and independent of savepoint lifetime.
 
 ## Chunking
 

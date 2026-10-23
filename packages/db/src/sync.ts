@@ -16,6 +16,7 @@ export type CompareDefinition<Row> = {
 }
 
 type LockContext = {
+  assertActive: () => void
   derive: () => StoreProvider
   db: Kysely<Record<string, unknown>>
   kind: Adapter['kind']
@@ -103,6 +104,7 @@ export async function withKeyLocks<R>(
   const root = provider.transactionRoot ?? provider
   const context = lockContexts.get(provider)
   if (context == null) throw new Error('withKeyLock requires a HozonDB provider')
+  context.assertActive()
   const identities = [
     ...new Set(
       keys.map((key) => {
@@ -156,6 +158,7 @@ export async function withKeyLocks<R>(
         checkScope(id)
         for (const ancestor of ancestors) ancestor.keys.add(id)
       }
+      context.assertActive()
       return await fn(locked)
     }
     checkScope(id)

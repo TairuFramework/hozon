@@ -39,6 +39,7 @@ export {
   InvalidTablePrefixError,
   KeyLockScopeError,
   SavepointOverlapError,
+  SavepointReleasedError,
   SchemaVersionError,
 } from './errors.js'
 export { chunk, IN_LIST_CHUNK, withKeepSet } from './keep-set.js'

@@ -1,3 +1,10 @@
+export class SavepointReleasedError extends Error {
+  constructor() {
+    super('The savepoint has already been released or rolled back')
+    this.name = 'SavepointReleasedError'
+  }
+}
+
 export class KeyLockScopeError extends Error {
   constructor() {
     super('The key is reserved by an unsettled savepoint outside this provider scope')

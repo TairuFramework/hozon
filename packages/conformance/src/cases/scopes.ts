@@ -1,4 +1,10 @@
-import { type BaseStoreContext, sql, withKeyLock } from '@hozon/db'
+import {
+  type BaseStoreContext,
+  SavepointReleasedError,
+  type StoreProvider,
+  sql,
+  withKeyLock,
+} from '@hozon/db'
 
 import * as assert from '../assert.js'
 import type { ConformanceCase } from '../runner.js'
@@ -69,24 +75,22 @@ export const scopeCases: Array<ConformanceCase> = [
   ),
   ...[false, true].map(
     (rollback): ConformanceCase => ({
-      name: `scopes: released provider child forwards hooks (rollback: ${rollback})`,
+      name: `scopes: settled provider rejects child savepoints (rollback: ${rollback})`,
       async run(ctx) {
         const db = ctx.db()
-        const events: Array<string> = []
-        const transaction = db.withTransaction(async (tx) => {
+        await db.withTransaction(async (tx) => {
           assert.ok(tx.withSavepoint)
-          const released = await tx.withSavepoint(async (sp) => sp)
-          assert.ok(released.withSavepoint)
-          await released.withSavepoint(async (child) => {
-            child.onCommit(() => events.push('commit'))
-            child.onRollback(() => events.push('rollback'))
+          let retained: StoreProvider | undefined
+          const attempt = tx.withSavepoint(async (sp) => {
+            retained = sp
+            if (rollback) throw new Error('savepoint rollback')
           })
-          assert.deepEqual(events, [])
-          if (rollback) throw new Error('outer rollback')
+          if (rollback) await assert.rejects(() => attempt, 'savepoint rollback')
+          else await attempt
+          assert.ok(retained?.withSavepoint)
+          const withSavepoint = retained.withSavepoint
+          await assert.rejects(() => withSavepoint(async () => {}), SavepointReleasedError)
         })
-        if (rollback) await assert.rejects(() => transaction, 'outer rollback')
-        else await transaction
-        assert.deepEqual(events, [rollback ? 'rollback' : 'commit'])
       },
     }),
   ),

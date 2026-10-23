@@ -1,7 +1,7 @@
 import { NodeSQLiteAdapter } from '@hozon/node-sqlite'
 import { afterEach, expect, test, vi } from 'vitest'
 
-import { HozonDB, withKeyLock } from '../src/index.js'
+import { HozonDB, SavepointReleasedError, withKeyLock } from '../src/index.js'
 
 type KVStore = {
   get(key: string): Promise<string | null>
@@ -285,18 +285,21 @@ test.each([false, true])(
 )
 
 test.each([false, true])(
-  'children of released providers forward hooks (rollback: %s)',
+  'released providers reject children and preserve existing hooks (rollback: %s)',
   async (rollback) => {
     const { db } = await setup()
     const events: Array<string> = []
     const transaction = db.withTransaction<Stores, void>(async (tx) => {
       if (!tx.withSavepoint) throw new Error('Missing savepoints')
-      const released = await tx.withSavepoint(async (sp) => sp)
-      if (!released.withSavepoint) throw new Error('Missing savepoints')
-      await released.withSavepoint(async (child) => {
-        child.onCommit(() => events.push('commit'))
-        child.onRollback(() => events.push('rollback'))
+      const released = await tx.withSavepoint(async (sp) => {
+        sp.onCommit(() => events.push('commit'))
+        sp.onRollback(() => events.push('rollback'))
+        return sp
       })
+      if (!released.withSavepoint) throw new Error('Missing savepoints')
+      await expect(released.withSavepoint(async () => {})).rejects.toBeInstanceOf(
+        SavepointReleasedError,
+      )
       expect(events).toEqual([])
       if (rollback) throw new Error('outer rollback')
     })

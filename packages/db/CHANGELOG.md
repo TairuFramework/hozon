@@ -4,7 +4,7 @@
 
 ### Minor Changes
 
-- BREAKING: StoreProvider.isTransactionBound is required. StoreContext gains provider, root, onClose, and compareWrite. Savepoints get distinct store APIs and loaders. Transaction-scoped getStore rejects once close starts. Hooks from released savepoint providers forward to their current parent, including hooks from child savepoints opened after release. chunk uses iterable semantics, so sparse holes become undefined. Successful savepoint release invalidates remembered loader results registry-wide.
+- BREAKING: StoreProvider.isTransactionBound is required. StoreContext gains provider, root, onClose, and compareWrite. Savepoints get distinct store APIs and loaders. Transaction-scoped getStore rejects once close starts. Settled savepoint providers and the store APIs bound to them throw SavepointReleasedError. chunk uses iterable semantics, so sparse holes become undefined. Successful savepoint release invalidates remembered loader results registry-wide.
 
   Add a context factory for HozonDB context extensions, onClose shutdown hooks, transactionRoot identity, withKeyLock/withKeyLocks/KeyLockScopeError, compareWrite/compareText merge policies, and chunk unique support with IN_LIST_CHUNK. Shutdown hooks run outside transactions and use root store APIs obtained before close for SQL.
 

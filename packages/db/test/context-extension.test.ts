@@ -6,9 +6,12 @@ import {
   type BaseStoreContext,
   type ContextFactory,
   HozonDB,
+  SavepointReleasedError,
   type StoreContext,
   type StoreDefinition,
   type StoreProvider,
+  withKeyLock,
+  withKeyLocks,
 } from '../src/index.js'
 
 type Extension = { value: string }
@@ -155,38 +158,136 @@ test('stores without context get the base context', async () => {
   }
 })
 
-test('released savepoint APIs forward later commit hooks to the outer transaction', async () => {
-  const db = new ExtendedDB()
-  const events: Array<string> = []
-  try {
-    await db.withTransaction<Stores, void>(async (tx) => {
-      if (tx.withSavepoint == null) throw new Error('Missing savepoints')
-      const api = await tx.withSavepoint<Stores, Api>((sp) => sp.getStore('context'))
-      api.provider.onCommit(() => events.push('committed'))
-      expect(events).toEqual([])
-    })
-    expect(events).toEqual(['committed'])
-  } finally {
-    await db.close()
-  }
-})
+const settledOperations: Record<string, (provider: StoreProvider) => unknown> = {
+  getStore: (provider) => provider.getStore('context'),
+  hasStore: (provider) => provider.hasStore('context'),
+  onCommit: (provider) => provider.onCommit(() => {}),
+  onRollback: (provider) => provider.onRollback(() => {}),
+  withSavepoint: (provider) => provider.withSavepoint?.(async () => {}),
+  withTransaction: (provider) => provider.withTransaction(async () => {}),
+  withScope: (provider) => provider.withScope?.(async () => {}),
+  withKeyLock: (provider) => withKeyLock(provider, 'items', ['a'], async () => {}),
+  withKeyLocks: (provider) => withKeyLocks(provider, 'items', [], async () => {}),
+}
 
-test('released savepoint APIs forward later rollback hooks to the outer transaction', async () => {
-  const db = new ExtendedDB()
-  const events: Array<string> = []
-  const error = new Error('outer rollback')
-  try {
-    await expect(
-      db.withTransaction<Stores, void>(async (tx) => {
-        if (tx.withSavepoint == null) throw new Error('Missing savepoints')
-        const api = await tx.withSavepoint<Stores, Api>((sp) => sp.getStore('context'))
-        api.provider.onRollback(() => events.push('rolled back'))
-        expect(events).toEqual([])
-        throw error
+for (const rollback of [false, true]) {
+  for (const [method, operation] of Object.entries(settledOperations)) {
+    test(`settled savepoint rejects ${method} (rollback: ${rollback})`, async () => {
+      const db = new ExtendedDB()
+      try {
+        await db.withTransaction(async (tx) => {
+          if (!tx.withSavepoint) throw new Error('Missing savepoints')
+          let retained: StoreProvider | undefined
+          let locked: StoreProvider | undefined
+          const attempt = tx.withSavepoint(async (sp) => {
+            retained = sp
+            await withKeyLocks(sp, 'items', [], async (provider) => {
+              locked = provider
+            })
+            if (rollback) throw new Error('rollback')
+          })
+          if (rollback) await expect(attempt).rejects.toThrow('rollback')
+          else await attempt
+          if (!retained || !locked) throw new Error('Missing retained providers')
+          for (const provider of [retained, locked]) {
+            await expect(Promise.resolve().then(() => operation(provider))).rejects.toBeInstanceOf(
+              SavepointReleasedError,
+            )
+          }
+        })
+      } finally {
+        await db.close()
+      }
+    })
+  }
+}
+
+test.each([false, true])(
+  'settled savepoint APIs and bound context methods reject further use (rollback: %s)',
+  async (rollback) => {
+    const db = new ExtendedDB()
+    db.register({
+      name: 'methods',
+      migrations: {},
+      createAPI: (query, _adapter, context) => ({
+        constant: () => 'value',
+        query: () => query.selectNoFrom((eb) => eb.val(1).as('value')).execute(),
+        context,
       }),
-    ).rejects.toBe(error)
-    expect(events).toEqual(['rolled back'])
+    })
+    type Methods = { constant(): string; query(): Promise<unknown>; context: Api }
+    try {
+      await db.withTransaction(async (tx) => {
+        if (!tx.withSavepoint) throw new Error('Missing savepoints')
+        let api: Methods | undefined
+        let constant: (() => string) | undefined
+        const attempt = tx.withSavepoint<{ methods: Methods }, void>(async (sp) => {
+          api = await sp.getStore('methods')
+          constant = api.constant
+          expect(constant()).toBe('value')
+          if (rollback) throw new Error('rollback')
+        })
+        if (rollback) await expect(attempt).rejects.toThrow('rollback')
+        else await attempt
+        if (!api || !constant) throw new Error('Missing retained API')
+        const retained = api
+        for (const operation of [
+          constant,
+          () => retained.constant(),
+          () => retained.query(),
+          () => retained.context.compareWrite('missing', {}),
+          () => retained.context.createLoader({ maxBatchSize: 1, load: async () => new Map() }),
+        ]) {
+          await expect(Promise.resolve().then(operation)).rejects.toBeInstanceOf(
+            SavepointReleasedError,
+          )
+        }
+        let closed = false
+        api.context.onClose(() => {
+          closed = true
+        })
+        expect(closed).toBe(false)
+      })
+    } finally {
+      await db.close()
+    }
+  },
+)
+
+test('released provider rejects the nested key-lock deadlock sequence at first use', async () => {
+  const db = new ExtendedDB()
+  db.register({
+    name: 'locks',
+    migrations: {
+      '0-init': {
+        async up(query) {
+          await query.schema.createTable('items').addColumn('id', 'text').execute()
+        },
+      },
+    },
+    createAPI: () => ({}),
+  })
+  let entered = false
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    await db.withTransaction(async (tx) => {
+      if (!tx.withSavepoint) throw new Error('Missing savepoints')
+      const retained = await tx.withSavepoint(async (sp) => sp)
+      const attempt = withKeyLock(retained, 'items', ['a'], async (locked) => {
+        entered = true
+        if (!locked.withSavepoint) throw new Error('Missing savepoints')
+        await locked.withSavepoint(async (child) => {
+          await withKeyLock(child, 'items', ['a'], async () => {})
+        })
+      })
+      const deadline = new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error('key-lock sequence timed out')), 500)
+      })
+      await expect(Promise.race([attempt, deadline])).rejects.toBeInstanceOf(SavepointReleasedError)
+      expect(entered).toBe(false)
+    })
   } finally {
+    clearTimeout(timeout)
     await db.close()
   }
 })
