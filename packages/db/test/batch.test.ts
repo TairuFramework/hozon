@@ -2,6 +2,53 @@ import { describe, expect, test } from 'vitest'
 
 import { assertBatchSize, iterateBatches } from '../src/batch.js'
 import { BatchLimitError } from '../src/errors.js'
+import { chunk, IN_LIST_CHUNK } from '../src/index.js'
+
+describe('chunk', () => {
+  test('chunk keeps duplicates by default', () => {
+    expect(chunk([1, 2, 1, 3], 2)).toEqual([
+      [1, 2],
+      [1, 3],
+    ])
+    expect(chunk([1, 2, 1, 3], 2, { unique: false })).toEqual([
+      [1, 2],
+      [1, 3],
+    ])
+  })
+
+  test('chunk unique dedupes across chunk boundaries', () => {
+    expect(chunk([1, 2, 1, 3], 2, { unique: true })).toEqual([[1, 2], [3]])
+  })
+
+  test('accepts iterables with and without deduplication', () => {
+    function* items() {
+      yield 1
+      yield 2
+      yield 1
+      yield 3
+    }
+    expect(chunk(items(), 2)).toEqual([
+      [1, 2],
+      [1, 3],
+    ])
+    expect(chunk(items(), 2, { unique: true })).toEqual([[1, 2], [3]])
+    expect(chunk(new Set<number>(), 2, { unique: true })).toEqual([])
+  })
+
+  test('defaults to the exported IN list chunk size', () => {
+    expect(IN_LIST_CHUNK).toBe(500)
+    expect(
+      chunk(Array.from({ length: 501 }, (_, index) => index)).map((part) => part.length),
+    ).toEqual([500, 1])
+  })
+
+  test('chunk rejects non-positive size', () => {
+    for (const size of [0, -1]) {
+      expect(() => chunk([1], size)).toThrow(RangeError)
+      expect(() => chunk([1], size, { unique: true })).toThrow(RangeError)
+    }
+  })
+})
 
 describe('assertBatchSize', () => {
   test('accepts sizes within the limit', () => {

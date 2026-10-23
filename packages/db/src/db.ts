@@ -5,9 +5,20 @@ import { type Migration, Migrator } from 'kysely/migration'
 
 import type { BatchLoader, BatchLoaderParams } from './batch-loader.js'
 import { withTransactionalDDL } from './dialect.js'
-import { HozonDBClosedError, InvalidTablePrefixError, SavepointOverlapError } from './errors.js'
+import {
+  HozonDBClosedError,
+  InvalidTablePrefixError,
+  SavepointOverlapError,
+  SavepointReleasedError,
+} from './errors.js'
 import { LoaderRegistry } from './loader-registry.js'
 import { checkStore } from './preflight.js'
+import {
+  bindSyncProvider,
+  type CompareDefinition,
+  compareWrite,
+  settleSyncProvider,
+} from './sync.js'
 import { TablePrefixPlugin } from './table-prefix.js'
 
 export type MigrationContext = {
@@ -17,11 +28,29 @@ export type MigrationContext = {
   functions: Functions
 }
 
-export type StoreContext = {
+export type BaseStoreContext = {
+  compareWrite<T extends string>(
+    table: T,
+    row: Record<string, unknown>,
+  ): Promise<{ changed: boolean }>
   createLoader<TKey, TValue>(params: BatchLoaderParams<TKey, TValue>): BatchLoader<TKey, TValue>
+  provider: StoreProvider
+  root: StoreProvider
+  onClose(fn: () => Promise<void> | void): void
 }
 
-export type StoreDefinition<Tables, API> = {
+type ContextExtension = object & { [Key in keyof BaseStoreContext]?: never }
+
+// biome-ignore lint/complexity/noBannedTypes: The default adds no context fields.
+export type StoreContext<Ext extends ContextExtension = {}> = BaseStoreContext & Ext
+
+export type ContextFactory<Ext extends ContextExtension> = (scope: {
+  provider: StoreProvider
+  root: StoreProvider
+}) => keyof Ext & keyof BaseStoreContext extends never ? Ext : never
+
+// biome-ignore lint/complexity/noBannedTypes: The default adds no context fields.
+export type StoreDefinition<Tables, API, Ext extends ContextExtension = {}> = {
   name: string
   migrations: Record<string, Migration> | ((ctx: MigrationContext) => Record<string, Migration>)
   dependsOn?: Array<string>
@@ -31,10 +60,14 @@ export type StoreDefinition<Tables, API> = {
    * tables are not namespaced: the store must keep them collision-free.
    */
   unprefixedTables?: (name: string) => boolean
-  createAPI: (db: Kysely<Tables>, adapter: Adapter, context: StoreContext) => API
+  sync?: { [T in keyof Tables & string]?: CompareDefinition<Tables[T]> }
+  createAPI: (db: Kysely<Tables>, adapter: Adapter, context: StoreContext<Ext>) => API
 }
 
 export type StoreProvider<Stores extends Record<string, unknown> = Record<string, unknown>> = {
+  readonly isTransactionBound: boolean
+  /** Identity of the outermost transaction provider, shared by savepoints. Absent outside transactions. */
+  readonly transactionRoot?: StoreProvider
   getStore<S extends keyof Stores & string>(name: S): Promise<Stores[S]>
   /**
    * Returns whether a store definition is registered, synchronously and
@@ -78,25 +111,30 @@ export type StoreProvider<Stores extends Record<string, unknown> = Record<string
   ): Promise<R>
 }
 
-export type HozonDBParams = {
+// biome-ignore lint/complexity/noBannedTypes: The default adds no context fields.
+export type HozonDBParams<Ext extends ContextExtension = {}> = {
   adapter: Adapter
   logger?: Logger
   tablePrefix?: string
-}
+} & (keyof Ext extends never ? { context?: ContextFactory<Ext> } : { context: ContextFactory<Ext> })
 
-type StoredDefinition = {
+type StoredDefinition<Ext extends ContextExtension> = {
   name: string
   migrations: Record<string, Migration> | ((ctx: MigrationContext) => Record<string, Migration>)
   dependsOn?: Array<string>
   unprefixedTables?: (name: string) => boolean
+  sync?: Record<string, CompareDefinition<Record<string, unknown>>>
   createAPI: (
     db: Kysely<Record<string, unknown>>,
     adapter: Adapter,
-    context: StoreContext,
+    context: StoreContext<Ext>,
   ) => unknown
 }
 
-export class HozonDB implements StoreProvider {
+// biome-ignore lint/complexity/noBannedTypes: The default adds no context fields.
+export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider {
+  #context?: ContextFactory<Ext>
+  #closeHooks: Array<() => Promise<void> | void> = []
   #tablePrefix: string
   #defaultPlugin: TablePrefixPlugin
   #closed = false
@@ -112,9 +150,10 @@ export class HozonDB implements StoreProvider {
   #migrated: Map<string, Promise<void>> = new Map()
   #loaders = new LoaderRegistry({ remember: false })
   #storeAPIs: Map<string, unknown> = new Map()
-  #stores: Map<string, StoredDefinition> = new Map()
+  #stores: Map<string, StoredDefinition<Ext>> = new Map()
 
-  constructor(params: HozonDBParams) {
+  constructor(params: HozonDBParams<Ext>) {
+    this.#context = params.context
     this.#tablePrefix = params.tablePrefix ?? 'hozon'
     if (!/^[a-z][a-z0-9_]{0,30}$/.test(this.#tablePrefix)) {
       throw new InvalidTablePrefixError(this.#tablePrefix)
@@ -136,17 +175,25 @@ export class HozonDB implements StoreProvider {
     return this.#adapter
   }
 
-  register<Tables, API>(store: StoreDefinition<Tables, API>): void {
+  get isTransactionBound(): boolean {
+    return false
+  }
+
+  get transactionRoot(): StoreProvider | undefined {
+    return undefined
+  }
+
+  register<Tables, API>(store: StoreDefinition<Tables, API, Ext>): void {
     const existing = this.#stores.get(store.name)
     if (existing != null) {
-      if (existing !== (store as unknown as StoredDefinition)) {
+      if (existing !== (store as unknown as StoredDefinition<Ext>)) {
         this.#logger.warn('store "{name}" registered with different definition, ignoring', {
           name: store.name,
         })
       }
       return
     }
-    this.#stores.set(store.name, store as unknown as StoredDefinition)
+    this.#stores.set(store.name, store as unknown as StoredDefinition<Ext>)
   }
 
   async getStore<T>(name: string): Promise<T> {
@@ -159,7 +206,10 @@ export class HozonDB implements StoreProvider {
       if (store == null) {
         throw new Error(`Store "${name}" is not registered`)
       }
-      this.#storeAPIs.set(name, this.#createStoreAPI(store, this.#db, this.#storeDB, this.#loaders))
+      this.#storeAPIs.set(
+        name,
+        this.#createStoreAPI(store, this.#db, this.#storeDB, this.#loaders, this),
+      )
     }
     return this.#storeAPIs.get(name) as T
   }
@@ -182,6 +232,7 @@ export class HozonDB implements StoreProvider {
     const registry = new LoaderRegistry({ remember: true })
     const storeAPIs = new Map<string, unknown>()
     const provider: StoreProvider<Stores> = {
+      isTransactionBound: false,
       getStore: async <S extends keyof Stores & string>(name: S): Promise<Stores[S]> => {
         this.#assertOpen()
         await this.#ensurePreflight()
@@ -190,7 +241,10 @@ export class HozonDB implements StoreProvider {
         if (!storeAPIs.has(name)) {
           const store = this.#stores.get(name)
           if (store == null) throw new Error(`Store "${name}" is not registered`)
-          storeAPIs.set(name, this.#createStoreAPI(store, this.#db, this.#storeDB, registry))
+          storeAPIs.set(
+            name,
+            this.#createStoreAPI(store, this.#db, this.#storeDB, registry, provider),
+          )
         }
         return storeAPIs.get(name) as Stores[S]
       },
@@ -250,37 +304,65 @@ export class HozonDB implements StoreProvider {
       result = await this.#db.transaction().execute(async (trx) => {
         const txKysely = trx as unknown as Kysely<Record<string, unknown>>
         const txStoreDB = txKysely.withPlugin(this.#defaultPlugin)
-        const txStoreAPIs = new Map<string, unknown>()
 
         const createScopedProvider = (
           scopedCommitHooks: Array<() => void>,
           scopedRollbackHooks: Array<() => void>,
+          transactionRoot?: StoreProvider,
+          syncParent?: StoreProvider,
+          syncSavepoint = false,
+          scopeState = { savepointOpen: false, settled: false, savepointBound: syncSavepoint },
         ): StoreProvider<Stores> => {
           // Savepoints on one connection form a stack: a scope holds at most
           // one open savepoint, and nesting goes through that savepoint's
           // own provider.
-          let savepointOpen = false
+          const assertActive = () => {
+            if (scopeState.settled) throw new SavepointReleasedError()
+          }
+          const txStoreAPIs = new Map<string, unknown>()
           const provider: StoreProvider<Stores> = {
+            isTransactionBound: true,
+            get transactionRoot() {
+              return transactionRoot ?? provider
+            },
             getStore: async <S extends keyof Stores & string>(name: S): Promise<Stores[S]> => {
+              assertActive()
+              this.#assertOpen()
               if (!txStoreAPIs.has(name)) {
                 const store = this.#stores.get(name)
                 if (store == null) {
                   throw new Error(`Store "${name}" is not registered`)
                 }
-                txStoreAPIs.set(name, this.#createStoreAPI(store, txKysely, txStoreDB, registry))
+                txStoreAPIs.set(
+                  name,
+                  this.#createStoreAPI(
+                    store,
+                    txKysely,
+                    txStoreDB,
+                    registry,
+                    provider,
+                    scopeState.savepointBound ? assertActive : undefined,
+                  ),
+                )
               }
               return txStoreAPIs.get(name) as Stores[S]
             },
-            hasStore: (name: string): boolean => this.#stores.has(name),
+            hasStore: (name: string): boolean => {
+              assertActive()
+              return this.#stores.has(name)
+            },
             onCommit: (hook: () => void) => {
+              assertActive()
               scopedCommitHooks.push(hook)
             },
             onRollback: (hook: () => void) => {
+              assertActive()
               scopedRollbackHooks.push(hook)
             },
             withScope: async <NestedStores extends Record<string, unknown>, R>(
               nestedFn: (scope: StoreProvider<NestedStores>) => Promise<R>,
             ): Promise<R> => {
+              assertActive()
               return await nestedFn(provider as unknown as StoreProvider<NestedStores>)
             },
             withTransaction: async <NestedStores extends Record<string, unknown>, R>(
@@ -289,20 +371,31 @@ export class HozonDB implements StoreProvider {
               // Already inside a transaction — Kysely does not nest.
               // Run `nestedFn` inline with the same provider so its hooks and
               // writes remain within the enclosing transaction or savepoint.
+              assertActive()
               return await nestedFn(provider as unknown as StoreProvider<NestedStores>)
             },
             withSavepoint: async <NestedStores extends Record<string, unknown>, R>(
               nestedFn: (tx: StoreProvider<NestedStores>) => Promise<R>,
             ): Promise<R> => {
-              if (savepointOpen) throw new SavepointOverlapError()
-              savepointOpen = true
+              assertActive()
+              if (scopeState.savepointOpen) throw new SavepointOverlapError()
+              scopeState.savepointOpen = true
               try {
                 const name = `${this.#tablePrefix}_sp_${++savepointID}`
                 const savepointCommitHooks: Array<() => void> = []
                 const savepointRollbackHooks: Array<() => void> = []
+                const savepointState = {
+                  savepointOpen: false,
+                  settled: false,
+                  savepointBound: true,
+                }
                 const scopedProvider = createScopedProvider(
                   savepointCommitHooks,
                   savepointRollbackHooks,
+                  provider.transactionRoot,
+                  provider,
+                  true,
+                  savepointState,
                 )
                 registry.dispatchAll()
                 await sql.raw(`SAVEPOINT ${name}`).execute(trx)
@@ -312,23 +405,55 @@ export class HozonDB implements StoreProvider {
                   )
                   registry.dispatchAll()
                   await sql.raw(`RELEASE SAVEPOINT ${name}`).execute(trx)
-                  scopedCommitHooks.push(...savepointCommitHooks)
-                  scopedRollbackHooks.push(...savepointRollbackHooks)
+                  savepointState.settled = true
+                  registry.clearAll()
+                  for (const hook of savepointCommitHooks) provider.onCommit(hook)
+                  for (const hook of savepointRollbackHooks) provider.onRollback(hook)
                   return value
                 } catch (error) {
                   registry.dispatchAll()
                   await sql.raw(`ROLLBACK TO SAVEPOINT ${name}`).execute(trx)
                   registry.dispatchAll()
                   await sql.raw(`RELEASE SAVEPOINT ${name}`).execute(trx)
+                  savepointState.settled = true
                   registry.clearAll()
                   this.#runHooks(savepointRollbackHooks, 'rollback')
                   throw error
+                } finally {
+                  savepointState.settled = true
+                  settleSyncProvider(scopedProvider)
                 }
               } finally {
-                savepointOpen = false
+                scopeState.savepointOpen = false
               }
             },
           }
+          bindSyncProvider(
+            provider,
+            {
+              assertActive,
+              derive: () =>
+                createScopedProvider(
+                  scopedCommitHooks,
+                  scopedRollbackHooks,
+                  provider.transactionRoot,
+                  provider,
+                  false,
+                  scopeState,
+                ),
+              db: txKysely,
+              kind: this.#adapter.kind,
+              tablePrefix: this.#tablePrefix,
+              tableName: (table) => {
+                const unprefixed = [...this.#stores.values()].some((store) =>
+                  store.unprefixedTables?.(table),
+                )
+                return unprefixed ? table : `${this.#tablePrefix}_${table}`
+              },
+            },
+            syncParent,
+            syncSavepoint,
+          )
           return provider
         }
 
@@ -387,6 +512,15 @@ export class HozonDB implements StoreProvider {
   }
 
   async #close(): Promise<void> {
+    // Publish #closing before a hook can re-enter close().
+    await Promise.resolve()
+    for (const hook of this.#closeHooks) {
+      try {
+        await hook()
+      } catch (error) {
+        this.#logger.error('close hook failed', { error })
+      }
+    }
     try {
       await this.#db.destroy()
     } finally {
@@ -399,7 +533,7 @@ export class HozonDB implements StoreProvider {
     if (this.#closed) throw new HozonDBClosedError()
   }
 
-  #getMigrations(store: StoredDefinition): Record<string, Migration> {
+  #getMigrations(store: StoredDefinition<Ext>): Record<string, Migration> {
     let migrations = this.#migrations.get(store.name)
     if (migrations == null) {
       const storeMigrations =
@@ -429,22 +563,42 @@ export class HozonDB implements StoreProvider {
     return migrations
   }
 
-  // Hands stores only createLoader, so they cannot reach close/dispatchAll/clearAll.
   // Stores on the default plugin must share one Kysely instance: keep-set locks key on it.
   #createStoreAPI(
-    store: StoredDefinition,
+    store: StoredDefinition<Ext>,
     kysely: Kysely<Record<string, unknown>>,
     defaultDB: Kysely<Record<string, unknown>>,
     registry: LoaderRegistry,
+    provider: StoreProvider,
+    assertActive?: () => void,
   ): unknown {
     const storeDB =
       store.unprefixedTables == null ? defaultDB : kysely.withPlugin(this.#getStorePlugin(store))
-    return store.createAPI(storeDB, this.#adapter, {
-      createLoader: (params) => registry.createLoader(params),
-    })
+    const base: BaseStoreContext = {
+      compareWrite: async (table, row) => {
+        assertActive?.()
+        return await compareWrite(storeDB, table, row, store.sync?.[table])
+      },
+      createLoader: (params) => {
+        assertActive?.()
+        return registry.createLoader(params)
+      },
+      provider,
+      root: this,
+      onClose: (fn) => {
+        this.#assertOpen()
+        this.#closeHooks.push(fn)
+      },
+    }
+    const ext = this.#context?.({ provider, root: this })
+    const context = Object.defineProperties(
+      base,
+      Object.getOwnPropertyDescriptors(ext ?? {}),
+    ) as StoreContext<Ext>
+    return store.createAPI(storeDB, this.#adapter, context)
   }
 
-  #getStorePlugin(store: StoredDefinition): TablePrefixPlugin {
+  #getStorePlugin(store: StoredDefinition<Ext>): TablePrefixPlugin {
     if (store.unprefixedTables == null) return this.#defaultPlugin
     let plugin = this.#storePlugins.get(store.name)
     if (plugin == null) {
@@ -470,7 +624,7 @@ export class HozonDB implements StoreProvider {
     return this.#preflight
   }
 
-  async #runPreflight(stores: Array<StoredDefinition>): Promise<void> {
+  async #runPreflight(stores: Array<StoredDefinition<Ext>>): Promise<void> {
     for (const store of stores) {
       await checkStore(
         this.#db,

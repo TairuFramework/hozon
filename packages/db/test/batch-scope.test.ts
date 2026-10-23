@@ -1,7 +1,7 @@
 import { NodeSQLiteAdapter } from '@hozon/node-sqlite'
 import { afterEach, expect, test, vi } from 'vitest'
 
-import { HozonDB } from '../src/index.js'
+import { HozonDB, SavepointReleasedError, withKeyLock } from '../src/index.js'
 
 type KVStore = {
   get(key: string): Promise<string | null>
@@ -116,10 +116,11 @@ test('savepoint rollback drops values written inside it', async () => {
     if (tx.withSavepoint == null) throw new Error('Missing savepoints')
     let hookRead: Promise<string | null> | undefined
     await expect(
-      tx.withSavepoint(async (sp) => {
-        expect(await sp.getStore('kv')).toBe(store)
-        await store.set('a', 'v2')
-        expect(await store.get('a')).toBe('v2')
+      tx.withSavepoint<Stores, void>(async (sp) => {
+        const savepointStore = await sp.getStore('kv')
+        expect(savepointStore).not.toBe(store)
+        await savepointStore.set('a', 'v2')
+        expect(await savepointStore.get('a')).toBe('v2')
         sp.onRollback(() => {
           hookRead = store.get('a')
         })
@@ -260,3 +261,50 @@ test('a load settling after scope close cannot restore remembered values', async
   expect(await store.get('a')).toBe('v1')
   expect(queryCount()).toBe(3)
 })
+
+test.each([false, true])(
+  'savepoint release invalidates parent loaders (lock: %s)',
+  async (locked) => {
+    const { db } = await setup()
+    await db.withTransaction<Stores, void>(async (tx) => {
+      const parent = await tx.getStore('kv')
+      expect(await parent.get('a')).toBe('v1')
+      if (!tx.withSavepoint) throw new Error('Missing savepoints')
+      await tx.withSavepoint<Stores, void>(async (sp) => {
+        if (locked) {
+          await withKeyLock(sp, 'kv', ['a'], async (scope) => {
+            await ((await scope.getStore('kv')) as KVStore).set('a', 'v2')
+          })
+        } else {
+          await (await sp.getStore('kv')).set('a', 'v2')
+        }
+      })
+      expect(await parent.get('a')).toBe('v2')
+    })
+  },
+)
+
+test.each([false, true])(
+  'released providers reject children and preserve existing hooks (rollback: %s)',
+  async (rollback) => {
+    const { db } = await setup()
+    const events: Array<string> = []
+    const transaction = db.withTransaction<Stores, void>(async (tx) => {
+      if (!tx.withSavepoint) throw new Error('Missing savepoints')
+      const released = await tx.withSavepoint(async (sp) => {
+        sp.onCommit(() => events.push('commit'))
+        sp.onRollback(() => events.push('rollback'))
+        return sp
+      })
+      if (!released.withSavepoint) throw new Error('Missing savepoints')
+      await expect(released.withSavepoint(async () => {})).rejects.toBeInstanceOf(
+        SavepointReleasedError,
+      )
+      expect(events).toEqual([])
+      if (rollback) throw new Error('outer rollback')
+    })
+    if (rollback) await expect(transaction).rejects.toThrow('outer rollback')
+    else await transaction
+    expect(events).toEqual([rollback ? 'rollback' : 'commit'])
+  },
+)

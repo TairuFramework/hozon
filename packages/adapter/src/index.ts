@@ -10,5 +10,10 @@ export type {
   Functions,
   NullOrderingTerm,
   OrderDirection,
+  SearchCapability,
+  SearchEntry,
+  SearchHit,
+  SearchIndex,
+  SearchQuery,
   UpdatedAtColumn,
 } from './types.js'

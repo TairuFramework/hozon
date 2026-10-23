@@ -24,6 +24,8 @@ export {
   createBatchLoader,
 } from './batch-loader.js'
 export type {
+  BaseStoreContext,
+  ContextFactory,
   HozonDBParams,
   MigrationContext,
   StoreContext,
@@ -35,9 +37,12 @@ export {
   BatchLimitError,
   HozonDBClosedError,
   InvalidTablePrefixError,
+  KeyLockScopeError,
   SavepointOverlapError,
+  SavepointReleasedError,
   SchemaVersionError,
 } from './errors.js'
-export { chunk, withKeepSet } from './keep-set.js'
+export { chunk, IN_LIST_CHUNK, withKeepSet } from './keep-set.js'
 export { withStoreTransaction } from './store-transaction.js'
+export { type CompareDefinition, compareText, withKeyLock, withKeyLocks } from './sync.js'
 export { type TablePrefixOptions, TablePrefixPlugin } from './table-prefix.js'

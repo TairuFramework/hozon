@@ -4,8 +4,10 @@ export { encodingCases } from './cases/encoding.js'
 export { lifecycleCases } from './cases/lifecycle.js'
 export { migrationCases } from './cases/migrations.js'
 export { seamCases } from './cases/seams.js'
+export { searchCases } from './cases/search.js'
 export { storeLogCases } from './cases/store-log.js'
 export { storeTelemetryCases } from './cases/store-telemetry.js'
+export { syncCases } from './cases/sync.js'
 export { transactionCases } from './cases/transactions.js'
 export type {
   CaseContext,

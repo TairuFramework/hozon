@@ -1,12 +1,19 @@
 import type { Kysely, SelectQueryBuilder } from 'kysely'
 import { sql } from 'kysely'
 
-export function chunk<T>(items: Array<T>, size = 500): Array<Array<T>> {
+export const IN_LIST_CHUNK = 500
+
+export function chunk<T>(
+  items: Iterable<T>,
+  size = IN_LIST_CHUNK,
+  options?: { unique?: boolean },
+): Array<Array<T>> {
   if (!Number.isInteger(size) || size <= 0)
     throw new RangeError('Chunk size must be a positive integer')
   const chunks: Array<Array<T>> = []
-  for (let offset = 0; offset < items.length; offset += size) {
-    chunks.push(items.slice(offset, offset + size))
+  const values = options?.unique ? [...new Set(items)] : [...items]
+  for (let offset = 0; offset < values.length; offset += size) {
+    chunks.push(values.slice(offset, offset + size))
   }
   return chunks
 }

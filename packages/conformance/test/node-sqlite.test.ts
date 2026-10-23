@@ -61,3 +61,12 @@ test('default portable runner executes every case successfully', async () => {
     `Conformance: OK ${allCases.length}/${allCases.length}`,
   )
 })
+
+test('node-sqlite provides full-text search', async () => {
+  const adapter = new NodeSQLiteAdapter({ database: ':memory:' })
+  try {
+    expect(adapter.search).toBeDefined()
+  } finally {
+    await adapter.close()
+  }
+})

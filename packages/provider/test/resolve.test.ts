@@ -3,7 +3,7 @@ import { NodeSQLiteAdapter } from '@hozon/node-sqlite'
 import { PostgresAdapter } from '@hozon/postgres'
 import { describe, expect, test } from 'vitest'
 
-import { resolveAdapter, resolveDB } from '../src/index.js'
+import { type HozonDBInput, resolveAdapter, resolveDB } from '../src/index.js'
 
 describe('resolveAdapter', () => {
   test('resolves in-memory and file SQLite paths', () => {
@@ -49,4 +49,16 @@ describe('resolveDB', () => {
     expect(db).toBeInstanceOf(HozonDB)
     await db.close()
   })
+})
+
+test('accepts a HozonDB subclass with context extensions', async () => {
+  class SubDB extends HozonDB<{ extra: string }> {}
+  const db = new SubDB({
+    adapter: new NodeSQLiteAdapter({ database: ':memory:' }),
+    context: () => ({ extra: 'value' }),
+  })
+  const input: HozonDBInput = db
+  expect(resolveDB(input)).toBe(db)
+  expect(resolveDB(db)).toBe(db)
+  await db.close()
 })
