@@ -1,5 +1,13 @@
 # @hozon/store-blob
 
+## 0.2.3
+
+### Patch Changes
+
+- Updated dependencies:
+  - @hozon/adapter@0.2.0
+  - @hozon/db@0.4.0
+
 ## 0.2.2
 
 ### Patch Changes

@@ -5,6 +5,7 @@ import { atomicityCases } from './cases/atomicity.js'
 import { encodingCases } from './cases/encoding.js'
 import { lifecycleCases } from './cases/lifecycle.js'
 import { migrationCases } from './cases/migrations.js'
+import { scopeCases } from './cases/scopes.js'
 import { seamCases } from './cases/seams.js'
 import { searchCases } from './cases/search.js'
 import { storeLogCases } from './cases/store-log.js'
@@ -25,6 +26,7 @@ export type ConformanceResult = { name: string; ok: boolean; error?: string }
 
 export const allCases: Array<ConformanceCase> = [
   ...syncCases,
+  ...scopeCases,
   ...searchCases,
   ...encodingCases,
   ...seamCases,

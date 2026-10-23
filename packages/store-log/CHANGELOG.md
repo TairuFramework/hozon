@@ -1,5 +1,13 @@
 # @hozon/store-log
 
+## 0.2.5
+
+### Patch Changes
+
+- Updated dependencies:
+  - @hozon/adapter@0.2.0
+  - @hozon/db@0.4.0
+
 ## 0.2.4
 
 ### Patch Changes

@@ -2,6 +2,10 @@
   dir: packages/adapter
   intents:
     - initial-adapter
+"@hozon/adapter@0.2.0":
+  dir: packages/adapter
+  intents:
+    - tame-clocks-rescue
 "@hozon/blob-backend@0.1.0":
   dir: packages/blob-backend
   intents:
@@ -38,6 +42,10 @@
   dir: packages/conformance
   intents:
     - json-column-decoding
+"@hozon/conformance@0.1.5":
+  dir: packages/conformance
+  intents:
+    - tiny-tools-throw
 "@hozon/db@0.1.0":
   dir: packages/db
   intents:
@@ -54,6 +62,10 @@
   dir: packages/db
   intents:
     - modern-dogs-travel
+"@hozon/db@0.4.0":
+  dir: packages/db
+  intents:
+    - weak-cooks-help
 "@hozon/expo@0.1.0":
   dir: packages/expo
   intents:

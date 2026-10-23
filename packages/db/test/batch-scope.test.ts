@@ -1,7 +1,7 @@
 import { NodeSQLiteAdapter } from '@hozon/node-sqlite'
 import { afterEach, expect, test, vi } from 'vitest'
 
-import { HozonDB } from '../src/index.js'
+import { HozonDB, withKeyLock } from '../src/index.js'
 
 type KVStore = {
   get(key: string): Promise<string | null>
@@ -261,3 +261,47 @@ test('a load settling after scope close cannot restore remembered values', async
   expect(await store.get('a')).toBe('v1')
   expect(queryCount()).toBe(3)
 })
+
+test.each([false, true])(
+  'savepoint release invalidates parent loaders (lock: %s)',
+  async (locked) => {
+    const { db } = await setup()
+    await db.withTransaction<Stores, void>(async (tx) => {
+      const parent = await tx.getStore('kv')
+      expect(await parent.get('a')).toBe('v1')
+      if (!tx.withSavepoint) throw new Error('Missing savepoints')
+      await tx.withSavepoint<Stores, void>(async (sp) => {
+        if (locked) {
+          await withKeyLock(sp, 'kv', ['a'], async (scope) => {
+            await ((await scope.getStore('kv')) as KVStore).set('a', 'v2')
+          })
+        } else {
+          await (await sp.getStore('kv')).set('a', 'v2')
+        }
+      })
+      expect(await parent.get('a')).toBe('v2')
+    })
+  },
+)
+
+test.each([false, true])(
+  'children of released providers forward hooks (rollback: %s)',
+  async (rollback) => {
+    const { db } = await setup()
+    const events: Array<string> = []
+    const transaction = db.withTransaction<Stores, void>(async (tx) => {
+      if (!tx.withSavepoint) throw new Error('Missing savepoints')
+      const released = await tx.withSavepoint(async (sp) => sp)
+      if (!released.withSavepoint) throw new Error('Missing savepoints')
+      await released.withSavepoint(async (child) => {
+        child.onCommit(() => events.push('commit'))
+        child.onRollback(() => events.push('rollback'))
+      })
+      expect(events).toEqual([])
+      if (rollback) throw new Error('outer rollback')
+    })
+    if (rollback) await expect(transaction).rejects.toThrow('outer rollback')
+    else await transaction
+    expect(events).toEqual([rollback ? 'rollback' : 'commit'])
+  },
+)

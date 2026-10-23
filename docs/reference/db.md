@@ -1,6 +1,6 @@
 # Database
 
-`@hozon/db` exports `HozonDB`, `HozonDBParams`, `MigrationContext`, `StoreDefinition`, `BaseStoreContext`, `StoreContext`, `ContextFactory`, `StoreProvider`, and `TablePrefixPlugin`. It also exports `HozonDBClosedError`, `InvalidTablePrefixError`, `SavepointOverlapError`, `SchemaVersionError`, `chunk`, `withKeepSet`, and `withStoreTransaction`.
+`@hozon/db` exports `HozonDB`, `HozonDBParams`, `MigrationContext`, `StoreDefinition`, `BaseStoreContext`, `StoreContext`, `ContextFactory`, `StoreProvider`, `TablePrefixPlugin`, and `TablePrefixOptions`. It also exports `HozonDBClosedError`, `InvalidTablePrefixError`, `KeyLockScopeError`, `SavepointOverlapError`, `SchemaVersionError`, `IN_LIST_CHUNK`, `chunk`, `withKeepSet`, and `withStoreTransaction`.
 
 It exports `CompareDefinition`, `compareText`, `withKeyLock`, and `withKeyLocks` for sync operations.
 
@@ -73,7 +73,12 @@ class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider {
   close(): Promise<void>
 }
 function withStoreTransaction<DB, R>(db: Kysely<DB>, fn: (trx: Kysely<DB>) => Promise<R>): Promise<R>
-function chunk<T>(items: Array<T>, size?: number): Array<Array<T>>
+const IN_LIST_CHUNK = 500
+function chunk<T>(
+  items: Iterable<T>,
+  size?: number, // defaults to IN_LIST_CHUNK
+  options?: { unique?: boolean },
+): Array<Array<T>>
 function assertBatchSize(size: number, max: number, batchLimit?: number): void
 function iterateBatches<TKey, TValue>(
   keys: Iterable<TKey>,
@@ -106,10 +111,12 @@ function withKeepSet<DB, R>(
 class BatchLimitError extends Error { constructor(size: number, limit: number) }
 class HozonDBClosedError extends Error { constructor() }
 class InvalidTablePrefixError extends Error { constructor(prefix: string) }
+class KeyLockScopeError extends Error { constructor() }
 class SavepointOverlapError extends Error { constructor() }
 class SchemaVersionError extends Error { constructor(store: string, unknown: Array<string>) }
+type TablePrefixOptions = { unprefixed?: (name: string) => boolean }
 class TablePrefixPlugin implements KyselyPlugin {
-  constructor(prefix: string)
+  constructor(prefix: string, options?: TablePrefixOptions)
   transformQuery(args: PluginTransformQueryArgs): RootOperationNode
   transformResult(args: PluginTransformResultArgs): Promise<QueryResult<UnknownRow>>
 }
@@ -225,7 +232,26 @@ Stores register database shutdown work with `context.onClose(fn)`.
 Each throwing or rejecting hook is logged. Remaining hooks and database closure continue.
 Hooks belong to the root database, including registrations from transaction and savepoint APIs.
 Repeated or concurrent `close()` calls share one shutdown, so each registration runs once.
-`close()` marks the database closed before running hooks. Hooks can use their captured Kysely instance before destruction.
+`close()` marks the database closed before running hooks. New `getStore` calls reject, including cached transaction-scoped APIs.
+`onClose` hooks always run outside any transaction. A captured transaction or savepoint Kysely instance has finished and cannot execute SQL.
+Hooks needing SQL must use a root store API obtained through `context.root` before shutdown, or the root database's existing API.
+
+```ts
+// During API setup, before close starts:
+const rootWriter = await context.root.getStore('writer') as WriterAPI
+context.onClose(async () => { await rootWriter.flush() })
+```
+
+Commit and rollback hooks registered through released savepoint providers forward to the current parent.
+Child savepoints opened through released providers also use that parent, including its hook registration methods.
+
+## Chunking
+
+`chunk(items: Iterable<T>, size = IN_LIST_CHUNK, options?: { unique?: boolean })` returns arrays of at most `size` values.
+`IN_LIST_CHUNK` is the exported default, `500`, matching the statement parameter limit.
+The size must be a positive integer. Invalid sizes throw `RangeError`.
+Input iteration order is preserved. With `unique: true`, Set equality removes duplicates while preserving first-occurrence order.
+Sparse array holes become `undefined`, following iterable semantics.
 
 ## Batch loading and scopes
 
@@ -248,6 +274,7 @@ External writes can leave remembered scope results stale.
 
 A transaction opened through a scope has its own store instances.
 Its commit clears the outer scope before commit hooks run.
+Successful savepoint release invalidates remembered results across the entire transaction loader registry.
 Savepoint rollback clears all transaction loaders before rollback hooks run.
 Pending reads dispatch before savepoint creation, release, rollback, and transaction completion.
 

@@ -357,6 +357,11 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
             withSavepoint: async <NestedStores extends Record<string, unknown>, R>(
               nestedFn: (tx: StoreProvider<NestedStores>) => Promise<R>,
             ): Promise<R> => {
+              if (releasedScope.parent) {
+                const parent = releasedScope.parent
+                if (!parent.withSavepoint) throw new Error('Missing parent savepoints')
+                return await parent.withSavepoint(nestedFn)
+              }
               if (scopeState.savepointOpen) throw new SavepointOverlapError()
               scopeState.savepointOpen = true
               try {
@@ -380,8 +385,9 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
                   )
                   registry.dispatchAll()
                   await sql.raw(`RELEASE SAVEPOINT ${name}`).execute(trx)
-                  scopedCommitHooks.push(...savepointCommitHooks)
-                  scopedRollbackHooks.push(...savepointRollbackHooks)
+                  registry.clearAll()
+                  for (const hook of savepointCommitHooks) provider.onCommit(hook)
+                  for (const hook of savepointRollbackHooks) provider.onRollback(hook)
                   // APIs retained after release must follow their parent, including later releases.
                   releasedScope.parent = provider
                   return value

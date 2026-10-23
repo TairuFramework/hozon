@@ -186,3 +186,51 @@ test('re-entrant close shares its promise and runs hooks and destroy once', asyn
     adapterClose.mockRestore()
   }
 })
+
+test.each([false, true])(
+  'scoped onClose uses root store SQL (savepoint: %s)',
+  async (savepoint) => {
+    const db = new HozonDB({ adapter: new NodeSQLiteAdapter({ database: ':memory:' }) })
+    let value: number | undefined
+    type Sqlapi = { read(): Promise<number> }
+    db.register({
+      name: 'sql',
+      migrations: {},
+      createAPI: (storeDB) => ({
+        async read() {
+          const result = await sql<{ value: number }>`select 1 as value`.execute(storeDB)
+          const row = result.rows[0]
+          if (!row) throw new Error('Missing SQL result')
+          return row.value
+        },
+      }),
+    })
+    db.register({
+      name: 'close',
+      migrations: {},
+      createAPI: async (_storeDB, _adapter, context) => {
+        const rootSQL = (await context.root.getStore('sql')) as Sqlapi
+        context.onClose(async () => {
+          value = await rootSQL.read()
+        })
+        return rootSQL
+      },
+    })
+    try {
+      await db.withTransaction(async (tx) => {
+        if (savepoint) {
+          if (!tx.withSavepoint) throw new Error('Missing savepoints')
+          await tx.withSavepoint(async (sp) => {
+            await sp.getStore('close')
+          })
+        } else {
+          await tx.getStore('close')
+        }
+      })
+      await db.close()
+      expect(value).toBe(1)
+    } finally {
+      await db.close()
+    }
+  },
+)
