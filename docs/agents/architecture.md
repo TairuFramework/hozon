@@ -43,3 +43,17 @@ On the first `migrate()`, `getStore()`, or `withTransaction()`, Hozon checks reg
 - Web, Electron, and Expo end-to-end harnesses run conformance and store scenarios in platform runtimes.
 
 See [development](development.md), [adapter reference](../reference/adapter.md), and [driver reference](../reference/drivers.md).
+
+## Optional search capability
+
+`@hozon/adapter` exports generic search types and optional `adapter.search`, implemented by the SQLite and PostgreSQL bases.
+SQLite uses FTS5. PostgreSQL uses tsvector, GIN, and an owning-table text foreign key with cascading deletion.
+The capability never opens transactions. SQLite replacement requires the caller's transaction for atomicity.
+Only creation needs owning-table metadata. Query execution uses exactly one statement.
+Table references preserve prefix plugins through `sql.table`, including store-declared `fts_` exemptions.
+PostgreSQL uses short deterministic GIN names and accepts negligible 64-bit hash collision risk without detection.
+Query syntax, ranks, and SQLite deletion semantics remain dialect-specific.
+
+SQLocal disables search. Expo checks its engine's FTS5 compile option and disables search when unavailable.
+The portable `searchCases` cover generic search behaviour and run through Node SQLite and PostgreSQL integration harnesses.
+Drivers without search skip these optional cases. Node SQLite and PostgreSQL tests separately require capability presence.

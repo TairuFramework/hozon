@@ -1,4 +1,4 @@
-import type { ColumnDataType, ColumnType, Dialect, Expression, RawBuilder } from 'kysely'
+import type { ColumnDataType, ColumnType, Dialect, Expression, Kysely, RawBuilder } from 'kysely'
 
 export type OrderDirection = 'asc' | 'desc'
 export type ArrayPresenceMode = 'null' | 'nonNull' | 'empty' | 'nonEmpty' | 'nullOrEmpty'
@@ -21,8 +21,38 @@ export type ColumnTypes = {
 export type Functions = { now: string | RawBuilder<string> }
 export type AdapterTypes = { Binary: unknown; JSON: unknown; Timestamp: unknown }
 
+/** Keys are text, matching the owning table's referenced column. */
+export type SearchIndex = {
+  index: string
+  table: string
+  key: string
+  fields: Array<string>
+}
+
+export type SearchEntry = {
+  index: string
+  key: string
+  fields: Record<string, string>
+}
+
+export type SearchQuery = { index: string; query: string; limit: number }
+export type SearchHit = { key: string; rank: number }
+
+/**
+ * Logical table names follow the supplied database's prefix rules.
+ * Query syntax and rank scales are dialect-specific. No method opens a transaction.
+ */
+export type SearchCapability = {
+  createIndex<Database>(db: Kysely<Database>, params: SearchIndex): Promise<void>
+  dropIndex<Database>(db: Kysely<Database>, params: { index: string }): Promise<void>
+  upsertEntry<Database>(db: Kysely<Database>, params: SearchEntry): Promise<void>
+  removeEntry<Database>(db: Kysely<Database>, params: { index: string; key: string }): Promise<void>
+  query<Database>(db: Kysely<Database>, params: SearchQuery): Promise<Array<SearchHit>>
+}
+
 export type AbstractAdapter<T extends AdapterTypes = AdapterTypes> = {
   kind: 'sqlite' | 'postgres'
+  search?: SearchCapability
   functions: Functions
   types: ColumnTypes
   encodeBinary(value: Uint8Array): T['Binary']

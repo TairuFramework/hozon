@@ -1,6 +1,7 @@
 import type { Expression, RawBuilder } from 'kysely'
 import { sql } from 'kysely'
 
+import { assertSearchFields, assertSearchIndex } from './search.js'
 import type {
   AbstractAdapter,
   AdapterTypes,
@@ -9,6 +10,7 @@ import type {
   Functions,
   NullOrderingTerm,
   OrderDirection,
+  SearchCapability,
 } from './types.js'
 
 export type SQLiteTypes = {
@@ -20,6 +22,43 @@ export type SQLiteTypes = {
 export abstract class AbstractSQLiteAdapter<T extends AdapterTypes = SQLiteTypes>
   implements AbstractAdapter<T>
 {
+  search: SearchCapability | undefined = {
+    async createIndex(db, params) {
+      assertSearchIndex(params.index)
+      assertSearchFields(params.fields, params.index)
+      const columns = [sql`entry_key UNINDEXED`, ...params.fields.map((f) => sql.id(f))]
+      await sql`CREATE VIRTUAL TABLE IF NOT EXISTS ${sql.table(params.index)} USING fts5(${sql.join(columns)})`.execute(
+        db,
+      )
+    },
+    async dropIndex(db, { index }) {
+      assertSearchIndex(index)
+      await sql`DROP TABLE IF EXISTS ${sql.table(index)}`.execute(db)
+    },
+    async upsertEntry(db, { index, key, fields }) {
+      assertSearchIndex(index)
+      assertSearchFields(Object.keys(fields), index)
+      // Delete and insert share the caller's transaction for atomic replacement.
+      await sql`DELETE FROM ${sql.table(index)} WHERE entry_key = ${key}`.execute(db)
+      await sql`INSERT INTO ${sql.table(index)} (${sql.join([sql.id('entry_key'), ...Object.keys(fields).map((f) => sql.id(f))])}) VALUES (${sql.join([key, ...Object.values(fields)])})`.execute(
+        db,
+      )
+    },
+    async removeEntry(db, { index, key }) {
+      assertSearchIndex(index)
+      await sql`DELETE FROM ${sql.table(index)} WHERE entry_key = ${key}`.execute(db)
+    },
+    async query(db, { index, query, limit }) {
+      assertSearchIndex(index)
+      const result = await sql<{ key: string; rank: number }>`
+        SELECT entry_key AS key, rank FROM ${sql.table(index)}
+        WHERE ${sql.table(index)} MATCH ${query}
+        ORDER BY rank, entry_key LIMIT ${limit}
+      `.execute(db)
+      return result.rows
+    },
+  }
+
   kind = 'sqlite' as const
   functions = {
     now: sql<string>`(unixepoch())`,

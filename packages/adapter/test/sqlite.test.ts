@@ -57,7 +57,7 @@ describe('AbstractSQLiteAdapter', () => {
     expect(compiled.parameters).toEqual(['a', 2, 'b', 3])
   })
 
-  test('has no search or access seams', () => {
+  test('has no graph-specific search or access seams', () => {
     for (const key of [
       'createSearchIndex',
       'dropSearchIndex',
@@ -69,4 +69,32 @@ describe('AbstractSQLiteAdapter', () => {
       expect(key in adapter).toBe(false)
     }
   })
+})
+
+test('search upserts bind at most 500 parameters', async () => {
+  const counts: Array<number> = []
+  const observed = new Kysely<Database>({
+    dialect: adapter.dialect,
+    log(event) {
+      if (event.level === 'query') counts.push(event.query.parameters.length)
+    },
+  })
+  const search = adapter.search
+  expect(search).toBeDefined()
+  if (search === undefined) throw new Error('Missing search')
+  try {
+    const fields = Object.fromEntries(Array.from({ length: 499 }, (_, i) => [`f${i}`, 'text']))
+    await search.upsertEntry(observed, { index: 'fts_documents', key: 'a', fields })
+    expect(counts).toEqual([1, 500])
+    await expect(
+      search.upsertEntry(observed, {
+        index: 'fts_documents',
+        key: 'a',
+        fields: { ...fields, overflow: 'text' },
+      }),
+    ).rejects.toThrow('1 to 499')
+    expect(counts).toEqual([1, 500])
+  } finally {
+    await observed.destroy()
+  }
 })

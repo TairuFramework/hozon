@@ -1,6 +1,7 @@
 import type { Expression, RawBuilder } from 'kysely'
 import { sql } from 'kysely'
 
+import { assertSearchFields, assertSearchIndex } from './search.js'
 import type {
   AbstractAdapter,
   AdapterTypes,
@@ -9,6 +10,7 @@ import type {
   Functions,
   NullOrderingTerm,
   OrderDirection,
+  SearchCapability,
 } from './types.js'
 
 export type PostgresTypes = {
@@ -20,6 +22,55 @@ export type PostgresTypes = {
 export abstract class AbstractPostgresAdapter<T extends AdapterTypes = PostgresTypes>
   implements AbstractAdapter<T>
 {
+  search: SearchCapability = {
+    async createIndex(db, params) {
+      assertSearchIndex(params.index)
+      assertSearchFields(params.fields, params.index)
+      await sql`CREATE TABLE IF NOT EXISTS ${sql.table(params.index)} (
+        entry_key TEXT PRIMARY KEY REFERENCES ${sql.table(params.table)} (${sql.id(params.key)}) ON DELETE CASCADE,
+        search_vector tsvector
+      )`.execute(db)
+      // Hash the compiled physical name to stay below PostgreSQL's 63-byte limit.
+      let hash = 14695981039346656037n
+      for (const char of sql.table(params.index).compile(db).sql) {
+        hash = BigInt.asUintN(64, (hash ^ BigInt(char.codePointAt(0) ?? 0)) * 1099511628211n)
+      }
+      const ginIndex = `search_${hash.toString(16)}`
+      await sql`CREATE INDEX IF NOT EXISTS ${sql.id(ginIndex)} ON ${sql.table(params.index)} USING GIN(search_vector)`.execute(
+        db,
+      )
+    },
+    async dropIndex(db, { index }) {
+      assertSearchIndex(index)
+      await sql`DROP TABLE IF EXISTS ${sql.table(index)} CASCADE`.execute(db)
+    },
+    async upsertEntry(db, { index, key, fields }) {
+      assertSearchIndex(index)
+      assertSearchFields(Object.keys(fields), index)
+      const vector = sql.join(
+        Object.values(fields).map((value) => sql`to_tsvector('simple', ${value})`),
+        sql` || `,
+      )
+      await sql`INSERT INTO ${sql.table(index)} (entry_key, search_vector)
+        VALUES (${key}, ${vector})
+        ON CONFLICT (entry_key) DO UPDATE SET search_vector = excluded.search_vector
+      `.execute(db)
+    },
+    async removeEntry(db, { index, key }) {
+      assertSearchIndex(index)
+      await sql`DELETE FROM ${sql.table(index)} WHERE entry_key = ${key}`.execute(db)
+    },
+    async query(db, { index, query, limit }) {
+      assertSearchIndex(index)
+      const result = await sql<{ key: string; rank: number }>`
+        SELECT entry_key AS key, ts_rank(search_vector, plainto_tsquery('simple', ${query})) AS rank
+        FROM ${sql.table(index)} WHERE search_vector @@ plainto_tsquery('simple', ${query})
+        ORDER BY rank DESC, entry_key LIMIT ${limit}
+      `.execute(db)
+      return result.rows
+    },
+  }
+
   kind = 'postgres' as const
   functions = {
     now: 'now()',

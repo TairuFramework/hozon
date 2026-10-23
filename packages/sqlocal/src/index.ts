@@ -12,6 +12,8 @@ export class SQLocalAdapter extends AbstractSQLiteAdapter<{
   JSON: string
   Timestamp: number
 }> {
+  override search = undefined
+
   #sqlocal: SQLocalKysely
   #dialect: Dialect
   #closing: Promise<void> | undefined

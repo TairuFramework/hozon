@@ -38,6 +38,7 @@ type SQLocalAdapterParams = { database: string }
 class SQLocalAdapter extends AbstractSQLiteAdapter<SQLiteTypes> {
   constructor(params: SQLocalAdapterParams)
   get dialect(): Dialect
+  search: undefined
   get sqlocal(): SQLocalKysely
   close(): Promise<void>
 }
@@ -64,3 +65,16 @@ Hermes cannot compile Kysely's `FileMigrationProvider` because its dynamic impor
 `SQLocalAdapter({ database })` requires browser cross-origin isolation headers (`COOP` and `COEP`) and OPFS. Verify `sqlocal.getDatabaseInfo().storageType` is `opfs` when persistence matters. Playwright WebKit 26.6 on macOS reports `memory`, so its web end-to-end job fails and is configured as continue-on-error. Driver destruction routes through idempotent `close()`.
 
 See also [adapter](adapter.md) and [database](db.md).
+
+## Full-text search availability
+
+Node SQLite inherits the FTS5 capability. PostgreSQL inherits the tsvector and GIN capability.
+SQLocal explicitly reports `search === undefined`.
+
+Expo's bundled native SQLite enables FTS5 by default. Its config plugin can disable FTS with `enableFTS: false`.
+`ExpoAdapter` checks `sqlite_compileoption_used('ENABLE_FTS5')` on the opened engine after applying any encryption key.
+It inherits search when enabled and reports `search === undefined` otherwise.
+This check uses the actual engine, including custom builds and SQLCipher configurations.
+Native Expo search execution requires verification in the target application runtime.
+
+See [optional full-text search](adapter.md#optional-full-text-search) for transaction, query syntax, ranking, prefix, and deletion semantics.

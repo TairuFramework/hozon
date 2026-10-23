@@ -32,6 +32,10 @@ export class ExpoAdapter extends AbstractSQLiteAdapter<{
         applyEncryptionKey(this.#database, params.encryptionKey)
       }
       this.#database.execSync('PRAGMA foreign_keys = ON')
+      const fts = this.#database.getFirstSync<{ enabled: number }>(
+        "SELECT sqlite_compileoption_used('ENABLE_FTS5') AS enabled",
+      )
+      if (fts?.enabled !== 1) this.search = undefined
     } catch (error) {
       this.#database.closeSync()
       throw error
