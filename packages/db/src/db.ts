@@ -8,7 +8,12 @@ import { withTransactionalDDL } from './dialect.js'
 import { HozonDBClosedError, InvalidTablePrefixError, SavepointOverlapError } from './errors.js'
 import { LoaderRegistry } from './loader-registry.js'
 import { checkStore } from './preflight.js'
-import { bindSyncProvider, type CompareDefinition, compareWrite } from './sync.js'
+import {
+  bindSyncProvider,
+  type CompareDefinition,
+  compareWrite,
+  settleSyncProvider,
+} from './sync.js'
 import { TablePrefixPlugin } from './table-prefix.js'
 
 export type MigrationContext = {
@@ -300,12 +305,14 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
           scopedRollbackHooks: Array<() => void>,
           releasedScope: { parent?: StoreProvider<Stores> } = {},
           transactionRoot?: StoreProvider,
+          syncParent?: StoreProvider,
+          syncSavepoint = false,
+          scopeState = { savepointOpen: false },
         ): StoreProvider<Stores> => {
           // Savepoints on one connection form a stack: a scope holds at most
           // one open savepoint, and nesting goes through that savepoint's
           // own provider.
           const txStoreAPIs = new Map<string, unknown>()
-          let savepointOpen = false
           const provider: StoreProvider<Stores> = {
             isTransactionBound: true,
             get transactionRoot() {
@@ -350,8 +357,8 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
             withSavepoint: async <NestedStores extends Record<string, unknown>, R>(
               nestedFn: (tx: StoreProvider<NestedStores>) => Promise<R>,
             ): Promise<R> => {
-              if (savepointOpen) throw new SavepointOverlapError()
-              savepointOpen = true
+              if (scopeState.savepointOpen) throw new SavepointOverlapError()
+              scopeState.savepointOpen = true
               try {
                 const name = `${this.#tablePrefix}_sp_${++savepointID}`
                 const savepointCommitHooks: Array<() => void> = []
@@ -362,6 +369,8 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
                   savepointRollbackHooks,
                   releasedScope,
                   provider.transactionRoot,
+                  provider,
+                  true,
                 )
                 registry.dispatchAll()
                 await sql.raw(`SAVEPOINT ${name}`).execute(trx)
@@ -384,23 +393,40 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
                   registry.clearAll()
                   this.#runHooks(savepointRollbackHooks, 'rollback')
                   throw error
+                } finally {
+                  settleSyncProvider(scopedProvider)
                 }
               } finally {
-                savepointOpen = false
+                scopeState.savepointOpen = false
               }
             },
           }
-          bindSyncProvider(provider, {
-            db: txKysely,
-            kind: this.#adapter.kind,
-            tablePrefix: this.#tablePrefix,
-            tableName: (table) => {
-              const unprefixed = [...this.#stores.values()].some((store) =>
-                store.unprefixedTables?.(table),
-              )
-              return unprefixed ? table : `${this.#tablePrefix}_${table}`
+          bindSyncProvider(
+            provider,
+            {
+              derive: () =>
+                createScopedProvider(
+                  scopedCommitHooks,
+                  scopedRollbackHooks,
+                  releasedScope,
+                  provider.transactionRoot,
+                  provider,
+                  false,
+                  scopeState,
+                ),
+              db: txKysely,
+              kind: this.#adapter.kind,
+              tablePrefix: this.#tablePrefix,
+              tableName: (table) => {
+                const unprefixed = [...this.#stores.values()].some((store) =>
+                  store.unprefixedTables?.(table),
+                )
+                return unprefixed ? table : `${this.#tablePrefix}_${table}`
+              },
             },
-          })
+            syncParent,
+            syncSavepoint,
+          )
           return provider
         }
 

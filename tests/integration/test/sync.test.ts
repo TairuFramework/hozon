@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
 import { runConformance, syncCases } from '@hozon/conformance'
-import { HozonDB, withKeyLock } from '@hozon/db'
+import { HozonDB, type Kysely, sql, withKeyLock, withKeyLocks } from '@hozon/db'
 import { describe, expect, test } from 'vitest'
 
 import { backends, backendsNamed } from '../src/backends.js'
@@ -50,6 +50,44 @@ describe.each(backendsNamed('node-sqlite'))('$name writer reservation', (backend
     } finally {
       competing?.close()
       await db.close()
+      await backend.cleanup()
+    }
+  }, 10_000)
+})
+
+describe.each(backendsNamed('postgres'))('$name lock failure cleanup', (backend) => {
+  test('both keys can be reacquired after an SQL lock timeout', async () => {
+    const db = new HozonDB({ adapter: await backend.createAdapter(), tablePrefix: 'lock_failure' })
+    const other = new HozonDB({ adapter: await backend.reopen(), tablePrefix: 'lock_failure' })
+    db.register({ name: 'probe', migrations: {}, createAPI: (query) => ({ query }) })
+    const entered = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    const blocker = withKeyLock(other, 'items', ['b'], async () => {
+      entered.resolve()
+      await release.promise
+    })
+    try {
+      await entered.promise
+      await db.withTransaction(async (tx) => {
+        if (!tx.withSavepoint) throw new Error('Missing savepoints')
+        await expect(
+          tx.withSavepoint(async (sp) => {
+            // SET uses the same transaction connection as the lock helpers.
+            const query = (await sp.getStore('probe')) as { query: Kysely<Record<string, unknown>> }
+            await sql`SET LOCAL lock_timeout = '100ms'`.execute(query.query)
+            await withKeyLocks(sp, 'items', [['a'], ['b']], async () => {})
+          }),
+        ).rejects.toThrow('lock timeout')
+        release.resolve()
+        await blocker
+        for (const key of ['a', 'b']) {
+          await withKeyLock(tx, 'items', [key], async () => {})
+        }
+      })
+    } finally {
+      release.resolve()
+      await blocker
+      await Promise.all([db.close(), other.close()])
       await backend.cleanup()
     }
   }, 10_000)

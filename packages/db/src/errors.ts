@@ -1,3 +1,10 @@
+export class KeyLockScopeError extends Error {
+  constructor() {
+    super('The key is reserved by an unsettled savepoint outside this provider scope')
+    this.name = 'KeyLockScopeError'
+  }
+}
+
 export class SavepointOverlapError extends Error {
   constructor() {
     super('A savepoint is already open in this transaction scope')

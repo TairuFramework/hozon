@@ -272,7 +272,10 @@ Concurrent reads and writes remain unordered. Writes do not wait for earlier rea
 `withKeyLock` serialises read, decide, and write callbacks for one key, including keys without a stored row.
 `withKeyLocks` acquires several keys in a fixed order and ignores duplicates.
 Both helpers open a transaction when the supplied provider is outside one.
-Inside a transaction, callbacks receive the supplied provider, preserving savepoint hooks and rollback boundaries.
+Inside a transaction, callbacks receive a lock-scoped provider, preserving savepoint hooks and rollback boundaries.
+That provider and its derived providers inherit ownership of the callback's held keys.
+Nested acquisition passes through for owned keys and acquires new keys in sorted order.
+Other providers in the same transaction still queue until the owning callback finishes.
 
 ```ts
 function withKeyLock<R>(
@@ -299,7 +302,10 @@ SQLite reserves its writer through a zero-row `DELETE` before invoking the callb
 SQLite therefore serialises writers across all keys.
 
 WARNING: acquire all required keys together with `withKeyLocks` before reading.
-Nested acquisition of a held key waits on its own queue. Separate acquisitions can reverse the global lock order.
+Separate acquisitions can reverse the global lock order, including nested acquisitions that add keys.
+An unsettled savepoint reserves every key it acquires until SQL release or rollback completes.
+Acquiring a reserved key from outside that savepoint scope throws `KeyLockScopeError`.
+After the savepoint settles, normal queueing resumes.
 Callbacks must obtain store APIs from the supplied provider.
 SQLite callers must acquire locks before establishing a read snapshot that another writer could invalidate.
 

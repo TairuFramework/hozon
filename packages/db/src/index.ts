@@ -37,6 +37,7 @@ export {
   BatchLimitError,
   HozonDBClosedError,
   InvalidTablePrefixError,
+  KeyLockScopeError,
   SavepointOverlapError,
   SchemaVersionError,
 } from './errors.js'

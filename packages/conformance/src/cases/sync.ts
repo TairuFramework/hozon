@@ -1,6 +1,7 @@
 import {
   type CompareDefinition,
   compareText,
+  KeyLockScopeError,
   type Kysely,
   type StoreProvider,
   sql,
@@ -147,7 +148,7 @@ const cases: Array<ConformanceCase> = [
               await scoped.write(row((current?.major ?? 0) + 1, 0))
               active--
             })
-          await Promise.all([update(tx), update(savepoint), update(tx)])
+          await Promise.all([update(savepoint), update(savepoint), update(savepoint)])
           assert.equal(maximum, 1)
         })
       })
@@ -189,34 +190,193 @@ const cases: Array<ConformanceCase> = [
     },
   },
   {
-    name: 'withKeyLocks orders keys',
+    name: 'withKeyLocks orders keys under forced contention',
     async run(ctx) {
       const { db, api } = await setup(ctx)
-      await Promise.all(
-        [
-          [['a'], ['b'], ['a']],
-          [['b'], ['a']],
-        ].map((keys) =>
-          withKeyLocks(db, 'sync_rows', keys, async (tx) => {
-            const scoped = await apiFor(tx)
-            for (const [id] of keys) {
-              assert.ok(id)
-              const current = await scoped.query
-                .selectFrom('sync_rows')
-                .selectAll()
-                .where('id', '=', id)
-                .executeTakeFirst()
-              await scoped.write({ ...row((current?.major ?? 0) + 1, 0), id })
-            }
-          }),
-        ),
-      )
-      assert.deepEqual(
-        (await api.query.selectFrom('sync_rows').selectAll().orderBy('id').execute()).map(
-          (entry) => entry.major,
-        ),
-        [3, 2],
-      )
+      let [a, b] = ['a', 'b']
+      if (ctx.adapter.kind === 'postgres') {
+        const ids = await sql<{ key: string; id: string }>`
+          SELECT key, (('x' || substr(md5(identity), 1, 16))::bit(64)::bigint)::text AS id
+          FROM (VALUES ('a', ${JSON.stringify(['sync_test', 'sync_rows', ['a']])}::text),
+                       ('b', ${JSON.stringify(['sync_test', 'sync_rows', ['b']])}::text)) AS keys(key, identity)
+        `.execute(api.query)
+        const ordered = ids.rows.sort((x, y) => (BigInt(x.id) < BigInt(y.id) ? -1 : 1))
+        const first = ordered[0]
+        const second = ordered[1]
+        assert.ok(first)
+        assert.ok(second)
+        a = first.key
+        b = second.key
+      }
+      assert.ok(a)
+      assert.ok(b)
+      await db.withTransaction(async (tx) => {
+        const entered = Promise.withResolvers<void>()
+        const release = Promise.withResolvers<void>()
+        const holder = withKeyLock(tx, 'sync_rows', [a], async (locked) => {
+          entered.resolve()
+          await release.promise
+          // An unsorted contender takes b while waiting for a and deadlocks this extension.
+          await withKeyLock(locked, 'sync_rows', [b], async () => {})
+        })
+        await entered.promise
+        const reversed = withKeyLocks(tx, 'sync_rows', [[b], [a]], async () => {})
+        const forward = withKeyLocks(tx, 'sync_rows', [[a], [b]], async () => {})
+        try {
+          await new Promise<void>((resolve) => setTimeout(resolve, 30))
+        } finally {
+          release.resolve()
+        }
+        await Promise.all([holder, reversed, forward])
+      })
+    },
+  },
+  {
+    name: 'skipUnchanged compares NULL columns safely',
+    async run(ctx) {
+      const { api } = await setup(ctx, { inclusive: true, nullsOldest: true, skipUnchanged: true })
+      await api.write(row(null, null))
+      assert.deepEqual(await api.write(row(null, null)), { changed: false })
+      assert.deepEqual(await api.write(row(null, 0)), { changed: true })
+      assert.deepEqual(await api.write(row(null, 0)), { changed: false })
+    },
+  },
+  {
+    name: 'lock ownership permits nesting but outer-provider siblings wait',
+    async run(ctx) {
+      const { db } = await setup(ctx)
+      await db.withTransaction(async (tx) => {
+        let siblingEntered = false
+        let sibling: Promise<void> | undefined
+        await withKeyLock(tx, 'sync_rows', ['a'], async (locked) => {
+          await withKeyLock(locked, 'sync_rows', ['a'], async () => {})
+          await locked.withTransaction(async (derived) => {
+            await withKeyLocks(derived, 'sync_rows', [['b'], ['a']], async () => {})
+          })
+          assert.ok(locked.withScope)
+          await locked.withScope(async (derived) => {
+            await withKeyLock(derived, 'sync_rows', ['a'], async () => {})
+          })
+          assert.ok(locked.withSavepoint)
+          await locked.withSavepoint(async (derived) => {
+            await withKeyLock(derived, 'sync_rows', ['a'], async () => {})
+          })
+          sibling = withKeyLock(tx, 'sync_rows', ['a'], async () => {
+            siblingEntered = true
+          })
+          await new Promise<void>((resolve) => setTimeout(resolve, 20))
+          assert.equal(siblingEntered, false)
+        })
+        await sibling
+        assert.equal(siblingEntered, true)
+      })
+    },
+  },
+  ...(['release', 'rollback'] as const).map(
+    (outcome): ConformanceCase => ({
+      name: `savepoint reserves keys until ${outcome}`,
+      async run(ctx) {
+        const { db } = await setup(ctx)
+        await db.withTransaction(async (tx) => {
+          assert.ok(tx.withSavepoint)
+          const ready = Promise.withResolvers<void>()
+          const finish = Promise.withResolvers<void>()
+          const savepoint = tx.withSavepoint(async (sp) => {
+            await withKeyLock(sp, 'sync_rows', ['a'], async () => {})
+            ready.resolve()
+            await finish.promise
+            if (outcome === 'rollback') throw new Error('rollback')
+          })
+          const settled = savepoint.catch((error: unknown) => {
+            if (outcome !== 'rollback') throw error
+          })
+          await ready.promise
+          try {
+            await assert.rejects(
+              () => withKeyLock(tx, 'sync_rows', ['a'], async () => {}),
+              KeyLockScopeError,
+            )
+          } finally {
+            finish.resolve()
+            await settled
+          }
+          let siblingEntered = false
+          let sibling: Promise<void> | undefined
+          await withKeyLock(tx, 'sync_rows', ['a'], async () => {
+            sibling = withKeyLock(tx, 'sync_rows', ['a'], async () => {
+              siblingEntered = true
+            })
+            await new Promise<void>((resolve) => setTimeout(resolve, 20))
+            assert.equal(siblingEntered, false)
+          })
+          await sibling
+          assert.equal(siblingEntered, true)
+        })
+      },
+    }),
+  ),
+  {
+    name: 'both key queues recover after callback failure',
+    async run(ctx) {
+      const { db } = await setup(ctx)
+      await db.withTransaction(async (tx) => {
+        await assert.rejects(
+          () =>
+            withKeyLocks(tx, 'sync_rows', [['b'], ['a']], async () => {
+              throw new Error('callback failed')
+            }),
+          'callback failed',
+        )
+        for (const key of ['a', 'b']) await withKeyLock(tx, 'sync_rows', [key], async () => {})
+      })
+    },
+  },
+  {
+    name: 'both key queues recover after SQL acquisition failure',
+    async run(ctx) {
+      const { db } = await setup(ctx)
+      if (ctx.adapter.kind === 'sqlite') {
+        await db.withTransaction(async (tx) => {
+          await assert.rejects(
+            () => withKeyLocks(tx, 'missing', [['b'], ['a']], async () => {}),
+            'no such table',
+          )
+          const api = await apiFor(tx)
+          await api.query.schema.createTable('missing').addColumn('id', 'text').execute()
+          for (const key of ['a', 'b']) await withKeyLock(tx, 'missing', [key], async () => {})
+        })
+        return
+      }
+      const ready = Promise.withResolvers<void>()
+      const release = Promise.withResolvers<void>()
+      const holder = withKeyLock(db, 'sync_rows', ['b'], async () => {
+        ready.resolve()
+        await release.promise
+      })
+      await ready.promise
+      try {
+        await db.withTransaction(async (tx) => {
+          const api = await apiFor(tx)
+          await sql`SET LOCAL lock_timeout = '100ms'`.execute(api.query)
+          const withSavepoint = tx.withSavepoint
+          assert.ok(withSavepoint)
+          await assert.rejects(
+            () =>
+              withSavepoint(async (sp) => {
+                await withKeyLocks(sp, 'sync_rows', [['a'], ['b']], async () => {
+                  throw new Error('Acquisition unexpectedly succeeded')
+                })
+              }),
+            'lock timeout',
+          )
+          release.resolve()
+          await holder
+          for (const key of ['a', 'b']) await withKeyLock(tx, 'sync_rows', [key], async () => {})
+        })
+      } finally {
+        release.resolve()
+        await holder
+      }
     },
   },
 ]

@@ -3,6 +3,7 @@ import type { ColumnDefinitionBuilder, Kysely, RawBuilder } from 'kysely'
 import { sql } from 'kysely'
 
 import type { MigrationContext, StoreProvider } from './db.js'
+import { KeyLockScopeError } from './errors.js'
 
 export type CompareDefinition<Row> = {
   key: Array<keyof Row & string>
@@ -15,17 +16,48 @@ export type CompareDefinition<Row> = {
 }
 
 type LockContext = {
+  derive: () => StoreProvider
   db: Kysely<Record<string, unknown>>
   kind: Adapter['kind']
   tablePrefix: string
   tableName: (table: string) => string
 }
 
+type LockScope = { parent?: LockScope; keys: Set<string> }
+const providerScopes = new WeakMap<StoreProvider, LockScope>()
+const savepointScopes = new WeakMap<StoreProvider, Set<LockScope>>()
+
+export function settleSyncProvider(provider: StoreProvider): void {
+  const scope = providerScopes.get(provider)
+  if (scope) savepointScopes.get(provider.transactionRoot ?? provider)?.delete(scope)
+}
+
 const lockContexts = new WeakMap<StoreProvider, LockContext>()
+const ownership = new WeakMap<StoreProvider, Map<string, { active: boolean }>>()
 const keyLocks = new WeakMap<object, Map<string, Promise<void>>>()
 
-export function bindSyncProvider(provider: StoreProvider, context: LockContext): void {
+export function bindSyncProvider(
+  provider: StoreProvider,
+  context: LockContext,
+  parent?: StoreProvider,
+  savepoint = false,
+): void {
   lockContexts.set(provider, context)
+  ownership.set(provider, new Map(parent == null ? [] : ownership.get(parent)))
+  const parentScope = parent == null ? undefined : providerScopes.get(parent)
+  if (savepoint) {
+    const scope = { parent: parentScope, keys: new Set<string>() }
+    providerScopes.set(provider, scope)
+    const root = provider.transactionRoot ?? provider
+    let scopes = savepointScopes.get(root)
+    if (!scopes) {
+      scopes = new Set()
+      savepointScopes.set(root, scopes)
+    }
+    scopes.add(scope)
+  } else if (parentScope) {
+    providerScopes.set(provider, parentScope)
+  }
 }
 
 async function withQueue<R>(root: object, key: string, fn: () => Promise<R>): Promise<R> {
@@ -69,7 +101,7 @@ export async function withKeyLocks<R>(
     return await provider.withTransaction((tx) => withKeyLocks(tx, table, keys, fn))
   }
   const root = provider.transactionRoot ?? provider
-  const context = lockContexts.get(root)
+  const context = lockContexts.get(provider)
   if (context == null) throw new Error('withKeyLock requires a HozonDB provider')
   const identities = [
     ...new Set(
@@ -97,6 +129,20 @@ export async function withKeyLocks<R>(
   } else {
     lockIDs = identities.sort()
   }
+  const scope = providerScopes.get(provider)
+  const ancestors = new Set<LockScope>()
+  for (let current = scope; current; current = current.parent) ancestors.add(current)
+  const checkScope = (id: string) => {
+    for (const reservation of savepointScopes.get(root) ?? []) {
+      if (reservation.keys.has(id) && !ancestors.has(reservation)) throw new KeyLockScopeError()
+    }
+  }
+  for (const id of lockIDs) checkScope(id)
+  const held = ownership.get(provider)
+  const acquired = { active: true }
+  const locked = context.derive()
+  // biome-ignore lint/style/noNonNullAssertion: derive binds ownership before returning.
+  const owned = ownership.get(locked)!
   const acquire = async (index: number): Promise<R> => {
     const id = lockIDs[index]
     if (id === undefined) {
@@ -106,16 +152,29 @@ export async function withKeyLocks<R>(
           context.db,
         )
       }
-      return await fn(provider)
+      for (const id of lockIDs) {
+        checkScope(id)
+        for (const ancestor of ancestors) ancestor.keys.add(id)
+      }
+      return await fn(locked)
     }
+    checkScope(id)
+    if (held?.get(id)?.active) return await acquire(index + 1)
     return await withQueue(root, id, async () => {
+      checkScope(id)
       if (context.kind === 'postgres') {
         await sql`SELECT pg_advisory_xact_lock(${id}::bigint)`.execute(context.db)
       }
+      for (const ancestor of ancestors) ancestor.keys.add(id)
+      owned.set(id, acquired)
       return await acquire(index + 1)
     })
   }
-  return await acquire(0)
+  try {
+    return await acquire(0)
+  } finally {
+    acquired.active = false
+  }
 }
 
 export function compareText(
