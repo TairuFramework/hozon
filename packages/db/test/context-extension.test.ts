@@ -202,8 +202,28 @@ for (const rollback of [false, true]) {
   }
 }
 
+test('frozen store API methods are usable in an open savepoint', async () => {
+  const db = new ExtendedDB()
+  db.register({
+    name: 'frozen',
+    migrations: {},
+    createAPI: () => Object.freeze({ method: () => 'value' }),
+  })
+  try {
+    await db.withTransaction(async (tx) => {
+      if (!tx.withSavepoint) throw new Error('Missing savepoints')
+      await tx.withSavepoint<{ frozen: { method(): string } }, void>(async (sp) => {
+        const api = await sp.getStore('frozen')
+        expect(api.method()).toBe('value')
+      })
+    })
+  } finally {
+    await db.close()
+  }
+})
+
 test.each([false, true])(
-  'settled savepoint APIs and bound context methods reject further use (rollback: %s)',
+  'settled savepoint guards context methods but permits retained API queries (rollback: %s)',
   async (rollback) => {
     const db = new ExtendedDB()
     db.register({
@@ -231,11 +251,14 @@ test.each([false, true])(
         else await attempt
         if (!api || !constant) throw new Error('Missing retained API')
         const retained = api
+        expect(constant()).toBe('value')
+        expect(retained.constant()).toBe('value')
+        expect(await retained.query()).toEqual([{ value: 1 }])
         for (const operation of [
-          constant,
-          () => retained.constant(),
-          () => retained.query(),
           () => retained.context.compareWrite('missing', {}),
+          ...Object.values(settledOperations).map((operation) => () => {
+            return operation(retained.context.provider)
+          }),
           () => retained.context.createLoader({ maxBatchSize: 1, load: async () => new Map() }),
         ]) {
           await expect(Promise.resolve().then(operation)).rejects.toBeInstanceOf(

@@ -595,32 +595,7 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
       base,
       Object.getOwnPropertyDescriptors(ext ?? {}),
     ) as StoreContext<Ext>
-    const guard = (api: unknown): unknown => {
-      if (assertActive == null) return api
-      if ((typeof api !== 'object' || api == null) && typeof api !== 'function') return api
-      const methods = new Map<PropertyKey, { original: unknown; guarded: unknown }>()
-      return new Proxy(api, {
-        get(target, key) {
-          const value = Reflect.get(target, key, target)
-          // Shutdown registration belongs to the root, independent of savepoint lifetime.
-          if (typeof value !== 'function' || value === base.onClose) return value
-          const cached = methods.get(key)
-          if (cached != null && cached.original === value) return cached.guarded
-          const guarded = (...args: Array<unknown>) => {
-            assertActive?.()
-            return Reflect.apply(value, target, args)
-          }
-          methods.set(key, { original: value, guarded })
-          return guarded
-        },
-        apply(target, receiver, args) {
-          assertActive?.()
-          return Reflect.apply(target as (...args: Array<unknown>) => unknown, receiver, args)
-        },
-      })
-    }
-    const api = store.createAPI(storeDB, this.#adapter, context)
-    return api instanceof Promise ? api.then(guard) : guard(api)
+    return store.createAPI(storeDB, this.#adapter, context)
   }
 
   #getStorePlugin(store: StoredDefinition<Ext>): TablePrefixPlugin {

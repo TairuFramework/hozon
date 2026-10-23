@@ -242,12 +242,17 @@ const rootWriter = await context.root.getStore('writer') as WriterAPI
 context.onClose(async () => { await rootWriter.flush() })
 ```
 
-Settled savepoint providers and the store APIs bound to them throw `SavepointReleasedError` after release or rollback.
-This includes store lookup, hook registration, transaction and scope callbacks, child savepoints, and key locks.
+Settled savepoint providers throw `SavepointReleasedError` after release or rollback.
+This covers `getStore`, `onCommit`, `onRollback`, `withSavepoint`, `withTransaction`, and `withScope`.
+`withKeyLock` and `withKeyLocks` also reject calls through these providers.
 Lock-scoped providers derived from the savepoint share its lifetime.
-Bound context methods such as `compareWrite` and `createLoader` also reject further use.
+Bound context methods `compareWrite` and `createLoader` reject further use.
+Calls through `context.provider` retain the provider's guards, including hook registration and opening scopes.
 Hooks registered while the savepoint was open still move to the parent on release.
 `onClose` registration remains root-owned and independent of savepoint lifetime.
+
+Store API objects are not guarded.
+Plain queries through a retained API's captured Kysely execute in the still-open outer transaction, even after savepoint release or rollback.
 
 ## Chunking
 
