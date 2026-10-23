@@ -12,7 +12,7 @@ import {
   SavepointReleasedError,
 } from './errors.js'
 import { LoaderRegistry } from './loader-registry.js'
-import { checkStore } from './preflight.js'
+import { checkStore, readAppliedMigrations } from './preflight.js'
 import {
   bindSyncProvider,
   type CompareDefinition,
@@ -667,6 +667,14 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
     this.#assertOpen()
 
     if (Object.keys(migrations).length === 0) {
+      return
+    }
+
+    // Kysely's migrator opens a transaction even when nothing is pending, which fails while
+    // another database instance holds the same single SQLite connection in a transaction.
+    const applied = await readAppliedMigrations(this.#db, this.#tablePrefix, name)
+    if (applied != null && Object.keys(migrations).every((key) => applied.has(key))) {
+      this.#logger.debug('store {name} migrations already applied', { name })
       return
     }
 
