@@ -24,6 +24,8 @@ export {
   createBatchLoader,
 } from './batch-loader.js'
 export type {
+  BaseStoreContext,
+  ContextFactory,
   HozonDBParams,
   MigrationContext,
   StoreContext,

@@ -116,10 +116,11 @@ test('savepoint rollback drops values written inside it', async () => {
     if (tx.withSavepoint == null) throw new Error('Missing savepoints')
     let hookRead: Promise<string | null> | undefined
     await expect(
-      tx.withSavepoint(async (sp) => {
-        expect(await sp.getStore('kv')).toBe(store)
-        await store.set('a', 'v2')
-        expect(await store.get('a')).toBe('v2')
+      tx.withSavepoint<Stores, void>(async (sp) => {
+        const savepointStore = await sp.getStore('kv')
+        expect(savepointStore).not.toBe(store)
+        await savepointStore.set('a', 'v2')
+        expect(await savepointStore.get('a')).toBe('v2')
         sp.onRollback(() => {
           hookRead = store.get('a')
         })

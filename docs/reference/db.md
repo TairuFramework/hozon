@@ -1,25 +1,36 @@
 # Database
 
-`@hozon/db` exports `HozonDB`, `HozonDBParams`, `MigrationContext`, `StoreDefinition`, `StoreContext`, `StoreProvider`, and `TablePrefixPlugin`. It also exports `HozonDBClosedError`, `InvalidTablePrefixError`, `SavepointOverlapError`, `SchemaVersionError`, `chunk`, `withKeepSet`, and `withStoreTransaction`.
+`@hozon/db` exports `HozonDB`, `HozonDBParams`, `MigrationContext`, `StoreDefinition`, `BaseStoreContext`, `StoreContext`, `ContextFactory`, `StoreProvider`, and `TablePrefixPlugin`. It also exports `HozonDBClosedError`, `InvalidTablePrefixError`, `SavepointOverlapError`, `SchemaVersionError`, `chunk`, `withKeepSet`, and `withStoreTransaction`.
 
 It also exports `createBatchLoader`, `BatchLoader`, `BatchLoaderParams`, `assertBatchSize`, `BatchLimitError`, `BatchReadOptions`, `iterateBatches`, and `IterateBatchesOptions`.
 
 It re-exports the Kysely surface stores need, so store packages do not depend on `kysely` directly: the `Kysely` class and `sql` tag, and the types `ColumnType`, `Expression`, `Generated`, `Insertable`, `Migration` (from `kysely/migration`), `RawBuilder`, `Selectable`, `SelectQueryBuilder`, `Transaction`, and `Updateable`. Dialect authors still depend on `kysely` for `Dialect` and `Driver`.
 
 ```ts
-type HozonDBParams = { adapter: Adapter; logger?: Logger; tablePrefix?: string }
+type ContextExtension = object & { [Key in keyof BaseStoreContext]?: never }
+type HozonDBParams<Ext extends ContextExtension = {}> = {
+  adapter: Adapter; logger?: Logger; tablePrefix?: string
+} & (keyof Ext extends never ? { context?: ContextFactory<Ext> } : { context: ContextFactory<Ext> })
 type MigrationContext = {
   kind: Adapter['kind']; types: ColumnTypes; functions: Functions; tablePrefix: string
 }
-type StoreContext = {
+type BaseStoreContext = {
   createLoader<TKey, TValue>(params: BatchLoaderParams<TKey, TValue>): BatchLoader<TKey, TValue>
+  provider: StoreProvider
+  root: StoreProvider
+  onClose(fn: () => Promise<void> | void): void
 }
-type StoreDefinition<Tables, API> = {
+type StoreContext<Ext extends ContextExtension = {}> = BaseStoreContext & Ext
+type ContextFactory<Ext extends ContextExtension> = (scope: {
+  provider: StoreProvider
+  root: StoreProvider
+}) => Ext
+type StoreDefinition<Tables, API, Ext extends ContextExtension = {}> = {
   name: string
   migrations: Record<string, Migration> | ((ctx: MigrationContext) => Record<string, Migration>)
   dependsOn?: Array<string>
   unprefixedTables?: (name: string) => boolean
-  createAPI: (db: Kysely<Tables>, adapter: Adapter, context: StoreContext) => API
+  createAPI: (db: Kysely<Tables>, adapter: Adapter, context: StoreContext<Ext>) => API
 }
 type StoreProvider<Stores extends Record<string, unknown> = Record<string, unknown>> = {
   getStore<S extends keyof Stores & string>(name: S): Promise<Stores[S]>
@@ -36,10 +47,10 @@ type StoreProvider<Stores extends Record<string, unknown> = Record<string, unkno
     fn: (tx: StoreProvider<NestedStores>) => Promise<R>,
   ): Promise<R>
 }
-class HozonDB implements StoreProvider {
-  constructor(params: HozonDBParams)
+class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider {
+  constructor(params: HozonDBParams<Ext>)
   get adapter(): Adapter
-  register<Tables, API>(store: StoreDefinition<Tables, API>): void
+  register<Tables, API>(store: StoreDefinition<Tables, API, Ext>): void
   getStore<T>(name: string): Promise<T>
   hasStore(name: string): boolean
   onCommit(fn: () => void): void
@@ -73,9 +84,6 @@ type BatchLoader<TKey, TValue> = {
   clear(key: TKey): void
   clearAll(): void
   dispatch(): void
-}
-type StoreContext = {
-  createLoader<TKey, TValue>(params: BatchLoaderParams<TKey, TValue>): BatchLoader<TKey, TValue>
 }
 ```
 
@@ -111,6 +119,41 @@ db.register(logStoreDefinition)
 const logs = await getLogStore(db)
 await db.close()
 ```
+
+## Store context extensions
+
+`HozonDB<Ext>` supplies `StoreContext<Ext>` to store factories. The default extension is `{}`, with no context factory required.
+A non-empty extension requires `params.context`, including when its fields are optional.
+Extensions cannot declare `createLoader`, `provider`, `root`, or `onClose`.
+`ContextExtension` above describes this constraint. It is not a package export.
+
+The context factory receives the current provider and the root database instance.
+It runs lazily when each store API is first created within a provider scope.
+The root remains the actual `HozonDB` subclass instance in transactions and savepoints.
+Property descriptors are preserved when composing the context, so getters remain live after API caching.
+Stores can require the full extension, a subset, or only `BaseStoreContext`.
+Registration rejects definitions requiring unavailable context fields.
+
+```ts
+type AppContext = { getTenant(): string }
+class AppDB extends HozonDB<AppContext> {
+  #tenant = 'default'
+
+  constructor(params: { adapter: Adapter }) {
+    super({ ...params, context: () => ({ getTenant: () => this.#tenant }) })
+  }
+}
+
+const definition: StoreDefinition<Record<string, never>, () => string, AppContext> = {
+  name: 'tenant',
+  migrations: {},
+  createAPI: (_db, _adapter, context) => () => context.getTenant(),
+}
+```
+
+`context.provider` binds store callbacks to the current scope, including its commit and rollback hooks.
+`context.root` identifies the root database through the `StoreProvider` type.
+Subclass factories can capture `this` to access subclass methods and registries.
 
 ## JSON results
 
@@ -157,6 +200,13 @@ The plugin would prefix unqualified names such as `sqlite_master` or `informatio
 
 Preflight checks schema versions before adapter preparation and migrations. Concurrent callers share one preflight attempt. A successful preflight is cached for the instance; a failed one (a check or `prepare()` rejection) is not, so the next `migrate()`, `getStore()` or `withTransaction()` reruns the read-only checks and then preparation. Every SQLite dialect is wrapped so migrations run in a transaction. A failed migration rolls back and retries on the next open. There is no per-driver opt-out. `withTransaction` passes a scoped provider to the callback. Store methods needing atomicity use `withStoreTransaction`; they do not call `.transaction()` directly. `withKeepSet` requires a transaction and serializes concurrent calls that share one transaction and keep-table name, in call order, so concurrent `deleteBefore` calls with keep lists inside one `withTransaction` both succeed. Its callback must not call `withKeepSet` for the same table.
 
+Stores register database shutdown work with `context.onClose(fn)`.
+`close()` awaits hooks in registration order before destroying Kysely and closing the adapter.
+Each throwing or rejecting hook is logged. Remaining hooks and database closure continue.
+Hooks belong to the root database, including registrations from transaction and savepoint APIs.
+Repeated or concurrent `close()` calls share one shutdown, so each registration runs once.
+`close()` marks the database closed before running hooks. Hooks can use their captured Kysely instance before destruction.
+
 ## Batch loading and scopes
 
 Stores receive a `StoreContext` as the third `createAPI` argument. Existing two-argument definitions remain valid.
@@ -167,7 +217,11 @@ A store's `load` must issue its query synchronously, without awaiting anything f
 It returns a `Map`, and keys with no record resolve `null`.
 
 Base provider loaders remember no settled results. `db.withScope(fn)` gives the callback its own store instances and remembers results until the callback settles.
-Transactions also remember results, sharing loaders across savepoints. Nested `withScope` calls on a scope or transaction provider run inline.
+Each provider object has its own store API cache: root, external scope, transaction, and each savepoint.
+Repeated `getStore` calls on one provider return the same API. Savepoint APIs differ from their outer transaction APIs.
+Transactions share their Kysely instance and loader registry across savepoints, while each API creates its own loaders.
+Nested `withScope` and `withTransaction` calls on transaction providers run inline with the same provider and API cache.
+Nested `withScope` calls on external scopes also reuse their provider.
 Scopes run `onCommit` immediately, ignore `onRollback`, and provide no `withSavepoint`.
 Captured scope stores continue batching after the scope ends, but remember nothing.
 External writes can leave remembered scope results stale.
