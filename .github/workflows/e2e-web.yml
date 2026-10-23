@@ -8,7 +8,7 @@ jobs:
     uses: TairuFramework/kigu/.github/workflows/e2e-web.yml@main
     with:
       working-directory: tests/e2e-web
-      node-version: '24'
+      node-version: "24"
 
   # WebKit is non-blocking: Playwright's WebKit may not provide OPFS sync access handles.
   webkit:
@@ -27,7 +27,7 @@ jobs:
       - name: Setup environment
         uses: TairuFramework/kigu/setup@main
         with:
-          node-version: '24'
+          node-version: "24"
 
       - name: Install Playwright WebKit
         working-directory: tests/e2e-web
