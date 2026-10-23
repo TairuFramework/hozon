@@ -33,6 +33,8 @@ type StoreDefinition<Tables, API, Ext extends ContextExtension = {}> = {
   createAPI: (db: Kysely<Tables>, adapter: Adapter, context: StoreContext<Ext>) => API
 }
 type StoreProvider<Stores extends Record<string, unknown> = Record<string, unknown>> = {
+  readonly isTransactionBound: boolean
+  readonly transactionRoot?: StoreProvider
   getStore<S extends keyof Stores & string>(name: S): Promise<Stores[S]>
   hasStore(name: string): boolean
   onCommit(fn: () => void): void
@@ -50,6 +52,8 @@ type StoreProvider<Stores extends Record<string, unknown> = Record<string, unkno
 class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider {
   constructor(params: HozonDBParams<Ext>)
   get adapter(): Adapter
+  get isTransactionBound(): boolean
+  get transactionRoot(): StoreProvider | undefined
   register<Tables, API>(store: StoreDefinition<Tables, API, Ext>): void
   getStore<T>(name: string): Promise<T>
   hasStore(name: string): boolean
@@ -197,6 +201,18 @@ WARNING: never reference system tables through the store instance.
 The plugin would prefix unqualified names such as `sqlite_master` or `information_schema`.
 
 ## Transactions and lifecycle
+
+`isTransactionBound` is `false` on `HozonDB` and external `withScope` providers, with no `transactionRoot`.
+Transaction and savepoint providers report `true`.
+Their `transactionRoot` identifies the outermost transaction provider, shared across savepoints and inline scopes.
+Independent transactions have distinct roots.
+`transactionRoot` provides identity only, for example as a key for caller-owned state in a `WeakMap`.
+It does not change loader ownership or dispatch.
+
+WARNING: obtain all reading APIs through the supplied transaction or savepoint provider inside a transaction.
+Root and external scope APIs retain their original executor, which can deadlock on single-connection SQLite when awaited inside a transaction.
+Reads through the transaction provider complete on that connection.
+`context.provider.isTransactionBound` reflects this binding, while `context.root.isTransactionBound` remains `false`.
 
 Preflight checks schema versions before adapter preparation and migrations. Concurrent callers share one preflight attempt. A successful preflight is cached for the instance; a failed one (a check or `prepare()` rejection) is not, so the next `migrate()`, `getStore()` or `withTransaction()` reruns the read-only checks and then preparation. Every SQLite dialect is wrapped so migrations run in a transaction. A failed migration rolls back and retries on the next open. There is no per-driver opt-out. `withTransaction` passes a scoped provider to the callback. Store methods needing atomicity use `withStoreTransaction`; they do not call `.transaction()` directly. `withKeepSet` requires a transaction and serializes concurrent calls that share one transaction and keep-table name, in call order, so concurrent `deleteBefore` calls with keep lists inside one `withTransaction` both succeed. Its callback must not call `withKeepSet` for the same table.
 

@@ -79,6 +79,8 @@ test('context receives the scope provider', async () => {
       expect(api.isTransaction).toBe(true)
       expect(api.context.provider).toBe(tx)
       expect(api.context.root).toBe(db)
+      expect(api.context.provider.isTransactionBound).toBe(true)
+      expect(api.context.root.isTransactionBound).toBe(false)
       expect(received).toEqual([{ provider: tx, root: db }])
     })
   } finally {

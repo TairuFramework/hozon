@@ -67,6 +67,18 @@ function setupHookTiming(ctx: CaseContext) {
 
 export const transactionCases: Array<ConformanceCase> = [
   {
+    name: 'transactions: reads use the transaction provider and complete on single-connection SQLite',
+    async run(ctx) {
+      const db = setup(ctx)
+      await db.withTransaction<Stores, void>(async (tx) => {
+        // Reads must use the transaction provider; outside APIs retain their original executor.
+        const first = await tx.getStore('first')
+        await first.insert('visible')
+        assert.deepEqual(await first.list(), ['visible'])
+      })
+    },
+  },
+  {
     name: 'transactions: cross-store commit',
     async run(ctx) {
       const db = setup(ctx)

@@ -49,6 +49,9 @@ export type StoreDefinition<Tables, API, Ext extends ContextExtension = {}> = {
 }
 
 export type StoreProvider<Stores extends Record<string, unknown> = Record<string, unknown>> = {
+  readonly isTransactionBound: boolean
+  /** Identity of the outermost transaction provider, shared by savepoints. Absent outside transactions. */
+  readonly transactionRoot?: StoreProvider
   getStore<S extends keyof Stores & string>(name: S): Promise<Stores[S]>
   /**
    * Returns whether a store definition is registered, synchronously and
@@ -155,6 +158,14 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
     return this.#adapter
   }
 
+  get isTransactionBound(): boolean {
+    return false
+  }
+
+  get transactionRoot(): StoreProvider | undefined {
+    return undefined
+  }
+
   register<Tables, API>(store: StoreDefinition<Tables, API, Ext>): void {
     const existing = this.#stores.get(store.name)
     if (existing != null) {
@@ -204,6 +215,7 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
     const registry = new LoaderRegistry({ remember: true })
     const storeAPIs = new Map<string, unknown>()
     const provider: StoreProvider<Stores> = {
+      isTransactionBound: false,
       getStore: async <S extends keyof Stores & string>(name: S): Promise<Stores[S]> => {
         this.#assertOpen()
         await this.#ensurePreflight()
@@ -280,6 +292,7 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
           scopedCommitHooks: Array<() => void>,
           scopedRollbackHooks: Array<() => void>,
           releasedScope: { parent?: StoreProvider<Stores> } = {},
+          transactionRoot?: StoreProvider,
         ): StoreProvider<Stores> => {
           // Savepoints on one connection form a stack: a scope holds at most
           // one open savepoint, and nesting goes through that savepoint's
@@ -287,6 +300,10 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
           const txStoreAPIs = new Map<string, unknown>()
           let savepointOpen = false
           const provider: StoreProvider<Stores> = {
+            isTransactionBound: true,
+            get transactionRoot() {
+              return transactionRoot ?? provider
+            },
             getStore: async <S extends keyof Stores & string>(name: S): Promise<Stores[S]> => {
               this.#assertOpen()
               if (!txStoreAPIs.has(name)) {
@@ -337,6 +354,7 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
                   savepointCommitHooks,
                   savepointRollbackHooks,
                   releasedScope,
+                  provider.transactionRoot,
                 )
                 registry.dispatchAll()
                 await sql.raw(`SAVEPOINT ${name}`).execute(trx)
