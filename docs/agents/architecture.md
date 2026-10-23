@@ -27,6 +27,11 @@ Stores decode known JSON columns once when a driver returns text. `HozonDB` leav
 
 `HozonDB` checks registered store schemas before driver preparation and migrations. SQLite migrations run transactionally; a failed migration rolls back and can retry on the next open. A store method that needs atomicity uses `withStoreTransaction`. Store methods must not call `.transaction()` directly.
 
+`@hozon/db` provides `withKeyLock` and `withKeyLocks` for read, decide, and write serialisation, including absent keys.
+Transaction-local queues span store APIs and savepoints. Postgres adds advisory locks, while SQLite reserves its writer before reads.
+Store `sync` declarations drive atomic `context.compareWrite` upserts with ordered columns and exact change reporting.
+`compareText` applies Postgres byte-order collation to ordered text columns.
+
 ## Preflight order
 
 On the first `migrate()`, `getStore()`, or `withTransaction()`, Hozon checks registered migration versions, calls the adapter's optional `prepare()`, then runs migrations. A version mismatch fails before preparation or writes. A store registered later is checked before its own migrations.

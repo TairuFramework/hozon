@@ -8,6 +8,7 @@ import { withTransactionalDDL } from './dialect.js'
 import { HozonDBClosedError, InvalidTablePrefixError, SavepointOverlapError } from './errors.js'
 import { LoaderRegistry } from './loader-registry.js'
 import { checkStore } from './preflight.js'
+import { bindSyncProvider, type CompareDefinition, compareWrite } from './sync.js'
 import { TablePrefixPlugin } from './table-prefix.js'
 
 export type MigrationContext = {
@@ -18,6 +19,10 @@ export type MigrationContext = {
 }
 
 export type BaseStoreContext = {
+  compareWrite<T extends string>(
+    table: T,
+    row: Record<string, unknown>,
+  ): Promise<{ changed: boolean }>
   createLoader<TKey, TValue>(params: BatchLoaderParams<TKey, TValue>): BatchLoader<TKey, TValue>
   provider: StoreProvider
   root: StoreProvider
@@ -45,6 +50,7 @@ export type StoreDefinition<Tables, API, Ext extends ContextExtension = {}> = {
    * tables are not namespaced: the store must keep them collision-free.
    */
   unprefixedTables?: (name: string) => boolean
+  sync?: { [T in keyof Tables & string]?: CompareDefinition<Tables[T]> }
   createAPI: (db: Kysely<Tables>, adapter: Adapter, context: StoreContext<Ext>) => API
 }
 
@@ -107,6 +113,7 @@ type StoredDefinition<Ext extends ContextExtension> = {
   migrations: Record<string, Migration> | ((ctx: MigrationContext) => Record<string, Migration>)
   dependsOn?: Array<string>
   unprefixedTables?: (name: string) => boolean
+  sync?: Record<string, CompareDefinition<Record<string, unknown>>>
   createAPI: (
     db: Kysely<Record<string, unknown>>,
     adapter: Adapter,
@@ -383,6 +390,17 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
               }
             },
           }
+          bindSyncProvider(provider, {
+            db: txKysely,
+            kind: this.#adapter.kind,
+            tablePrefix: this.#tablePrefix,
+            tableName: (table) => {
+              const unprefixed = [...this.#stores.values()].some((store) =>
+                store.unprefixedTables?.(table),
+              )
+              return unprefixed ? table : `${this.#tablePrefix}_${table}`
+            },
+          })
           return provider
         }
 
@@ -503,6 +521,7 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
     const storeDB =
       store.unprefixedTables == null ? defaultDB : kysely.withPlugin(this.#getStorePlugin(store))
     const base: BaseStoreContext = {
+      compareWrite: (table, row) => compareWrite(storeDB, table, row, store.sync?.[table]),
       createLoader: (params) => registry.createLoader(params),
       provider,
       root: this,

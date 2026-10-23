@@ -6,6 +6,7 @@ export { migrationCases } from './cases/migrations.js'
 export { seamCases } from './cases/seams.js'
 export { storeLogCases } from './cases/store-log.js'
 export { storeTelemetryCases } from './cases/store-telemetry.js'
+export { syncCases } from './cases/sync.js'
 export { transactionCases } from './cases/transactions.js'
 export type {
   CaseContext,

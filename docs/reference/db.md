@@ -2,6 +2,8 @@
 
 `@hozon/db` exports `HozonDB`, `HozonDBParams`, `MigrationContext`, `StoreDefinition`, `BaseStoreContext`, `StoreContext`, `ContextFactory`, `StoreProvider`, and `TablePrefixPlugin`. It also exports `HozonDBClosedError`, `InvalidTablePrefixError`, `SavepointOverlapError`, `SchemaVersionError`, `chunk`, `withKeepSet`, and `withStoreTransaction`.
 
+It exports `CompareDefinition`, `compareText`, `withKeyLock`, and `withKeyLocks` for sync operations.
+
 It also exports `createBatchLoader`, `BatchLoader`, `BatchLoaderParams`, `assertBatchSize`, `BatchLimitError`, `BatchReadOptions`, `iterateBatches`, and `IterateBatchesOptions`.
 
 It re-exports the Kysely surface stores need, so store packages do not depend on `kysely` directly: the `Kysely` class and `sql` tag, and the types `ColumnType`, `Expression`, `Generated`, `Insertable`, `Migration` (from `kysely/migration`), `RawBuilder`, `Selectable`, `SelectQueryBuilder`, `Transaction`, and `Updateable`. Dialect authors still depend on `kysely` for `Dialect` and `Driver`.
@@ -15,6 +17,7 @@ type MigrationContext = {
   kind: Adapter['kind']; types: ColumnTypes; functions: Functions; tablePrefix: string
 }
 type BaseStoreContext = {
+  compareWrite<T extends string>(table: T, row: Record<string, unknown>): Promise<{ changed: boolean }>
   createLoader<TKey, TValue>(params: BatchLoaderParams<TKey, TValue>): BatchLoader<TKey, TValue>
   provider: StoreProvider
   root: StoreProvider
@@ -30,6 +33,7 @@ type StoreDefinition<Tables, API, Ext extends ContextExtension = {}> = {
   migrations: Record<string, Migration> | ((ctx: MigrationContext) => Record<string, Migration>)
   dependsOn?: Array<string>
   unprefixedTables?: (name: string) => boolean
+  sync?: { [T in keyof Tables & string]?: CompareDefinition<Tables[T]> }
   createAPI: (db: Kysely<Tables>, adapter: Adapter, context: StoreContext<Ext>) => API
 }
 type StoreProvider<Stores extends Record<string, unknown> = Record<string, unknown>> = {
@@ -128,7 +132,7 @@ await db.close()
 
 `HozonDB<Ext>` supplies `StoreContext<Ext>` to store factories. The default extension is `{}`, with no context factory required.
 A non-empty extension requires `params.context`, including when its fields are optional.
-Extensions cannot declare `createLoader`, `provider`, `root`, or `onClose`.
+Extensions cannot declare `createLoader`, `provider`, `root`, `onClose`, or `compareWrite`.
 `ContextExtension` above describes this constraint. It is not a package export.
 
 The context factory receives the current provider and the root database instance.
@@ -261,3 +265,79 @@ Use that path when re-reading state after acquiring a lock.
 
 On a PostgreSQL pool outside a transaction, dispatch order does not guarantee execution order.
 Concurrent reads and writes remain unordered. Writes do not wait for earlier reads.
+
+
+## Sync primitives
+
+`withKeyLock` serialises read, decide, and write callbacks for one key, including keys without a stored row.
+`withKeyLocks` acquires several keys in a fixed order and ignores duplicates.
+Both helpers open a transaction when the supplied provider is outside one.
+Inside a transaction, callbacks receive the supplied provider, preserving savepoint hooks and rollback boundaries.
+
+```ts
+function withKeyLock<R>(
+  provider: StoreProvider,
+  table: string,
+  key: ReadonlyArray<string | number>,
+  fn: (tx: StoreProvider) => Promise<R>,
+): Promise<R>
+function withKeyLocks<R>(
+  provider: StoreProvider,
+  table: string,
+  keys: ReadonlyArray<ReadonlyArray<string | number>>,
+  fn: (tx: StoreProvider) => Promise<R>,
+): Promise<R>
+```
+
+Table names are logical names. Key components retain their string or number type. Numbers must be finite.
+The transaction-local queue uses `transactionRoot`, shared by all store APIs and savepoint providers.
+Postgres uses transaction-scoped advisory locks on the first 64 MD5 bits of the JSON-encoded prefix, table, and key.
+Actual signed lock IDs are sorted and deduplicated before acquisition, including transaction-local queues.
+Hash collisions add contention without weakening serialisation or changing lock order.
+Postgres retains advisory locks until transaction completion, subject to savepoint rollback.
+SQLite reserves its writer through a zero-row `DELETE` before invoking the callback, even when the key has no row.
+SQLite therefore serialises writers across all keys.
+
+WARNING: acquire all required keys together with `withKeyLocks` before reading.
+Nested acquisition of a held key waits on its own queue. Separate acquisitions can reverse the global lock order.
+Callbacks must obtain store APIs from the supplied provider.
+SQLite callers must acquire locks before establishing a read snapshot that another writer could invalidate.
+
+A store declares ordered-column upserts per table:
+
+```ts
+type CompareDefinition<Row> = {
+  key: Array<keyof Row & string>
+  compare: Array<keyof Row & string>
+  inclusive?: boolean
+  nullsOldest?: boolean
+  skipUnchanged?: boolean
+  cursor?: never
+  tombstones?: never
+}
+
+const sync = {
+  records: { key: ['id'], compare: ['version', 'sequence'], inclusive: true },
+} satisfies StoreDefinition<Tables, API>['sync']
+
+// In createAPI, using the current context:
+await context.compareWrite('records', row)
+
+// In a migration, for each ordered text column:
+query.schema.createTable('records').addColumn('version', 'text', compareText(ctx))
+```
+
+`compareWrite` issues one `INSERT ... ON CONFLICT ... DO UPDATE ... WHERE ... RETURNING` statement.
+The declared key requires a matching unique constraint. Key and compare arrays must be nonempty.
+Ordered columns compare lexicographically. A newer tuple updates every supplied column.
+Equal tuples lose unless `inclusive` enables `>=`.
+`nullsOldest` treats each NULL component as older than every non-NULL value, preserving lexicographic ordering.
+Without it, SQL NULL comparison rules apply.
+`skipUnchanged` adds a NULL-safe distinctness guard across supplied columns, suppressing updates with identical values.
+The returned `{ changed }` is true for an insertion or accepted update and false when the conflict guard rejects it.
+An undeclared table throws. A row exceeding 500 bound values throws before execution.
+The row uses driver-ready values, as ordinary Kysely writes do. Store code remains responsible for loader invalidation.
+`cursor` and `tombstones` remain reserved and cannot be declared.
+
+`compareText(ctx)` returns a column modifier that adds `collate "C"` on Postgres and leaves SQLite columns unchanged.
+Use it for ordered text columns to preserve byte ordering, including `'B' < 'a'`, across dialects.
