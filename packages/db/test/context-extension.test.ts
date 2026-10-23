@@ -153,6 +153,42 @@ test('stores without context get the base context', async () => {
   }
 })
 
+test('released savepoint APIs forward later commit hooks to the outer transaction', async () => {
+  const db = new ExtendedDB()
+  const events: Array<string> = []
+  try {
+    await db.withTransaction<Stores, void>(async (tx) => {
+      if (tx.withSavepoint == null) throw new Error('Missing savepoints')
+      const api = await tx.withSavepoint<Stores, Api>((sp) => sp.getStore('context'))
+      api.provider.onCommit(() => events.push('committed'))
+      expect(events).toEqual([])
+    })
+    expect(events).toEqual(['committed'])
+  } finally {
+    await db.close()
+  }
+})
+
+test('released savepoint APIs forward later rollback hooks to the outer transaction', async () => {
+  const db = new ExtendedDB()
+  const events: Array<string> = []
+  const error = new Error('outer rollback')
+  try {
+    await expect(
+      db.withTransaction<Stores, void>(async (tx) => {
+        if (tx.withSavepoint == null) throw new Error('Missing savepoints')
+        const api = await tx.withSavepoint<Stores, Api>((sp) => sp.getStore('context'))
+        api.provider.onRollback(() => events.push('rolled back'))
+        expect(events).toEqual([])
+        throw error
+      }),
+    ).rejects.toBe(error)
+    expect(events).toEqual(['rolled back'])
+  } finally {
+    await db.close()
+  }
+})
+
 // Compiled by test:types, without constructing unclosed databases at runtime.
 function checkContextTypes(adapter: Adapter, provider: StoreProvider) {
   new HozonDB({ adapter })
@@ -160,6 +196,8 @@ function checkContextTypes(adapter: Adapter, provider: StoreProvider) {
   // @ts-expect-error Non-empty extensions require a context factory.
   new HozonDB<Extension>({ adapter })
   new HozonDB({ adapter, context: () => ({ value: 'valid' }) })
+  // @ts-expect-error Reserved keys are forbidden even when their value is undefined.
+  new HozonDB({ adapter, context: () => ({ value: 'invalid', provider: undefined }) })
   // @ts-expect-error Factories cannot replace the base provider.
   new HozonDB({ adapter, context: () => ({ value: 'invalid', provider }) })
   // @ts-expect-error Extensions cannot declare base keys.

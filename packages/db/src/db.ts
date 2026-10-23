@@ -32,7 +32,7 @@ export type StoreContext<Ext extends ContextExtension = {}> = BaseStoreContext &
 export type ContextFactory<Ext extends ContextExtension> = (scope: {
   provider: StoreProvider
   root: StoreProvider
-}) => Ext
+}) => keyof Ext & keyof BaseStoreContext extends never ? Ext : never
 
 // biome-ignore lint/complexity/noBannedTypes: The default adds no context fields.
 export type StoreDefinition<Tables, API, Ext extends ContextExtension = {}> = {
@@ -279,6 +279,7 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
         const createScopedProvider = (
           scopedCommitHooks: Array<() => void>,
           scopedRollbackHooks: Array<() => void>,
+          releasedScope: { parent?: StoreProvider<Stores> } = {},
         ): StoreProvider<Stores> => {
           // Savepoints on one connection form a stack: a scope holds at most
           // one open savepoint, and nesting goes through that savepoint's
@@ -287,6 +288,7 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
           let savepointOpen = false
           const provider: StoreProvider<Stores> = {
             getStore: async <S extends keyof Stores & string>(name: S): Promise<Stores[S]> => {
+              this.#assertOpen()
               if (!txStoreAPIs.has(name)) {
                 const store = this.#stores.get(name)
                 if (store == null) {
@@ -301,10 +303,12 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
             },
             hasStore: (name: string): boolean => this.#stores.has(name),
             onCommit: (hook: () => void) => {
-              scopedCommitHooks.push(hook)
+              if (releasedScope.parent) releasedScope.parent.onCommit(hook)
+              else scopedCommitHooks.push(hook)
             },
             onRollback: (hook: () => void) => {
-              scopedRollbackHooks.push(hook)
+              if (releasedScope.parent) releasedScope.parent.onRollback(hook)
+              else scopedRollbackHooks.push(hook)
             },
             withScope: async <NestedStores extends Record<string, unknown>, R>(
               nestedFn: (scope: StoreProvider<NestedStores>) => Promise<R>,
@@ -328,9 +332,11 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
                 const name = `${this.#tablePrefix}_sp_${++savepointID}`
                 const savepointCommitHooks: Array<() => void> = []
                 const savepointRollbackHooks: Array<() => void> = []
+                const releasedScope: { parent?: StoreProvider<Stores> } = {}
                 const scopedProvider = createScopedProvider(
                   savepointCommitHooks,
                   savepointRollbackHooks,
+                  releasedScope,
                 )
                 registry.dispatchAll()
                 await sql.raw(`SAVEPOINT ${name}`).execute(trx)
@@ -342,6 +348,8 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
                   await sql.raw(`RELEASE SAVEPOINT ${name}`).execute(trx)
                   scopedCommitHooks.push(...savepointCommitHooks)
                   scopedRollbackHooks.push(...savepointRollbackHooks)
+                  // APIs retained after release must follow their parent, including later releases.
+                  releasedScope.parent = provider
                   return value
                 } catch (error) {
                   registry.dispatchAll()
@@ -415,6 +423,8 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
   }
 
   async #close(): Promise<void> {
+    // Publish #closing before a hook can re-enter close().
+    await Promise.resolve()
     for (const hook of this.#closeHooks) {
       try {
         await hook()
@@ -479,6 +489,7 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
       provider,
       root: this,
       onClose: (fn) => {
+        this.#assertOpen()
         this.#closeHooks.push(fn)
       },
     }
