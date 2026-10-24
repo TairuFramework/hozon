@@ -130,8 +130,8 @@ export abstract class AbstractPostgresAdapter<T extends AdapterTypes = PostgresT
     expression: Expression<unknown>,
     values: Array<unknown>,
   ): RawBuilder<boolean> {
-    // Native jsonb containment: works for string and numeric elements alike. NULL node
-    // coalesces to an empty array, which is a subset only of another empty set.
+    // Native jsonb containment: works for string and numeric elements alike. A node that is
+    // not an array (NULL, a scalar or an object) counts as an empty array.
     // Cast via ::text::jsonb, not a direct ::jsonb: postgres.js infers the parameter's
     // wire type from a trailing ::jsonb cast and re-encodes the JS string as a jsonb
     // *string scalar* instead of sending it as text for the server to parse, so a
@@ -140,7 +140,7 @@ export abstract class AbstractPostgresAdapter<T extends AdapterTypes = PostgresT
     // included, contains the empty set) — identical on every backend.
     const distinct = Array.from(new Set(values))
     if (distinct.length === 0) return sql<boolean>`1 = 1`
-    return sql<boolean>`COALESCE(${expression}, '[]'::jsonb) @> ${JSON.stringify(distinct)}::text::jsonb`
+    return sql<boolean>`(CASE WHEN jsonb_typeof(${expression}) = 'array' THEN ${expression} ELSE '[]'::jsonb END) @> ${JSON.stringify(distinct)}::text::jsonb`
   }
 
   arrayIncludesAnyPredicate(
@@ -150,7 +150,7 @@ export abstract class AbstractPostgresAdapter<T extends AdapterTypes = PostgresT
     // An empty list matches nothing; never emit `IN ()`, which Postgres rejects.
     if (values.length === 0) return sql<boolean>`1 = 0`
     // Elements, not `?|`, so numeric arrays are covered too (`?|` only matches string keys).
-    return sql<boolean>`EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(${expression}, '[]'::jsonb)) AS _t WHERE _t IN (${sql.join(values.map((v) => sql`${v}`))}))`
+    return sql<boolean>`EXISTS (SELECT 1 FROM jsonb_array_elements_text(CASE WHEN jsonb_typeof(${expression}) = 'array' THEN ${expression} ELSE '[]'::jsonb END) AS _t WHERE _t IN (${sql.join(values.map((v) => sql`${v}`))}))`
   }
 
   arrayPresencePredicate(
