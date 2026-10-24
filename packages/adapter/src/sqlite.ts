@@ -131,7 +131,7 @@ export abstract class AbstractSQLiteAdapter<T extends AdapterTypes = SQLiteTypes
     if (distinct.length === 0) return sql<boolean>`1 = 1`
     // NULL/absent node -> json_each yields zero rows -> COUNT(DISTINCT value) = 0, never
     // equal to a positive set size.
-    return sql<boolean>`(SELECT COUNT(DISTINCT value) FROM json_each(COALESCE(${expression}, '[]')) WHERE value IN (${sql.join(distinct.map((v) => sql`${v}`))})) = ${distinct.length}`
+    return sql<boolean>`(SELECT COUNT(DISTINCT value) FROM json_each(CASE WHEN json_type(${expression}) = 'array' THEN ${expression} ELSE '[]' END) WHERE value IN (${sql.join(distinct.map((v) => sql`${v}`))})) = ${distinct.length}`
   }
 
   arrayIncludesAnyPredicate(
@@ -140,7 +140,7 @@ export abstract class AbstractSQLiteAdapter<T extends AdapterTypes = SQLiteTypes
   ): RawBuilder<boolean> {
     // An empty list matches nothing; never emit `IN ()` (portable with Postgres).
     if (values.length === 0) return sql<boolean>`1 = 0`
-    return sql<boolean>`EXISTS (SELECT 1 FROM json_each(COALESCE(${expression}, '[]')) WHERE value IN (${sql.join(values.map((v) => sql`${v}`))}))`
+    return sql<boolean>`EXISTS (SELECT 1 FROM json_each(CASE WHEN json_type(${expression}) = 'array' THEN ${expression} ELSE '[]' END) WHERE value IN (${sql.join(values.map((v) => sql`${v}`))}))`
   }
 
   arrayPresencePredicate(

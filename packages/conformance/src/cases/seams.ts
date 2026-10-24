@@ -101,6 +101,41 @@ export const seamCases: Array<ConformanceCase> = [
     },
   },
   {
+    name: 'seams: a scalar JSON value is not an array for array predicates',
+    async run(ctx) {
+      const query = await setup(ctx)
+      await query
+        .insertInto('conformance_seams')
+        .values([
+          { id: 5, text: null, array: ctx.adapter.encodeJSON('a') },
+          { id: 6, text: null, array: ctx.adapter.encodeJSON(3) },
+          { id: 7, text: null, array: ctx.adapter.encodeJSON({ a: 1 }) },
+          { id: 8, text: null, array: ctx.adapter.encodeJSON(null) },
+        ])
+        .execute()
+      const any = await query
+        .selectFrom('conformance_seams')
+        .select('id')
+        .where(ctx.adapter.arrayIncludesAnyPredicate(sql.ref('array'), ['a', 3]))
+        .orderBy('id')
+        .execute()
+      assert.deepEqual(
+        any.map((row) => row.id),
+        [1, 2],
+      )
+      const all = await query
+        .selectFrom('conformance_seams')
+        .select('id')
+        .where(ctx.adapter.arrayIncludesAllPredicate(sql.ref('array'), ['a']))
+        .orderBy('id')
+        .execute()
+      assert.deepEqual(
+        all.map((row) => row.id),
+        [1],
+      )
+    },
+  },
+  {
     name: 'seams: arrays include any of an empty list matches nothing',
     async run(ctx) {
       const query = await setup(ctx)
