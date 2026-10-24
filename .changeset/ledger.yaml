@@ -6,6 +6,10 @@
   dir: packages/adapter
   intents:
     - tame-clocks-rescue
+"@hozon/adapter@0.2.1":
+  dir: packages/adapter
+  intents:
+    - array-predicates-skip-scalars
 "@hozon/blob-backend@0.1.0":
   dir: packages/blob-backend
   intents:
@@ -34,6 +38,10 @@
   dir: packages/blob
   intents:
     - new-onions-divide
+"@hozon/blob@0.3.0":
+  dir: packages/blob
+  intents:
+    - reject-conflicting-store-registration
 "@hozon/conformance@0.1.0":
   dir: packages/conformance
   intents:
@@ -46,6 +54,11 @@
   dir: packages/conformance
   intents:
     - tiny-tools-throw
+"@hozon/conformance@0.3.0":
+  dir: packages/conformance
+  intents:
+    - array-predicates-skip-scalars
+    - reject-conflicting-store-registration
 "@hozon/db@0.1.0":
   dir: packages/db
   intents:
@@ -66,6 +79,11 @@
   dir: packages/db
   intents:
     - weak-cooks-help
+"@hozon/db@0.5.0":
+  dir: packages/db
+  intents:
+    - quiet-current-migrations
+    - reject-conflicting-store-registration
 "@hozon/expo@0.1.0":
   dir: packages/expo
   intents:
@@ -74,6 +92,10 @@
   dir: packages/logtape
   intents:
     - initial-logtape
+"@hozon/logtape@0.4.0":
+  dir: packages/logtape
+  intents:
+    - reject-conflicting-store-registration
 "@hozon/node-sqlite@0.1.0":
   dir: packages/node-sqlite
   intents:
@@ -82,6 +104,10 @@
   dir: packages/otel
   intents:
     - initial-otel
+"@hozon/otel@0.4.0":
+  dir: packages/otel
+  intents:
+    - reject-conflicting-store-registration
 "@hozon/postgres@0.1.0":
   dir: packages/postgres
   intents:
@@ -90,6 +116,10 @@
   dir: packages/provider
   intents:
     - initial-provider
+"@hozon/provider@0.3.0":
+  dir: packages/provider
+  intents:
+    - reject-conflicting-store-registration
 "@hozon/sqlocal@0.1.0":
   dir: packages/sqlocal
   intents:
@@ -106,6 +136,10 @@
   dir: packages/store-blob
   intents:
     - clever-squids-report
+"@hozon/store-blob@0.4.0":
+  dir: packages/store-blob
+  intents:
+    - reject-conflicting-store-registration
 "@hozon/store-log@0.1.0":
   dir: packages/store-log
   intents:
@@ -118,6 +152,10 @@
   dir: packages/store-log
   intents:
     - json-column-decoding
+"@hozon/store-log@0.4.0":
+  dir: packages/store-log
+  intents:
+    - reject-conflicting-store-registration
 "@hozon/store-telemetry@0.1.0":
   dir: packages/store-telemetry
   intents:
@@ -130,3 +168,7 @@
   dir: packages/store-telemetry
   intents:
     - json-column-decoding
+"@hozon/store-telemetry@0.4.0":
+  dir: packages/store-telemetry
+  intents:
+    - reject-conflicting-store-registration
