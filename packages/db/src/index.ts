@@ -41,6 +41,7 @@ export {
   SavepointOverlapError,
   SavepointReleasedError,
   SchemaVersionError,
+  StoreAlreadyRegisteredError,
 } from './errors.js'
 export { chunk, IN_LIST_CHUNK, withKeepSet } from './keep-set.js'
 export { withStoreTransaction } from './store-transaction.js'

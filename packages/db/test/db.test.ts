@@ -2,7 +2,12 @@ import { NodeSQLiteAdapter } from '@hozon/node-sqlite'
 import type { Kysely } from 'kysely'
 import { describe, expect, test, vi } from 'vitest'
 
-import { HozonDB, HozonDBClosedError, InvalidTablePrefixError } from '../src/index.js'
+import {
+  HozonDB,
+  HozonDBClosedError,
+  InvalidTablePrefixError,
+  StoreAlreadyRegisteredError,
+} from '../src/index.js'
 
 describe('HozonDB', () => {
   test('register and getStore triggers migrations', async () => {
@@ -116,7 +121,7 @@ describe('HozonDB', () => {
     await db.close()
   })
 
-  test('register is idempotent for same store name', async () => {
+  test('register is idempotent for the same definition object', async () => {
     const db = new HozonDB({ adapter: new NodeSQLiteAdapter({ database: ':memory:' }) })
     const def = {
       name: 'test',
@@ -129,6 +134,28 @@ describe('HozonDB', () => {
     expect(store.value).toBe(1)
     await db.close()
   })
+
+  test.each(['before getStore', 'after getStore', 'after close'])(
+    'register rejects a different definition with the same name %s',
+    async (phase) => {
+      const db = new HozonDB({ adapter: new NodeSQLiteAdapter({ database: ':memory:' }) })
+      const definition = { name: 'test', migrations: {}, createAPI: () => ({ value: 1 }) }
+      db.register(definition)
+      try {
+        if (phase === 'after getStore') await db.getStore('test')
+        if (phase === 'after close') await db.close()
+        expect(() => db.register({ ...definition })).toThrow(StoreAlreadyRegisteredError)
+        expect(() => db.register({ ...definition })).toThrow(/test/)
+        expect(() => db.register(definition)).not.toThrow()
+        expect(db.hasStore('test')).toBe(true)
+        if (phase !== 'after close') {
+          expect(await db.getStore('test')).toEqual({ value: 1 })
+        }
+      } finally {
+        await db.close()
+      }
+    },
+  )
 
   test('failed migration is retried on next getStore call', async () => {
     const db = new HozonDB({ adapter: new NodeSQLiteAdapter({ database: ':memory:' }) })

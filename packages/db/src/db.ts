@@ -10,6 +10,7 @@ import {
   InvalidTablePrefixError,
   SavepointOverlapError,
   SavepointReleasedError,
+  StoreAlreadyRegisteredError,
 } from './errors.js'
 import { LoaderRegistry } from './loader-registry.js'
 import { checkStore } from './preflight.js'
@@ -187,9 +188,7 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
     const existing = this.#stores.get(store.name)
     if (existing != null) {
       if (existing !== (store as unknown as StoredDefinition<Ext>)) {
-        this.#logger.warn('store "{name}" registered with different definition, ignoring', {
-          name: store.name,
-        })
+        throw new StoreAlreadyRegisteredError(store.name)
       }
       return
     }

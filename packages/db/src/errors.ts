@@ -42,6 +42,13 @@ export class HozonDBClosedError extends Error {
   }
 }
 
+export class StoreAlreadyRegisteredError extends Error {
+  constructor(store: string) {
+    super(`Store "${store}" is already registered with a different definition`)
+    this.name = 'StoreAlreadyRegisteredError'
+  }
+}
+
 export class BatchLimitError extends Error {
   constructor(size: number, limit: number) {
     super(`Batch of ${size} keys exceeds limit ${limit}`)
