@@ -20,7 +20,7 @@ IDs must only use `[a-z0-9_-]` (`BLOB_ID_ALPHABET`) and must not contain `..`, s
 
 ## Default format
 
-`blake3Codec`: `varint(contentLength) || BLAKE3-256 digest`, encoded as lowercase RFC 4648 base32 without padding. `contentType` is not part of the ID.
+`blake3Codec`: `varint(0x1e) || varint(contentLength) || BLAKE3-256 digest` (`0x1e` is the multicodec `blake3` code, exposed as `code`), encoded as lowercase RFC 4648 base32 without padding. `contentType` is not part of the ID.
 
 Known answer for the empty blob (`contentLength` 0, digest `af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262`):
 the ID is the base32 of byte `0x00` followed by that digest.
