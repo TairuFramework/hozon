@@ -198,8 +198,8 @@ catalogs:
       specifier: ^0.4.1
       version: 0.4.1
     '@sozai/codec':
-      specifier: ^0.4.3
-      version: 0.4.3
+      specifier: ^0.4.4
+      version: 0.4.4
     '@sozai/json':
       specifier: ^0.3.0
       version: 0.3.0
@@ -323,7 +323,7 @@ importers:
         version: link:../node-sqlite
       '@sozai/codec':
         specifier: 'catalog:'
-        version: 0.4.3
+        version: 0.4.4
       '@types/node':
         specifier: 'catalog:'
         version: 26.6.5
@@ -353,7 +353,7 @@ importers:
         version: 2.4.0
       '@sozai/codec':
         specifier: 'catalog:'
-        version: 0.4.3
+        version: 0.4.4
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -628,7 +628,7 @@ importers:
         version: link:../db
       '@sozai/codec':
         specifier: 'catalog:'
-        version: 0.4.3
+        version: 0.4.4
     devDependencies:
       '@hozon/node-sqlite':
         specifier: workspace:^
@@ -653,7 +653,7 @@ importers:
         version: link:../db
       '@sozai/codec':
         specifier: 'catalog:'
-        version: 0.4.3
+        version: 0.4.4
       '@sozai/json':
         specifier: 'catalog:'
         version: 0.3.0
@@ -2328,8 +2328,8 @@ packages:
   '@sozai/async@0.4.1':
     resolution: {integrity: sha512-B026uyunAkdGARhXsIA0KgHjE7rZyndAN8W/LCG01rEHJilFFC1NX4MISs1hTmXqHMMzxIkLLkoNzNVAe7pwdQ==}
 
-  '@sozai/codec@0.4.3':
-    resolution: {integrity: sha512-C2WtBwspVIRtCS4AS4qXTQUxgTN2RjzKH/eK6nInh0/MeCZUBtkxrp40GwKy6VCA3lim2Ta8bFNXet9l8QbxCg==}
+  '@sozai/codec@0.4.4':
+    resolution: {integrity: sha512-B4vSVd1XDC8hkeOQz48Q3ND8+CQsY5LEmnVbn36QKj5EnB5Oy3H9fWlctZxrtEtycdDa44fSD2fekkC5RnlStA==}
 
   '@sozai/json@0.3.0':
     resolution: {integrity: sha512-ArThPadz4kZjDqVnHI+UROwervbL9riIEYQ4b0g9e9mtA22EZ54lvNgsNvEUHL+oK53tlhgmHsgO2w5FwCTrhg==}
@@ -6810,7 +6810,7 @@ snapshots:
 
   '@sozai/async@0.4.1': {}
 
-  '@sozai/codec@0.4.3':
+  '@sozai/codec@0.4.4':
     dependencies:
       '@sozai/json': 0.3.0
 

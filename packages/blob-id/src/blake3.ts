@@ -1,9 +1,8 @@
 import { blake3 } from '@noble/hashes/blake3.js'
-import { fromB32, toB32 } from '@sozai/codec'
+import { decodeVarint, encodeVarint, fromB32, toB32 } from '@sozai/codec'
 
 import { InvalidBlobIDError } from './errors.js'
 import type { BlobHasher, BlobIDCodec, BlobIDInfo } from './types.js'
-import { decodeVarint, encodeVarint } from './varint.js'
 
 // Multicodec `blake3`. Leading the ID so another hash can coexist under a new code.
 const CODE = 0x1e

@@ -1,12 +1,11 @@
 import { concatBytes, hexToBytes } from '@noble/hashes/utils.js'
-import { fromB32, toB32 } from '@sozai/codec'
+import { encodeVarint, fromB32, toB32 } from '@sozai/codec'
 import { describe, expect, test } from 'vitest'
 
 import { blake3Codec } from '../src/blake3.js'
 import { checkCodecConformance } from '../src/conformance.js'
 import { InvalidBlobIDError } from '../src/errors.js'
 import type { BlobIDCodec, BlobIDInfo } from '../src/types.js'
-import { encodeVarint } from '../src/varint.js'
 
 const BLAKE3_CODE = 0x1e
 
