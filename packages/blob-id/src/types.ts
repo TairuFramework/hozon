@@ -10,6 +10,8 @@ export type BlobHasher = {
 }
 
 export type BlobIDCodec = {
+  /** Multicodec code of the hash, written first in the ID so codecs can coexist. */
+  code: number
   digestLength: number
   createHasher(): BlobHasher
   encode(info: BlobIDInfo): string

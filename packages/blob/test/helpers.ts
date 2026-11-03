@@ -120,6 +120,7 @@ export async function listStaging(backend: BlobBackend): Promise<Array<string>> 
 
 // Test codec embedding the content type: `<blake3 ID>-<base32(type)>`.
 export const mimeCodec: BlobIDCodec = {
+  code: blake3Codec.code,
   digestLength: blake3Codec.digestLength,
   createHasher: () => blake3Codec.createHasher(),
   encode(info: BlobIDInfo): string {
