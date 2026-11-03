@@ -1,6 +1,6 @@
 {
   "name": "@hozon/blob-id",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Pluggable content-addressed blob IDs for Hozon",
   "repository": {
     "type": "git",

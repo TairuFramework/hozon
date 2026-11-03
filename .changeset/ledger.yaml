@@ -22,6 +22,10 @@
   dir: packages/blob-id
   intents:
     - initial-blob-id
+"@hozon/blob-id@0.2.0":
+  dir: packages/blob-id
+  intents:
+    - blob-id-codec-code
 "@hozon/blob-node-fs@0.1.0":
   dir: packages/blob-node-fs
   intents:
@@ -42,6 +46,10 @@
   dir: packages/blob
   intents:
     - reject-conflicting-store-registration
+"@hozon/blob@0.4.0":
+  dir: packages/blob
+  intents:
+    - blob-id-codec-code
 "@hozon/conformance@0.1.0":
   dir: packages/conformance
   intents:
