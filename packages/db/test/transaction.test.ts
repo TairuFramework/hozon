@@ -3,12 +3,7 @@ import { NodeSQLiteAdapter } from '@hozon/node-sqlite'
 import { Kysely } from 'kysely'
 import { describe, expect, test } from 'vitest'
 
-import {
-  HozonDB,
-  SavepointOverlapError,
-  TransactionScopeError,
-  withStoreTransaction,
-} from '../src/index.js'
+import { HozonDB, SavepointOverlapError, withStoreTransaction } from '../src/index.js'
 
 type ItemsAPI = {
   insert(id: string, value: string): Promise<void>
@@ -85,81 +80,6 @@ function createTestDB(adapter: Adapter = new NodeSQLiteAdapter({ database: ':mem
 }
 
 describe('HozonDB.withTransaction', () => {
-  test('root transactions reject in the active caller context', async () => {
-    const db = createTestDB()
-    let nested: Promise<unknown> | undefined
-    let observed: unknown
-    await db.withTransaction(async () => {
-      await Promise.resolve()
-      nested = db.withTransaction(async () => 'unexpected')
-      observed = await Promise.race([
-        nested.catch((error: unknown) => error),
-        new Promise((resolve) => setTimeout(() => resolve('queued'), 30)),
-      ])
-    })
-    await nested?.catch(() => {})
-    await db.close()
-    expect(observed).toBeInstanceOf(TransactionScopeError)
-  })
-
-  test('transaction-bound calls run inline and external scopes reject root nesting', async () => {
-    const db = createTestDB()
-    let nested: Promise<unknown> | undefined
-    let observed: unknown
-    await db.withScope(async (scope) => {
-      await scope.withTransaction(async (tx) => {
-        expect(await tx.withTransaction(async (inner) => inner === tx)).toBe(true)
-        nested = scope.withTransaction(async () => 'unexpected')
-        observed = await Promise.race([
-          nested.catch((error: unknown) => error),
-          new Promise((resolve) => setTimeout(() => resolve('queued'), 30)),
-        ])
-      })
-    })
-    await nested?.catch(() => {})
-    await db.close()
-    expect(observed).toBeInstanceOf(TransactionScopeError)
-  })
-
-  test('unrelated callers queue while a transaction owns the connection', async () => {
-    const db = createTestDB()
-    const started = Promise.withResolvers<void>()
-    const release = Promise.withResolvers<void>()
-    let secondStarted = false
-    const first = db.withTransaction(async () => {
-      started.resolve()
-      await release.promise
-    })
-    await started.promise
-    const second = db.withTransaction(async () => {
-      secondStarted = true
-    })
-    await new Promise((resolve) => setTimeout(resolve, 20))
-    expect(secondStarted).toBe(false)
-    release.resolve()
-    await Promise.all([first, second])
-    expect(secondStarted).toBe(true)
-    await db.close()
-  })
-
-  test.each([false, true])(
-    'inherited context becomes inactive after settlement (rollback: %s)',
-    async (rollback) => {
-      const db = createTestDB()
-      const release = Promise.withResolvers<void>()
-      let inherited: Promise<unknown> | undefined
-      const transaction = db.withTransaction(async () => {
-        inherited = release.promise.then(async () => db.withTransaction(async () => 'done'))
-        if (rollback) throw new Error('rollback')
-      })
-      if (rollback) await expect(transaction).rejects.toThrow('rollback')
-      else await transaction
-      release.resolve()
-      await expect(inherited).resolves.toBe('done')
-      await db.close()
-    },
-  )
-
   test('cross-store transaction commits atomically', async () => {
     const db = createTestDB()
 

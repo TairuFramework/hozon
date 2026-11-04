@@ -229,12 +229,13 @@ It does not change loader ownership or dispatch.
 WARNING: obtain all reading APIs through the supplied transaction or savepoint provider inside a transaction.
 Root and external scope APIs retain their original executor, which can deadlock on single-connection SQLite when awaited inside a transaction.
 Reads through the transaction provider complete on that connection.
-Root `withTransaction` calls inside an active caller transaction throw `TransactionScopeError` on single-connection SQLite when async context is available.
+Root `withTransaction` calls inside an active caller transaction throw `TransactionScopeError` on single-connection SQLite when the adapter provides transaction context.
 This includes transactions opened through an external scope.
 Use the supplied transaction provider, or a service view bound through `using(tx)`, inside the callback.
 Unrelated concurrent calls still queue normally.
-Node, Bun, and Deno use their available `AsyncLocalStorage` implementation without a static Node runtime import.
-Expo and browser runtimes without async context cannot detect this misuse. Their callers must also use the supplied transaction provider.
+Detection uses the adapter's optional `transactionContext`, whose `run` method marks callbacks and whose `active` method queries the current async task.
+`@hozon/node-sqlite` provides this context through Node's `AsyncLocalStorage`.
+Other adapters provide no context and cannot detect this misuse. The supplied transaction provider or `using(tx)` rule still applies.
 Work inheriting a completed transaction's context can open a fresh transaction.
 `context.provider.isTransactionBound` reflects this binding, while `context.root.isTransactionBound` remains `false`.
 

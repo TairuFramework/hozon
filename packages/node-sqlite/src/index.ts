@@ -1,10 +1,11 @@
 import { DatabaseSync } from 'node:sqlite'
-import { AbstractSQLiteAdapter } from '@hozon/adapter'
+import { AbstractSQLiteAdapter, type TransactionContext } from '@hozon/adapter'
 import type { Dialect } from 'kysely'
 import { SqliteDialect } from 'kysely'
 
 import type { WrappedDatabase } from './database.js'
 import { wrapDatabase } from './database.js'
+import { createTransactionContext } from './transaction-context.js'
 
 export type SQLitePragmas = {
   journalMode?: 'wal' | 'delete' | 'truncate' | 'memory' | 'off'
@@ -22,6 +23,7 @@ export class NodeSQLiteAdapter extends AbstractSQLiteAdapter<{
   JSON: string
   Timestamp: number
 }> {
+  #transactionContext = createTransactionContext()
   #database: DatabaseSync
   #wrappedDatabase: WrappedDatabase
   #dialect: Dialect
@@ -47,6 +49,10 @@ export class NodeSQLiteAdapter extends AbstractSQLiteAdapter<{
       this.#closed = true
       throw error
     }
+  }
+
+  get transactionContext(): TransactionContext {
+    return this.#transactionContext
   }
 
   get database(): DatabaseSync {
