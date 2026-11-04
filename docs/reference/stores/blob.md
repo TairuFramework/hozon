@@ -5,10 +5,11 @@ Callers own hashing, byte storage, and digest verification.
 Encryption flags and key IDs are optional metadata that the store does not interpret.
 
 Exports include `BLOB_STORE`, `blobStoreDefinition`, `getBlobStore`, `BlobStoreAPI`, `BlobEntry`, `BlobEntryInput`, `BlobChunkInput`, and `BlobState`.
-`BlobTransfer`, `BLOB_LOCK_TABLE`, and `withBlobLocks` are also exported. Table types are `BlobTables`, `BlobEntryTable`, `BlobChunkTable`, `BlobTransferTable`, and `BlobTransferSessionTable`.
+`BlobSession`, `BlobSessionInput`, `ListSessionsParams`, `BLOB_LOCK_TABLE`, and `withBlobLocks` are also exported.
+Table types include `BlobTables`, `BlobEntryTable`, `BlobChunkTable`, `BlobFetchSessionTable`, and `BlobFetchChunkTable`.
 
 ```ts
-type BlobState = 'local' | 'remote' | 'partial' | 'remote-only'
+type BlobState = 'local' | 'remote' | 'remote-only'
 type BlobEntryInput = {
   blobID: string; contentLength: number; encrypted?: boolean; keyID?: string | null
   chunkSize: number; state: BlobState; pinned?: boolean; createdAt: number
@@ -20,10 +21,17 @@ type BlobEntry = {
   contentType: string | null
 }
 type BlobChunkInput = { index: number; digest: Uint8Array }
-type BeginTransferParams = {
-  blobID: string; chunkSize: number; chunks: Array<BlobChunkInput>; stagingID: string
+type BlobSessionInput = {
+  blobID: string; owner: string; stagingID: string; contentLength: number
+  chunkSize: number; contentType: string | null; encrypted: boolean; keyID: string | null
+  createdAt: number; updatedAt: number; chunks: Array<BlobChunkInput>
 }
-type BlobTransfer = { stagingID: string; updatedAt: number; presentChunks: Array<number> }
+type BlobSession = Omit<BlobSessionInput, 'chunks'> & {
+  chunks: Array<BlobChunkInput & { present: boolean }>; presentChunks: Array<number>
+}
+type ListSessionsParams = {
+  owner?: string; ownerPrefix?: string; blobID?: string; limit: number; cursor?: string
+}
 type BlobByteDeletion = { blobID: string; queuedAt: number }
 type BlobStoreAPI = {
   enqueueByteDeletion(blobID: string, queuedAt?: number): Promise<void>
@@ -38,18 +46,21 @@ type BlobStoreAPI = {
   getChunkDigests(blobID: string): Promise<Array<Uint8Array>>
   setPinned(blobID: string, pinned: boolean): Promise<void>
   deleteEntry(blobID: string): Promise<void>
-  beginTransfer(params: BeginTransferParams): Promise<void>
-  recordTransferChunk(blobID: string, index: number): Promise<void>
-  getPresentChunkIndexes(blobID: string): Promise<Array<number>>
-  finalizeTransfer(blobID: string): Promise<void>
-  getTransfer(blobID: string): Promise<BlobTransfer | null>
-  getTransferByStagingID(stagingID: string): Promise<{ blobID: string; updatedAt: number } | null>
-  touchTransfer(blobID: string): Promise<void>
+  getSession(blobID: string, owner: string): Promise<BlobSession | null>
+  getSessionByStagingID(stagingID: string): Promise<BlobSession | null>
+  listSessions(params: ListSessionsParams): Promise<{
+    sessions: Array<BlobSession>; nextCursor: string | null
+  }>
+  putSession(session: BlobSessionInput): Promise<void>
+  markSessionChunk(blobID: string, owner: string, index: number): Promise<void>
+  deleteSession(blobID: string, owner: string): Promise<void>
+  deleteSessions(blobID: string): Promise<void>
+  touchSession(blobID: string, owner: string): Promise<void>
+  sumSessionContentLength(): Promise<number>
   listEntries(params: { limit: number; cursor?: string }): Promise<{
     entries: Array<BlobEntry>; nextCursor: string | null
   }>
   promoteEntry(entry: Omit<BlobEntryInput, 'state'>, chunks: Array<BlobChunkInput>): Promise<void>
-  resetTransfer(blobID: string): Promise<void>
   fillContentType(blobID: string, contentType: string): Promise<void>
 }
 const BLOB_STORE: 'blob'
@@ -118,12 +129,14 @@ Database commit failures can still leave orphan bytes.
 | --- | --- | --- |
 | `blob_entries` | `blob_id`, `content_length`, `encrypted`, `key_id`, `chunk_size`, `state`, `pinned`, `created_at`, `content_type` | `blob_id` |
 | `blob_chunks` | `blob_id`, `index`, `digest` | `(blob_id, index)` |
-| `blob_transfers` | `blob_id`, `index` | `(blob_id, index)` |
-| `blob_transfer_sessions` | `blob_id`, `staging_id`, `updated_at` | `blob_id` |
+| `blob_fetch_sessions` | `blob_id`, `owner`, `staging_id`, `content_length`, `chunk_size`, `content_type`, `encrypted`, `key_id`, `created_at`, `updated_at` | `(blob_id, owner)` |
+| `blob_fetch_chunks` | `staging_id`, `index`, `digest`, `present` | `(staging_id, index)` |
 | `blob_byte_deletions` | `blob_id`, `queued_at` | `blob_id` |
 
-The default physical names are `hozon_blob_entries`, `hozon_blob_chunks`, `hozon_blob_transfers`, and `hozon_blob_transfer_sessions`.
-`blob_transfer_sessions.blob_id` references `blob_entries` with cascading deletion, and `staging_id` is unique.
+Physical table names use the configured prefix, which defaults to `hozon`.
+`blob_fetch_sessions.blob_id` references `blob_entries` with cascading deletion. Its `staging_id` is unique.
+`blob_fetch_chunks.staging_id` references that unique staging ID with cascading deletion.
+The `(owner, blob_id)` index supports owner and owner-prefix queries. Owner text uses byte ordering.
 `updated_at` is a bigint in milliseconds since the Unix epoch.
 Content lengths and creation timestamps use bigint columns. `createdAt` is milliseconds since the Unix epoch.
 Flags use integer 0/1 columns. `key_id` and `content_type` are nullable text, and `digest` uses the adapter's binary type.
@@ -140,46 +153,35 @@ It throws `BatchLimitError` above 500 unique IDs or above `options.batchLimit`.
 `getChunkDigests` returns digests in ascending index order.
 `setPinned` updates the flag. `deleteEntry` atomically removes entry, manifest, transfer, and session rows.
 
-## Transfer lifecycle
+## Fetch sessions
 
-1. Insert a known remote entry with `state: 'remote-only'`.
-2. Call `beginTransfer({ blobID, chunkSize, chunks, stagingID })` to insert manifest rows, set the entry to `partial`, and record the transfer session for `stagingID`.
-3. Store and verify each chunk through a backend.
-4. Call `recordTransferChunk(blobID, index)` for each verified chunk.
-5. Use `getPresentChunkIndexes(blobID)` to resume from the recorded progress.
-6. Call `finalizeTransfer(blobID)` after recording every manifest index.
+Each `(blobID, owner)` session owns its staging ID, manifest, metadata, and present bitmap.
+Owners contain 1 to 255 printable ASCII characters. The service validates owners before calling the store.
+`getSession(blobID, owner)` and `getSessionByStagingID(stagingID)` return the session or `null`.
+Session chunks and `presentChunks` are ordered by index.
+`putSession(input)` atomically replaces only that owner's session and inserts its manifest with no chunks present.
+Entry state and verified `blob_chunks` rows remain unchanged.
+`markSessionChunk(blobID, owner, index)` marks an existing manifest index present and touches the session.
+It rejects absent sessions or indexes and never creates progress without a manifest.
+`touchSession(blobID, owner)` refreshes `updatedAt` and ignores an absent session.
+`deleteSession(blobID, owner)` ends one session. `deleteSessions(blobID)` ends every session of that blob.
+Both refresh the entry's release row. Session deletion cascades to session chunks.
+All session mutations require the blob lock and reuse an enclosing transaction.
+Session chunk inserts batch 125 rows, binding four parameters per row.
+`sumSessionContentLength()` totals every session's declared content length, returning zero when none exist.
 
-`beginTransfer` preserves existing manifest rows. It preserves transfer progress only when `stagingID` matches the existing session; a different `stagingID` clears the recorded progress, since the new staging area holds none of those chunks.
-Retries must use the existing chunk size once a manifest exists.
-Changing it rejects with `Cannot change chunk size for blob <blobID>: manifest already exists`, leaving metadata and progress unchanged.
-`recordTransferChunk` is idempotent and refreshes the session's `updated_at`. Present indexes return in ascending order.
-It rejects unknown manifest indexes with `Blob chunk <blobID> at index <index> not found`.
-`finalizeTransfer` sets the entry to `local` and purges transfer progress and the session, preserving the manifest.
-It rejects missing chunks with `Cannot finalize transfer <blobID>: <count> chunk(s) missing`.
-`beginTransfer`, `recordTransferChunk`, and `finalizeTransfer` reject absent entries with `Blob entry <blobID> not found`.
-Failed finalisation leaves state and progress unchanged.
-Manifest chunks reference entries, and transfer rows reference manifest chunks, with cascading deletion preventing orphan progress.
+`listSessions({ owner?, ownerPrefix?, blobID?, limit, cursor? })` pages by `(owner, blob_id)`.
+Choose either `owner` or `ownerPrefix`. The prefix bound is `owner >= prefix AND owner < prefix || '\x7f'`.
+The limit ranges from 1 to 1000. Cursors are opaque, and malformed cursors throw `InvalidCursorError`.
 
-`insertEntry`, `deleteEntry`, `beginTransfer`, `recordTransferChunk`, `finalizeTransfer`, `promoteEntry`, and `resetTransfer` use `withStoreTransaction` and reuse an enclosing transaction.
-Manifest inserts batch 166 rows, binding three parameters per row, below the 500-parameter limit.
-
-## Transfer sessions
-
-A session ties an entry's transfer progress to one staging area.
-`getTransfer(blobID)` returns `{ stagingID, updatedAt, presentChunks }` (ascending), or `null` without a session.
-`getTransferByStagingID(stagingID)` returns `{ blobID, updatedAt }` or `null`.
-`touchTransfer(blobID)` sets `updated_at` to now and is a no-op without a session.
-
-## Listing, promotion, and reset
+## Listing and promotion
 
 `listEntries({ limit, cursor })` returns entries ordered by `(created_at, blob_id)` ascending.
-`limit` must be an integer from 1 to 1000, otherwise it throws.
-`nextCursor` is `null` on the last page; otherwise it is an opaque base64url encoding of JSON `[createdAt, blobID]`. A malformed cursor throws `Invalid cursor`.
-`promoteEntry(entry, chunks)` runs in one transaction: it upserts the entry with `state: 'local'`, updating every column except `blob_id`, `created_at`, and `pinned`, then deletes existing chunks, transfers, and the session for the ID, and inserts `chunks`.
-The chunk size may differ from a previous manifest.
-`resetTransfer(blobID)` deletes session and progress atomically. Unverified entries also lose manifest chunks and become `remote-only`.
-Verified remote entries retain state and chunks. Reset refreshes release eligibility. Unknown IDs are a no-op.
-On Postgres, `beginTransfer`, `promoteEntry`, and `resetTransfer` lock the entry row with `FOR UPDATE`.
+The limit ranges from 1 to 1000. The last page has a null cursor.
+`promoteEntry(entry, chunks)` upserts a local entry while preserving existing pin and creation time.
+It replaces the verified chunk layout, deletes every session, clears pending byte deletion, and refreshes the release row atomically.
+The new chunk size may differ from the previous layout.
+Manifest inserts batch 166 rows, binding three parameters per row.
 
 ## Publication and deletion
 
@@ -218,12 +220,12 @@ Transfer staging cleanup also runs after commit.
 
 All service views share one in-process staging registry.
 It tracks writes in flight and transfer staging created inside unfinished caller transactions.
-`pruneStaging(olderThan)` skips registered areas, then rechecks transfer sessions under the blob lock before reset.
+`pruneStaging(olderThan)` skips registered areas, then rechecks transfer sessions under the blob lock before ending that session.
 Other processes are protected only by age. The threshold must exceed the longest upload and caller transaction that begins a fetch.
 
-`limits.maxStagingBytes` is optional and unset by default. It counts writes in flight in this service and its views.
+`limits.maxStagingBytes` is optional and unset by default. It counts declared content lengths across all fetch sessions plus writes in flight in this service and its views.
 Known write lengths are checked before staging. Unknown lengths are counted while streaming.
-Exceeding the limit aborts staging with `StagingLimitError`. Fetch sessions and reads are excluded from this limit.
+Exceeding the limit aborts staging with `StagingLimitError`. Creating or restarting a fetch checks the same limit. Resumes and reads are never refused.
 Other processes' writes are not counted.
 
 For root-bound calls, `stageChunk` byte writes and `completeFetch` whole-blob hashing run outside the lock.
@@ -239,6 +241,13 @@ The down migration drops this table. Applied `0-init` and `1-sessions` migration
 The `1-sessions` migration adds `blob_entries.content_type` and the `blob_transfer_sessions` table.
 It backfills existing `partial` entries: their manifests and progress are dropped and the state becomes `remote-only`, because pre-session transfers cannot be resumed.
 The backfill is not reversible; the down migration drops the column and table only.
+
+Migration `4-fetch-sessions` creates the owner-scoped session and session-chunk tables.
+It deletes unverified chunk rows of `partial` entries and changes those entries to `remote-only`.
+It drops `blob_transfers`, then `blob_transfer_sessions`, and inserts no release rows.
+Legacy staging areas become orphans for `pruneStaging` to reclaim.
+The down migration drops the new tables and recreates both legacy tables empty, preserving their keys and foreign keys.
+The backfill cannot be reversed.
 
 Byte storage lives in a backend; see [Blob backends](../blob-backends.md).
 
@@ -282,10 +291,10 @@ Caller-bound eviction defers byte deletion until commit. Rollback preserves the 
 `createReadStream` throws `BlobNotLocalError`, a `BlobNotFoundError` subclass exposing `state`, for known non-local entries.
 Writing the same content re-populates a remote entry, preserving its pin and creation time.
 
-A fetch of a remote entry must use its stored chunk size and identical verified digests.
-Other digests or a different chunk size throw `InvalidManifestError` before creating a session.
-Remote entries retain their state and verified digests during fetching and after session reset or pruning.
-Other in-progress entries continue using `partial` with today's single-session API.
+A fetch using the stored chunk size must have identical verified digests, otherwise `InvalidManifestError` precedes session creation.
+A different chunk size is accepted and remains in the session until successful promotion replaces the verified layout.
+Remote entries retain their state and verified digests during fetching and after session deletion or pruning.
+Entry states are `local`, `remote`, and `remote-only`. Fetch progress is available through `listTransfers({ blobID })`.
 
 ## Maintenance and reconciliation
 

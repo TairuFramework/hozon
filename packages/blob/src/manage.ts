@@ -6,6 +6,7 @@ import { getBlobStore } from '@hozon/store-blob'
 import { BlobNotFoundError, BlobPinnedError, BlobReferencedError } from './errors.js'
 import { getFreshEntry } from './fresh.js'
 import { lockBlobs } from './locking.js'
+import { allSessions } from './transfer.js'
 
 export type ManageContext = {
   db: StoreProvider
@@ -111,11 +112,12 @@ export async function deleteBlob(
     if (options?.force) await store.deleteRefs(await store.listRefs(blobID))
     else if (await store.countRefs(blobID)) throw new BlobReferencedError(blobID)
     if (entry === null) return null
-    const transfer = await store.getTransfer(blobID)
+    const sessions = await allSessions(store, blobID)
     await store.deleteEntry(blobID)
     if (entry.state === 'local') await store.enqueueByteDeletion(blobID)
-    if (transfer !== null)
-      cleanup = afterCommit(ctx, tx, () => ctx.backend.abortStaging(transfer.stagingID))
+    cleanup = afterCommit(ctx, tx, async () => {
+      await Promise.all(sessions.map((session) => ctx.backend.abortStaging(session.stagingID)))
+    })
     if (entry.state === 'local' && ctx.db.isTransactionBound) {
       afterCommit(ctx, tx, () => deleteBytes(ctx, blobID))
     }

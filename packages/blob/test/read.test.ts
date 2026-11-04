@@ -58,7 +58,14 @@ describe.each(backendFactories)('read ($name)', (factory) => {
       { blobID: id, contentLength: 8, chunkSize: 4, state: 'remote-only', createdAt: 5 },
       [],
     )
-    await ctx.store.beginTransfer({
+    await ctx.store.putSession({
+      owner: 'owner-a',
+      contentLength: 8,
+      contentType: null,
+      encrypted: false,
+      keyID: null,
+      createdAt: 5,
+      updatedAt: 5,
       blobID: id,
       chunkSize: 4,
       chunks: [
@@ -67,7 +74,8 @@ describe.each(backendFactories)('read ($name)', (factory) => {
       ],
       stagingID: 't-x',
     })
-    expect(await ctx.store.getChunkDigests(id)).toHaveLength(2)
+    expect((await ctx.store.getSession(id, 'owner-a'))?.chunks).toHaveLength(2)
+    expect(await ctx.store.getChunkDigests(id)).toEqual([])
     expect(await ctx.service.getChunkDigests(id)).toEqual([])
   })
 
@@ -136,7 +144,7 @@ describe.each(backendFactories)('read ($name)', (factory) => {
     expect((await readAll(await ctx.service.createReadStream(id))).length).toBe(0)
   })
 
-  test('remote-only and partial entries are not readable', async () => {
+  test('remote-only entries and entries with sessions are not readable', async () => {
     const remote = bytesOf(10, 9)
     const partial = bytesOf(10, 10)
     const remoteID = ctx.service.codec.encode({
@@ -155,7 +163,14 @@ describe.each(backendFactories)('read ($name)', (factory) => {
       { blobID: partialID, contentLength: 10, chunkSize: 4, state: 'remote-only', createdAt: 5 },
       [],
     )
-    await ctx.store.beginTransfer({
+    await ctx.store.putSession({
+      owner: 'owner-a',
+      contentLength: 10,
+      contentType: null,
+      encrypted: false,
+      keyID: null,
+      createdAt: 5,
+      updatedAt: 5,
       blobID: partialID,
       chunkSize: 4,
       chunks: [],

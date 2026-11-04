@@ -52,7 +52,7 @@ export async function collect(
         if (released.length === 0) return 'skip'
         const entry = await getFreshEntry(store, blobID)
         const refs = await store.countRefs(blobID)
-        const session = await store.getTransfer(blobID)
+        const session = (await store.listSessions({ blobID, limit: 1 })).sessions[0] ?? null
         if (refs > 0 || entry?.pinned || session !== null) {
           await store.deleteRelease(blobID)
           return 'kept'

@@ -122,3 +122,20 @@ export class BlobReconcileUnsupportedError extends Error {
     this.name = 'BlobReconcileUnsupportedError'
   }
 }
+
+export class TransferNotFoundError extends BlobNotFoundError {
+  #owner: string
+  #blobState: BlobState | null
+  constructor(params: { id: string; owner: string; blobState: BlobState | null }) {
+    super(params.id)
+    this.name = 'TransferNotFoundError'
+    this.#owner = params.owner
+    this.#blobState = params.blobState
+  }
+  get owner(): string {
+    return this.#owner
+  }
+  get blobState(): BlobState | null {
+    return this.#blobState
+  }
+}

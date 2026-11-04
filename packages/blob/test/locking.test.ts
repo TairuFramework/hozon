@@ -92,18 +92,81 @@ test('rollback removes orphan bytes without another writer', async () => {
 
 test('views share the registry during writes and uncommitted transfers', async () => {
   const { db, service, backend, gate } = await setup()
+  const otherBody = bytesOf(21)
+  const otherID = service.codec.encode({
+    digest: digestOf(otherBody),
+    contentLength: otherBody.length,
+  })
+  await service.beginFetch({
+    id: otherID,
+    owner: 'owner-a',
+    manifest: { contentLength: otherBody.length, chunkSize: 1024, chunks: [digestOf(otherBody)] },
+  })
   const parked = gate.park('commit')
   const caller = db.withTransaction(async (tx) => {
     await service.using(tx).write(write())
   })
   await parked.entered
-  expect(await listStaging(backend)).toHaveLength(1)
+  let pruning: ReturnType<typeof service.pruneStaging>
+  try {
+    expect(await listStaging(backend)).toHaveLength(1)
+    pruning = service.pruneStaging(new Date(Date.now() + 10000))
+  } finally {
+    parked.release()
+  }
+  await caller
+  expect(await pruning).toEqual({ removed: 1, failed: 0 })
   expect(await service.pruneStaging(new Date(Date.now() + 10000))).toEqual({
     removed: 0,
     failed: 0,
   })
-  parked.release()
-  await caller
+})
+
+test('pruning ends a stale session without staging during an unrelated registered write', async () => {
+  const { db, service, backend, store } = await setup()
+  const otherBody = bytesOf(21)
+  const otherID = service.codec.encode({
+    digest: digestOf(otherBody),
+    contentLength: otherBody.length,
+  })
+  await service.beginFetch({
+    id: otherID,
+    owner: 'owner-a',
+    manifest: { contentLength: otherBody.length, chunkSize: 1024, chunks: [digestOf(otherBody)] },
+  })
+  expect(await listStaging(backend)).toEqual([])
+  const entered = deferred()
+  const release = deferred()
+  const createStaging = backend.createStaging.bind(backend)
+  vi.spyOn(backend, 'createStaging').mockImplementationOnce(async (stagingID) => {
+    const sink = await createStaging(stagingID)
+    entered.resolve()
+    return sink
+  })
+  const writing = service.using(db).write({
+    stream: new ReadableStream<Uint8Array>({
+      async start(controller) {
+        controller.enqueue(body)
+        await release.promise
+        controller.close()
+      },
+    }),
+  })
+  await entered.promise
+  try {
+    expect(await store.sumSessionContentLength()).toBe(21)
+    expect(await service.pruneStaging(new Date(Date.now() + 10000))).toEqual({
+      removed: 1,
+      failed: 0,
+    })
+    expect(await store.getSession(otherID, 'owner-a')).toBeNull()
+    expect(await store.sumSessionContentLength()).toBe(0)
+    expect(await listStaging(backend)).toHaveLength(1)
+  } finally {
+    release.resolve()
+    await writing
+  }
+  expect(await service.has(id)).toBe(true)
 })
 
 test('withLocks canonicalises and passes a reentrant view for opposite key orders', async () => {
@@ -194,12 +257,16 @@ test('entry mutations wait for a caller holding the blob lock', async () => {
     () => service.write(write()),
     () => service.setPinned(id, true),
     () =>
-      service.beginFetch(id, {
-        contentLength: body.length,
-        chunkSize: 1024,
-        chunks: [digestOf(body)],
+      service.beginFetch({
+        id: id,
+        owner: 'owner-a',
+        manifest: {
+          contentLength: body.length,
+          chunkSize: 1024,
+          chunks: [digestOf(body)],
+        },
       }),
-    () => service.getPresentChunks(id),
+    () => service.getPresentChunks({ id: id, owner: 'owner-a' }),
     () => service.delete(id),
   ]) {
     const entered = deferred()
@@ -285,19 +352,23 @@ test('in-flight writes share the staging budget across provider views', async ()
 })
 
 test.each(['commit', 'rollback'] as const)(
-  'pruning skips transfer staging before caller %s',
+  'pruning skips registered transfer staging until caller %s',
   async (outcome) => {
     const { db, service, backend } = await setup()
     const entered = deferred()
     const release = deferred()
     const caller = db.withTransaction(async (tx) => {
       const ops = service.using(tx)
-      await ops.beginFetch(id, {
-        contentLength: body.length,
-        chunkSize: 1024,
-        chunks: [digestOf(body)],
+      await ops.beginFetch({
+        id: id,
+        owner: 'owner-a',
+        manifest: {
+          contentLength: body.length,
+          chunkSize: 1024,
+          chunks: [digestOf(body)],
+        },
       })
-      await ops.stageChunk({ id, index: 0, bytes: body })
+      await ops.stageChunk({ owner: 'owner-a', id, index: 0, bytes: body })
       entered.resolve()
       await release.promise
       if (outcome === 'rollback') throw new Error('rollback')
@@ -308,13 +379,15 @@ test.each(['commit', 'rollback'] as const)(
     )
     await entered.promise
     const cutoff = new Date(Date.now() + 10000)
+    let pruning: ReturnType<typeof service.pruneStaging>
     try {
       expect(await listStaging(backend)).toHaveLength(1)
-      expect(await service.pruneStaging(cutoff)).toEqual({ removed: 0, failed: 0 })
+      pruning = service.pruneStaging(cutoff)
     } finally {
       release.resolve()
     }
     expect(await settled).toBe(outcome)
+    expect(await pruning).toEqual({ removed: 0, failed: 0 })
     if (outcome === 'commit')
       expect(await service.pruneStaging(cutoff)).toEqual({ removed: 1, failed: 0 })
     await expect.poll(() => listStaging(backend)).toEqual([])
@@ -331,17 +404,22 @@ test.each([
   async ({ operation, transaction }) => {
     const { db, service, gate } = await setup()
     const otherID = (await service.write({ stream: sourceOf(bytesOf(21)).stream })).entry.blobID
-    await service.beginFetch(id, {
-      contentLength: body.length,
-      chunkSize: 1024,
-      chunks: [digestOf(body)],
+    await service.beginFetch({
+      id: id,
+      owner: 'owner-a',
+      manifest: {
+        contentLength: body.length,
+        chunkSize: 1024,
+        chunks: [digestOf(body)],
+      },
     })
-    if (operation === 'completeFetch') await service.stageChunk({ id, index: 0, bytes: body })
+    if (operation === 'completeFetch')
+      await service.stageChunk({ owner: 'owner-a', id, index: 0, bytes: body })
     const parked = gate.park(operation === 'stageChunk' ? 'writeChunk' : 'createStagingReadStream')
     const run = (ops: BlobOperations) =>
       operation === 'stageChunk'
-        ? ops.stageChunk({ id, index: 0, bytes: body })
-        : ops.completeFetch(id)
+        ? ops.stageChunk({ owner: 'owner-a', id, index: 0, bytes: body })
+        : ops.completeFetch({ id: id, owner: 'owner-a' }).then((result) => result.entry)
     const pending = transaction
       ? db.withTransaction(async (tx) => {
           await run(service.using(tx))
@@ -372,30 +450,39 @@ test.each(['stageChunk', 'completeFetch'] as const)(
   'a replaced session rejects stale %s work and clears its staging',
   async (operation) => {
     const { service, backend, store, gate } = await setup()
-    await service.beginFetch(id, {
-      contentLength: body.length,
-      chunkSize: 1024,
-      chunks: [digestOf(body)],
+    await service.beginFetch({
+      id: id,
+      owner: 'owner-a',
+      manifest: {
+        contentLength: body.length,
+        chunkSize: 1024,
+        chunks: [digestOf(body)],
+      },
     })
-    if (operation === 'completeFetch') await service.stageChunk({ id, index: 0, bytes: body })
-    const original = await store.getTransfer(id)
+    if (operation === 'completeFetch')
+      await service.stageChunk({ owner: 'owner-a', id, index: 0, bytes: body })
+    const original = await store.getSession(id, 'owner-a')
     const parked = gate.park(operation === 'stageChunk' ? 'writeChunk' : 'createStagingReadStream')
     const pending =
       operation === 'stageChunk'
-        ? service.stageChunk({ id, index: 0, bytes: body })
-        : service.completeFetch(id)
+        ? service.stageChunk({ owner: 'owner-a', id, index: 0, bytes: body })
+        : service.completeFetch({ id: id, owner: 'owner-a' }).then((result) => result.entry)
     const rejected = expect(pending).rejects.toThrow(BlobNotFoundError)
     await parked.entered
     // A different chunk size replaces the session even for a single-chunk body.
-    await service.beginFetch(id, {
-      contentLength: body.length,
-      chunkSize: 2048,
-      chunks: [digestOf(body)],
+    await service.beginFetch({
+      id: id,
+      owner: 'owner-a',
+      manifest: {
+        contentLength: body.length,
+        chunkSize: 2048,
+        chunks: [digestOf(body)],
+      },
     })
     parked.release()
     await rejected
-    expect((await store.getTransfer(id))?.stagingID).not.toBe(original?.stagingID)
-    expect(await service.getPresentChunks(id)).toEqual([])
+    expect((await store.getSession(id, 'owner-a'))?.stagingID).not.toBe(original?.stagingID)
+    expect(await service.getPresentChunks({ id: id, owner: 'owner-a' })).toEqual([])
     expect(await listStaging(backend)).toEqual([])
   },
 )
@@ -535,15 +622,19 @@ test.each(['write', 'completeFetch'] as const)(
   async (operation) => {
     const { db, service, backend, gate, store } = await setup()
     if (operation === 'completeFetch') {
-      await service.beginFetch(id, {
-        contentLength: body.length,
-        chunkSize: 1024,
-        chunks: [digestOf(body)],
+      await service.beginFetch({
+        id: id,
+        owner: 'owner-a',
+        manifest: {
+          contentLength: body.length,
+          chunkSize: 1024,
+          chunks: [digestOf(body)],
+        },
       })
-      await service.stageChunk({ id, index: 0, bytes: body })
+      await service.stageChunk({ owner: 'owner-a', id, index: 0, bytes: body })
     }
     const entryBefore = await service.get(id)
-    const transferBefore = await store.getTransfer(id)
+    const transferBefore = await store.getSession(id, 'owner-a')
     const chunksBefore = await store.getChunkDigests(id)
     const beforeBytes = bytesOf(21)
     const afterBytes = bytesOf(22)
@@ -555,11 +646,13 @@ test.each(['write', 'completeFetch'] as const)(
       const view = service.using(tx)
       await view.write({ stream: sourceOf(beforeBytes).stream })
       const parked = gate.park('commit')
-      const pending = (operation === 'write' ? view.write(write()) : view.completeFetch(id)).catch(
-        (error: unknown) => {
-          caught = error
-        },
-      )
+      const pending = (
+        operation === 'write'
+          ? view.write(write())
+          : view.completeFetch({ id: id, owner: 'owner-a' }).then((result) => result.entry)
+      ).catch((error: unknown) => {
+        caught = error
+      })
       await parked.entered
       parked.fail(failure)
       await pending
@@ -567,7 +660,7 @@ test.each(['write', 'completeFetch'] as const)(
     })
     expect(caught).toBe(failure)
     expect(await service.get(id)).toEqual(entryBefore)
-    expect(await store.getTransfer(id)).toEqual(transferBefore)
+    expect(await store.getSession(id, 'owner-a')).toEqual(transferBefore)
     expect(await store.getChunkDigests(id)).toEqual(chunksBefore)
     expect(await backend.has(id)).toBe(false)
     expect(await service.has(beforeID)).toBe(true)
@@ -593,12 +686,16 @@ test('caller rollback reclaims bytes even if backend commit publishes then rejec
 
 test('fetch promotion deadlocks leave staging intact for retry publication', async () => {
   const { db, service, backend } = await setup()
-  await service.beginFetch(id, {
-    contentLength: body.length,
-    chunkSize: 1024,
-    chunks: [digestOf(body)],
+  await service.beginFetch({
+    id: id,
+    owner: 'owner-a',
+    manifest: {
+      contentLength: body.length,
+      chunkSize: 1024,
+      chunks: [digestOf(body)],
+    },
   })
-  await service.stageChunk({ id, index: 0, bytes: body })
+  await service.stageChunk({ owner: 'owner-a', id, index: 0, bytes: body })
   await withBlobLocks(db, [id], async (tx) => {
     await (await getBlobStore(tx)).enqueueByteDeletion(id)
   })
@@ -621,7 +718,10 @@ test('fetch promotion deadlocks leave staging intact for retry publication', asy
       },
     }
   })
-  expect((await service.completeFetch(id)).state).toBe('local')
+  expect(
+    (await service.completeFetch({ id: id, owner: 'owner-a' }).then((result) => result.entry))
+      .state,
+  ).toBe('local')
   await deleted.promise
   expect(attempts).toBe(2)
   expect(commit).toHaveBeenCalledTimes(1)
@@ -632,23 +732,32 @@ test.each(['stageChunk', 'completeFetch'] as const)(
   'stale %s waits for root staging cleanup before rejecting',
   async (operation) => {
     const { service, backend, gate } = await setup()
-    await service.beginFetch(id, {
-      contentLength: body.length,
-      chunkSize: 1024,
-      chunks: [digestOf(body)],
+    await service.beginFetch({
+      id: id,
+      owner: 'owner-a',
+      manifest: {
+        contentLength: body.length,
+        chunkSize: 1024,
+        chunks: [digestOf(body)],
+      },
     })
-    if (operation === 'completeFetch') await service.stageChunk({ id, index: 0, bytes: body })
+    if (operation === 'completeFetch')
+      await service.stageChunk({ owner: 'owner-a', id, index: 0, bytes: body })
     const parked = gate.park(operation === 'stageChunk' ? 'writeChunk' : 'createStagingReadStream')
     const pending =
       operation === 'stageChunk'
-        ? service.stageChunk({ id, index: 0, bytes: body })
-        : service.completeFetch(id)
+        ? service.stageChunk({ owner: 'owner-a', id, index: 0, bytes: body })
+        : service.completeFetch({ id: id, owner: 'owner-a' }).then((result) => result.entry)
     const outcome = pending.catch((error: unknown) => error)
     await parked.entered
-    await service.beginFetch(id, {
-      contentLength: body.length,
-      chunkSize: 2048,
-      chunks: [digestOf(body)],
+    await service.beginFetch({
+      id: id,
+      owner: 'owner-a',
+      manifest: {
+        contentLength: body.length,
+        chunkSize: 2048,
+        chunks: [digestOf(body)],
+      },
     })
     const abort = backend.abortStaging.bind(backend)
     const cleaned = deferred()
@@ -672,12 +781,16 @@ test.each(['stageChunk', 'completeFetch'] as const)(
 
 test('pruning counts a transfer staging cleanup failure', async () => {
   const { service, backend, logError } = await setup()
-  await service.beginFetch(id, {
-    contentLength: body.length,
-    chunkSize: 1024,
-    chunks: [digestOf(body)],
+  await service.beginFetch({
+    id: id,
+    owner: 'owner-a',
+    manifest: {
+      contentLength: body.length,
+      chunkSize: 1024,
+      chunks: [digestOf(body)],
+    },
   })
-  await service.stageChunk({ id, index: 0, bytes: body })
+  await service.stageChunk({ owner: 'owner-a', id, index: 0, bytes: body })
   vi.spyOn(backend, 'abortStaging').mockRejectedValueOnce(new Error('staging unavailable'))
   expect(await service.pruneStaging(new Date(Date.now() + 10000))).toEqual({
     removed: 0,
@@ -700,4 +813,24 @@ test('savepoint rollback reclaims publication after its parent transaction ends'
   })
   await expect.poll(() => backend.has(id)).toBe(false)
   expect(logError).not.toHaveBeenCalled()
+})
+
+test('a staging-limited root write detects a caller transaction before reading its session total', async () => {
+  const { db, backend } = await setup()
+  const service = createBlobService({ db, backend, limits: { maxStagingBytes: 1000 } })
+  let pending: Promise<unknown> | undefined
+  try {
+    await db.withTransaction(async () => {
+      pending = service.write(write()).catch((error: unknown) => error)
+      const outcome = await Promise.race([
+        pending,
+        new Promise<string>((resolve) =>
+          setTimeout(() => resolve('waiting for caller connection'), 1000),
+        ),
+      ])
+      expect(outcome).toMatchObject({ name: 'TransactionScopeError' })
+    })
+  } finally {
+    await pending
+  }
 })

@@ -5,14 +5,13 @@ export type {
   BlobByteDeletionTable,
   BlobChunkTable,
   BlobEntryTable,
+  BlobFetchChunkTable,
+  BlobFetchSessionTable,
   BlobRefTable,
   BlobReleaseTable,
   BlobTables,
-  BlobTransferSessionTable,
-  BlobTransferTable,
 } from './tables.js'
 export type {
-  BeginTransferParams,
   BlobByteDeletion,
   BlobChunkInput,
   BlobEntry,
@@ -22,8 +21,10 @@ export type {
   BlobRef,
   BlobRefInput,
   BlobRelease,
+  BlobSession,
+  BlobSessionInput,
   BlobState,
   BlobStoreAPI,
-  BlobTransfer,
   FindRefsParams,
+  ListSessionsParams,
 } from './types.js'

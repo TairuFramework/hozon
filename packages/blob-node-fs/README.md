@@ -35,3 +35,7 @@ See the [blob backend reference](../../docs/reference/blob-backends.md#fsblobbac
 
 `listKeys()` enumerates files in the committed content directory with their modification times, excluding staging.
 Files removed concurrently are skipped. Use an explicit minimum age when reconciling orphan bytes.
+
+Written staging bytes read back unchanged until re-written, committed, or aborted.
+Re-staging identical verified bytes at the same offsets preserves staging content.
+The filesystem backend uses plain files, written in place and never moved before commit.

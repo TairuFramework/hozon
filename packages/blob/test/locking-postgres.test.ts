@@ -2,7 +2,7 @@ import { blake3Codec } from '@hozon/blob-id'
 import { blobStoreDefinition, getBlobStore, withBlobLocks } from '@hozon/store-blob'
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from 'vitest'
 
-import { BlobReferencedError } from '../src/index.js'
+import { BlobReferencedError, createBlobService } from '../src/index.js'
 import { deferred } from './gated-backend.js'
 import { bytesOf, digestOf, sourceOf } from './helpers.js'
 import { createPostgresService, type RowsAPI, startBlobPostgres } from './locking-postgres.js'
@@ -308,5 +308,69 @@ describe.skipIf(process.env.HOZON_BLOB_POSTGRES !== '1')('Postgres blob locking'
       1,
     )
     expect((await service.collect({ releasedBefore: new Date(Date.now() + 1000) })).deleted).toBe(1)
+  }, 15_000)
+  test.each([{ owner: 'owner-a' }, { ownerPrefix: 'owner-a' }])(
+    'bulk abort in a caller transaction serialises matching begins: %j',
+    async (selector) => {
+      const { db, service } = await setup()
+      const key = { id, owner: 'owner-a' }
+      const manifest = { contentLength: body.length, chunkSize: 1024, chunks: [digestOf(body)] }
+      await service.beginFetch({ ...key, manifest })
+      const held = deferred()
+      const release = deferred()
+      const caller = db.withTransaction(async (tx) => {
+        expect(await service.using(tx).abortFetches(selector)).toBe(1)
+        held.resolve()
+        await release.promise
+      })
+      await held.promise
+      let began = false
+      const begin = service.beginFetch({ ...key, manifest }).then((r) => {
+        began = true
+        return r
+      })
+      try {
+        await tick()
+        expect(began).toBe(false)
+      } finally {
+        release.resolve()
+      }
+      await caller
+      expect((await begin).status).toBe('started')
+    },
+    15_000,
+  )
+
+  test('parallel owner completions publish once without losing bytes', async () => {
+    const { service, backend } = await setup()
+    const keys = ['owner-a', 'owner-b'].map((owner) => ({ id, owner }))
+    for (const key of keys) {
+      await service.beginFetch({
+        ...key,
+        manifest: { contentLength: body.length, chunkSize: 1024, chunks: [digestOf(body)] },
+      })
+      await service.stageChunk({ ...key, index: 0, bytes: body })
+    }
+    const result = await Promise.all(keys.map((key) => service.completeFetch(key)))
+    expect(result.map((r) => r.fetched).sort()).toEqual([false, true])
+    expect(await backend.has(id)).toBe(true)
+  }, 15_000)
+
+  test('new owners on one blob serialise near the staging bound', async () => {
+    const { db, backend } = await setup()
+    const service = createBlobService({ db, backend, limits: { maxStagingBytes: body.length } })
+    const results = await Promise.allSettled(
+      ['owner-a', 'owner-b'].map((owner) =>
+        service.beginFetch({
+          id,
+          owner,
+          manifest: { contentLength: body.length, chunkSize: 1024, chunks: [digestOf(body)] },
+        }),
+      ),
+    )
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+    expect(results.filter((r) => r.status === 'rejected').map((r) => r.reason)).toEqual([
+      expect.objectContaining({ name: 'StagingLimitError' }),
+    ])
   }, 15_000)
 })

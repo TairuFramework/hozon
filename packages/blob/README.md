@@ -22,7 +22,8 @@ const { entry, created } = await blobs.write({ stream, contentType: 'image/png' 
 Options: `codec` (default `blake3Codec`), `chunkSize` (default 1 MiB), `limits` (`maxBlobSize` 1 GiB, `maxChunkSize` 16 MiB, `minChunkSize` 1 KiB), `runtime`, and `logger`.
 `logger` accepts an `error(message, properties)` method. Without it, cleanup failures use `console.error`.
 Logging failures do not reject cleanup hooks. No logging package is required.
-`limits.maxStagingBytes` is unset by default. It limits writes in flight across this service and its views, excluding fetch sessions and reads.
+`limits.maxStagingBytes` is unset by default. It counts session content lengths across the database plus writes in flight across this service and its views.
+The bound is advisory across processes. Resumes and reads are never refused.
 Known lengths are checked before staging. Unknown lengths are counted while streaming. Exceeding the limit aborts staging with `StagingLimitError`.
 `createBlobService` throws `Invalid chunkSize` when `chunkSize` is outside the chunk limits, and `Invalid limits` for invalid limits.
 
@@ -34,7 +35,7 @@ Known lengths are checked before staging. Unknown lengths are counted while stre
 2. The body streams into a fresh staging area while hashing. Crossing `min(maxSize, limits.maxBlobSize)` throws `BlobTooLargeError`. A stream error aborts staging and rethrows it.
 3. A computed ID different from `expectedID` throws `BlobIDMismatchError`.
 4. Under the blob lock, a local blob keeps its metadata, fills a null content type, and returns `created: false`.
-   Otherwise all metadata and manifest statements run first, replacing `remote`, `remote-only`, or `partial` state and clearing pending deletion work.
+   Otherwise all metadata and manifest statements run first, replacing `remote` or `remote-only` state and clearing pending deletion work.
    `backend.commit` publishes the bytes last, before the database transaction commits. Replaced transfer staging is discarded after commit.
 
 Metadata statements run before byte publication, while metadata remains uncommitted.
@@ -67,10 +68,32 @@ Transfer staging cleanup also runs after commit.
 
 ## Peer transfer
 
-- `beginFetch(id, { contentLength, chunkSize, chunks, contentType?, encrypted?, keyID? })` validates the untrusted manifest (`InvalidManifestError`) against the ID and limits, then records a fresh session. Unverified entries become `partial`; verified remote entries remain `remote`. A local blob is a no-op; an identical manifest with live staging is idempotent; a different one resets the transfer first. An existing stub whose stored `contentLength` differs from the manifest throws `InvalidManifestError`. An unverified zero-length blob records the service's `chunkSize`. Remote blobs require their stored size, including empty blobs.
-- `getPresentChunks(id)` lists staged indexes for resume. If the staging area vanished, the transfer is reset and the list is empty.
-- `stageChunk({ id, index, bytes })` checks length (`ChunkLengthError`) and digest (`ChunkDigestMismatchError`) before writing.
-- `completeFetch(id)` throws `TransferIncompleteError` while chunks are missing. It verifies length and whole-blob digest from the staged bytes before committing; on mismatch it aborts staging, resets the transfer, and throws `BlobIDMismatchError`.
+Every transfer takes `{ id, owner }`. Owners are opaque printable ASCII strings, 1 to 255 characters.
+Different owners have independent manifests, staging areas, and progress for the same blob.
+An in-progress fetch leaves an unverified entry `remote-only`, or a verified entry `remote`.
+Use `listTransfers({ blobID, limit })` to inspect fetch activity.
+
+- `beginFetch({ id, owner, manifest })` returns `{ status: 'local' }` or `{ status, presentChunks }`.
+  The session status is `started`, `resumed`, or `restarted`.
+  An identical manifest resumes only that owner's live staging. Different metadata or vanished staging restarts it.
+  Manifests validate against the ID and limits before session creation.
+  A new or restarted session above `maxStagingBytes` throws `StagingLimitError` before creating rows or staging.
+- `getPresentChunks({ id, owner })` lists that owner's staged indexes. Vanished staging ends only that session.
+- `stageChunk({ id, owner, index, bytes })` verifies length and digest before writing and recording progress.
+- `completeFetch({ id, owner })` returns `{ entry, fetched }`. Missing chunks throw `TransferIncompleteError`.
+  A whole-blob mismatch ends only that owner's session and throws `BlobIDMismatchError`.
+  The first publisher ends every session. Later completions return `fetched: false` when the blob is already local.
+  Database statements precede byte commit, including inside the publication savepoint.
+- `abortFetch({ id, owner })` ends one session and returns whether it existed.
+- `abortFetches({ owner })` or `abortFetches({ ownerPrefix: 'owner-a/' })` ends matching sessions and returns their count.
+  The prefix matches `owner-a/1`, never `owner-ab/1`.
+- `listTransfers({ owner?, ownerPrefix?, blobID?, limit, cursor? })` returns `{ transfers, nextCursor }`.
+  Each result includes the blob ID, owner, chunk size, chunk count, present count, and timestamps.
+
+A missing session on stage or completion throws `TransferNotFoundError`, extending `BlobNotFoundError`.
+Its `owner` identifies the session. Its `blobState` is the current entry state, or null.
+A `local` state means another publication won.
+Session staging is aborted after its row change commits. Caller rollback preserves existing sessions.
 
 ## Staging maintenance
 
@@ -80,7 +103,7 @@ Transfer areas are aborted and reset only if, under the blob lock, the session s
 Every `using` view shares the service's staging registry.
 Pruning skips writes in progress and transfer staging created inside an unfinished caller transaction.
 Other processes are protected only by age. The age threshold must exceed the longest upload and caller transaction that begins a fetch.
-A backend without `listStaging` returns `{ removed: 0, failed: 0 }`.
+Without `listStaging`, pruning can end stale database sessions but cannot enumerate orphan areas.
 The backend's staging namespace must not be shared with non-service writers that use `w-`/`t-` IDs: such areas would be pruned.
 Abandoned `remote-only` entries become eligible for explicit `collect` after their session ends and their release passes grace.
 No scheduler runs automatically.
@@ -138,7 +161,7 @@ The caller must register `blobStoreDefinition` on the `HozonDB` before creating 
 
 ## Errors
 
-`BlobNotFoundError`, `BlobTooLargeError`, `BlobIDMismatchError`, `ContentTypeMismatchError`, `ChunkDigestMismatchError`, `ChunkLengthError`, `InvalidManifestError`, `InvalidRangeError`, `BlobWriteAbortedError`, `TransferIncompleteError`, `StagingLimitError`, and the re-exported `InvalidBlobIDError`.
+`BlobNotFoundError`, `BlobTooLargeError`, `BlobIDMismatchError`, `ContentTypeMismatchError`, `ChunkDigestMismatchError`, `ChunkLengthError`, `InvalidManifestError`, `InvalidRangeError`, `BlobWriteAbortedError`, `TransferIncompleteError`, `TransferNotFoundError`, `StagingLimitError`, and the re-exported `InvalidBlobIDError`.
 `TransactionScopeError` is exported by `@hozon/db`.
 
 
@@ -153,8 +176,9 @@ Every caller chooses its grace cutoff. Existing entries receive no release row d
 
 `evict(id)` retains metadata, refs, and verified digests while dropping bytes and setting state `remote`.
 Pinned local blobs throw `BlobPinnedError`. Non-local reads throw `BlobNotLocalError`, exposing `state`.
-Writing re-populates a remote entry. Fetching requires its stored chunk size and equal verified digests.
-Other digests or chunk sizes throw `InvalidManifestError` before session creation. Reset preserves the remote layout.
+Writing re-populates a remote entry. Fetching at the stored chunk size requires equal verified digests. Different chunk sizes are accepted.
+The session holds its manifest while verified digests stay unchanged. Successful completion replaces the stored layout.
+Abort or mismatch preserves the remote entry and its verified layout.
 
 `reconcileBytes({ olderThan, limit? })` removes orphan committed keys when the backend supports optional `listKeys`.
 The age must exceed the longest caller transaction that writes. Unsupported backends throw `BlobReconcileUnsupportedError`.

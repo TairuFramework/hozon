@@ -20,17 +20,23 @@ export type BlobChunkTable = {
   digest: Uint8Array
 }
 
-// Present chunks for an in-flight transfer. Purged on finalisation.
-export type BlobTransferTable = {
+export type BlobFetchSessionTable = {
   blob_id: string
-  index: number
-}
-
-// One in-flight transfer per blob, addressed by its staging ID.
-export type BlobTransferSessionTable = {
-  blob_id: string
+  owner: string
   staging_id: string
+  content_length: number
+  chunk_size: number
+  content_type: string | null
+  encrypted: number
+  key_id: string | null
+  created_at: number
   updated_at: number
+}
+export type BlobFetchChunkTable = {
+  staging_id: string
+  index: number
+  digest: Uint8Array
+  present: number
 }
 
 export type BlobByteDeletionTable = { blob_id: string; queued_at: number }
@@ -44,6 +50,6 @@ export type BlobTables = {
   blob_byte_deletions: BlobByteDeletionTable
   blob_entries: BlobEntryTable
   blob_chunks: BlobChunkTable
-  blob_transfers: BlobTransferTable
-  blob_transfer_sessions: BlobTransferSessionTable
+  blob_fetch_sessions: BlobFetchSessionTable
+  blob_fetch_chunks: BlobFetchChunkTable
 }

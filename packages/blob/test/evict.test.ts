@@ -51,28 +51,33 @@ test('pin prevents eviction and fetch re-population preserves metadata and pin',
   await ctx.service.setPinned(id, false)
   await ctx.service.evict(id)
   await ctx.service.setPinned(id, true)
-  await ctx.service.beginFetch(id, {
-    contentLength: body.length,
-    chunkSize: entry.chunkSize,
-    chunks: [digestOf(body)],
+  await ctx.service.beginFetch({
+    id: id,
+    owner: 'owner-a',
+    manifest: {
+      contentLength: body.length,
+      chunkSize: entry.chunkSize,
+      chunks: [digestOf(body)],
+    },
   })
   expect((await ctx.service.get(id))?.state).toBe('remote')
-  await ctx.service.stageChunk({ id, index: 0, bytes: body })
-  await ctx.service.completeFetch(id)
+  await ctx.service.stageChunk({ owner: 'owner-a', id, index: 0, bytes: body })
+  await ctx.service.completeFetch({ id: id, owner: 'owner-a' }).then((result) => result.entry)
   expect(await ctx.service.get(id)).toEqual({ ...entry, pinned: true })
   expect(await ctx.backend.has(id)).toBe(true)
 })
 
-test('remote manifests with unequal digests or chunk size fail before session creation', async () => {
+test('remote manifests at the stored chunk size reject unequal digests before session creation', async () => {
   const { entry } = await write()
   const id = entry.blobID
   await ctx.service.evict(id)
   for (const manifest of [
     { contentLength: body.length, chunkSize: entry.chunkSize, chunks: [digestOf(bytesOf(20, 1))] },
-    { contentLength: body.length, chunkSize: entry.chunkSize * 2, chunks: [digestOf(body)] },
   ]) {
-    await expect(ctx.service.beginFetch(id, manifest)).rejects.toBeInstanceOf(InvalidManifestError)
-    expect(await ctx.store.getTransfer(id)).toBeNull()
+    await expect(
+      ctx.service.beginFetch({ id: id, owner: 'owner-a', manifest: manifest }),
+    ).rejects.toBeInstanceOf(InvalidManifestError)
+    expect(await ctx.store.getSession(id, 'owner-a')).toBeNull()
     expect(await ctx.service.get(id)).toEqual({ ...entry, state: 'remote' })
   }
 })
@@ -81,33 +86,37 @@ test('a pruned remote fetch retains verified digests and remote state', async ()
   const { entry } = await write()
   const id = entry.blobID
   await ctx.service.evict(id)
-  await ctx.service.beginFetch(id, {
-    contentLength: body.length,
-    chunkSize: entry.chunkSize,
-    chunks: [digestOf(body)],
+  await ctx.service.beginFetch({
+    id: id,
+    owner: 'owner-a',
+    manifest: {
+      contentLength: body.length,
+      chunkSize: entry.chunkSize,
+      chunks: [digestOf(body)],
+    },
   })
-  await ctx.service.stageChunk({ id, index: 0, bytes: body })
+  await ctx.service.stageChunk({ owner: 'owner-a', id, index: 0, bytes: body })
   await ctx.service.pruneStaging(new Date(Date.now() + 1000))
   expect(await ctx.service.get(id)).toEqual({ ...entry, state: 'remote' })
   expect(await ctx.store.getChunkDigests(id)).toEqual([digestOf(body)])
 })
 
-test('empty remote manifests still require the stored chunk size across service configurations', async () => {
-  const { entry } = await ctx.service.write({ stream: sourceOf(new Uint8Array()).stream })
-  const id = entry.blobID
-  await ctx.service.evict(id)
-  await expect(
-    ctx.service.beginFetch(id, { contentLength: 0, chunkSize: entry.chunkSize * 2, chunks: [] }),
-  ).rejects.toBeInstanceOf(InvalidManifestError)
-  expect(await ctx.store.getTransfer(id)).toBeNull()
-  const other = createBlobService({
-    db: ctx.db,
-    backend: ctx.backend,
-    chunkSize: entry.chunkSize * 2,
+test('a different chunk size preserves verified digests until promotion replaces the layout', async () => {
+  const data = bytesOf(4096, 17)
+  const service = createBlobService({ db: ctx.db, backend: ctx.backend, chunkSize: 1024 })
+  const { entry } = await service.write({ stream: sourceOf(data).stream })
+  const old = await ctx.store.getChunkDigests(entry.blobID)
+  await service.evict(entry.blobID)
+  const chunks = [data.slice(0, 2048), data.slice(2048)]
+  const key = { id: entry.blobID, owner: 'owner-a' }
+  await service.beginFetch({
+    ...key,
+    manifest: { contentLength: data.length, chunkSize: 2048, chunks: chunks.map(digestOf) },
   })
-  await other.beginFetch(id, { contentLength: 0, chunkSize: entry.chunkSize, chunks: [] })
-  await other.completeFetch(id)
-  expect(await other.get(id)).toEqual(entry)
+  expect(await ctx.store.getChunkDigests(entry.blobID)).toEqual(old)
+  for (const [index, bytes] of chunks.entries()) await service.stageChunk({ ...key, index, bytes })
+  expect((await service.completeFetch(key)).entry).toEqual({ ...entry, chunkSize: 2048 })
+  expect(await ctx.store.getChunkDigests(entry.blobID)).toEqual(chunks.map(digestOf))
 })
 
 test('remote collection issues no backend deletion', async () => {
@@ -155,13 +164,19 @@ test.each(['write', 'fetch'] as const)(
       operation === 'write'
         ? write()
         : (async () => {
-            await ctx.service.beginFetch(id, {
-              contentLength: body.length,
-              chunkSize: entry.chunkSize,
-              chunks: [digestOf(body)],
+            await ctx.service.beginFetch({
+              id: id,
+              owner: 'owner-a',
+              manifest: {
+                contentLength: body.length,
+                chunkSize: entry.chunkSize,
+                chunks: [digestOf(body)],
+              },
             })
-            await ctx.service.stageChunk({ id, index: 0, bytes: body })
-            return await ctx.service.completeFetch(id)
+            await ctx.service.stageChunk({ owner: 'owner-a', id, index: 0, bytes: body })
+            return await ctx.service
+              .completeFetch({ id: id, owner: 'owner-a' })
+              .then((result) => result.entry)
           })()
     gate.release()
     await Promise.all([evicting, publishing])

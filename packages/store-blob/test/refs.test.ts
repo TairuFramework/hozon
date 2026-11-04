@@ -102,23 +102,32 @@ test('creation, promotion, unpin, and ended sessions refresh release rows', asyn
   await store.promoteEntry(entry, [])
   expect(await store.listReleases({ releasedBefore: new Date(Date.now() + 1000) })).toHaveLength(1)
   await store.deleteRelease('blob-a')
-  await store.resetTransfer('blob-a')
+  await store.deleteSessions('blob-a')
   expect(await store.listReleases({ releasedBefore: new Date(Date.now() + 1000) })).toHaveLength(1)
   await store.deleteEntry('blob-a')
   expect(await store.listReleases({ releasedBefore: new Date(Date.now() + 1000) })).toEqual([])
 })
 
-test('remote transfers retain verified layout and state when reset', async () => {
+test('remote sessions retain verified layout and state when ended', async () => {
   const chunks = [
     { index: 0, digest: new Uint8Array([1]) },
     { index: 1, digest: new Uint8Array([2]) },
   ]
   await store.insertEntry(entry, chunks)
   await store.setState('blob-a', 'remote')
-  await store.beginTransfer({ blobID: 'blob-a', chunkSize: 4, chunks, stagingID: 't-remote' })
+  await store.putSession({
+    ...entry,
+    owner: 'owner-a',
+    stagingID: 't-remote',
+    chunks,
+    encrypted: false,
+    keyID: null,
+    contentType: null,
+    updatedAt: 1,
+  })
   expect((await store.getEntry('blob-a'))?.state).toBe('remote')
-  await store.recordTransferChunk('blob-a', 0)
-  await store.resetTransfer('blob-a')
+  await store.markSessionChunk('blob-a', 'owner-a', 0)
+  await store.deleteSession('blob-a', 'owner-a')
   expect((await store.getEntry('blob-a'))?.state).toBe('remote')
   expect(await store.getChunkDigests('blob-a')).toEqual(chunks.map((c) => c.digest))
 })

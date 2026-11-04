@@ -81,19 +81,30 @@ describe.each(backends())('blob service ($name)', (backend) => {
     const { entry } = await source.service.write({ stream: streamOf(bytes) })
     const id = entry.blobID
 
-    await dest.service.beginFetch(id, {
-      contentLength: entry.contentLength,
-      chunkSize: entry.chunkSize,
-      chunks: await source.service.getChunkDigests(id),
+    const transfer = { id, owner: 'owner-a' }
+    await dest.service.beginFetch({
+      ...transfer,
+      manifest: {
+        contentLength: entry.contentLength,
+        chunkSize: entry.chunkSize,
+        chunks: await source.service.getChunkDigests(id),
+      },
     })
-    expect((await dest.service.get(id))?.state).toBe('partial')
+    expect((await dest.service.get(id))?.state).toBe('remote-only')
     for (let index = 2; index >= 0; index--) {
       const range = { start: index * CHUNK, end: Math.min((index + 1) * CHUNK, 2500) - 1 }
       const chunk = await readAll(await source.service.createReadStream(id, range))
-      await dest.service.stageChunk({ id, index, bytes: chunk })
+      await dest.service.stageChunk({ ...transfer, index, bytes: chunk })
+      if (index === 2) {
+        await expect(dest.service.completeFetch(transfer)).rejects.toThrow(/2 chunk\(s\) missing/)
+        expect((await dest.service.get(id))?.state).toBe('remote-only')
+        expect(await dest.service.getPresentChunks(transfer)).toEqual([2])
+      }
     }
-    expect(await dest.service.getPresentChunks(id)).toEqual([0, 1, 2])
-    expect((await dest.service.completeFetch(id)).state).toBe('local')
+    expect(await dest.service.getPresentChunks(transfer)).toEqual([0, 1, 2])
+    const completed = await dest.service.completeFetch(transfer)
+    expect(completed.entry.state).toBe('local')
+    expect(completed.fetched).toBe(true)
     expect(await readAll(await dest.service.createReadStream(id))).toEqual(bytes)
   })
 

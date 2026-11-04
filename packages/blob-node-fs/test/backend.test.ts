@@ -105,6 +105,22 @@ describe.each(backends)('$name', ({ create }) => {
     await backend.abortStaging('stg-uncommitted')
   })
 
+  test('staged bytes stay stable across reads and identical re-stages until consumed', async () => {
+    const stagingID = 'stg-stable'
+    await backend.writeChunk(stagingID, 2048, BLOB.slice(2048))
+    await backend.writeChunk(stagingID, 0, BLOB.slice(0, 2048))
+    expect(await drain(await backend.createStagingReadStream(stagingID))).toEqual(BLOB)
+    await backend.writeChunk(stagingID, 0, BLOB.slice(0, 2048))
+    expect(await drain(await backend.createStagingReadStream(stagingID))).toEqual(BLOB)
+    expect(await drain(await backend.createStagingReadStream(stagingID))).toEqual(BLOB)
+    await backend.commit(stagingID, 'stable-key')
+    expect(await drain(await backend.createReadStream('stable-key'))).toEqual(BLOB)
+    await expect(backend.createStagingReadStream(stagingID)).rejects.toThrow()
+    await backend.writeChunk(stagingID, 0, BLOB)
+    await backend.abortStaging(stagingID)
+    await expect(backend.createStagingReadStream(stagingID)).rejects.toThrow()
+  })
+
   test('range read returns the inclusive slice', async () => {
     const read = await drain(await backend.createReadStream(key, { start: 10, end: 19 }))
     expect(Array.from(read)).toEqual(Array.from(BLOB.subarray(10, 20)))

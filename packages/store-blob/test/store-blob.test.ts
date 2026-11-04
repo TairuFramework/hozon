@@ -76,25 +76,17 @@ test('getChunkDigests returns digests ordered by index', async () => {
   await store.insertEntry(entry(), manifest().reverse())
   expect(bytes(await store.getChunkDigests('b1'))).toEqual(bytes(manifest().map((c) => c.digest)))
 })
-test.each(['insertEntry', 'beginTransfer'] as const)(
-  '%s preserves existing manifest digests while adding missing chunks',
-  async (method) => {
-    await store.insertEntry(entry(), [{ index: 0, digest: new Uint8Array([0, 255]) }])
-    const chunks = [
-      { index: 0, digest: new Uint8Array([99]) },
-      { index: 1, digest: new Uint8Array([128, 0]) },
-    ]
-    if (method === 'insertEntry') {
-      await store.insertEntry(entry(), chunks)
-    } else {
-      await store.beginTransfer({ blobID: 'b1', chunkSize: 4, chunks: chunks, stagingID: 'stg-1' })
-    }
-    expect(bytes(await store.getChunkDigests('b1'))).toEqual([
-      [0, 255],
-      [128, 0],
-    ])
-  },
-)
+test('insertEntry preserves existing digests while adding missing chunks', async () => {
+  await store.insertEntry(entry(), [{ index: 0, digest: new Uint8Array([0, 255]) }])
+  await store.insertEntry(entry(), [
+    { index: 0, digest: new Uint8Array([99]) },
+    { index: 1, digest: new Uint8Array([128, 0]) },
+  ])
+  expect(bytes(await store.getChunkDigests('b1'))).toEqual([
+    [0, 255],
+    [128, 0],
+  ])
+})
 test('stores a manifest of 600 chunks', async () => {
   const chunks = manifest(600)
   await store.insertEntry(entry(), chunks)
@@ -102,95 +94,44 @@ test('stores a manifest of 600 chunks', async () => {
   expect(digests).toHaveLength(600)
   expect(bytes(digests)).toEqual(bytes(chunks.map((c) => c.digest)))
 })
+test('insertEntry never binds more than 500 parameters per statement', async () => {
+  const prepare = vi.spyOn(adapter.database, 'prepare')
+  const chunks = manifest(600)
+  await store.insertEntry(entry(), chunks)
+  const counts = prepare.mock.calls.map(([sql]) => (sql.match(/\?/g) ?? []).length)
+  expect(counts.some((count) => count > 0)).toBe(true)
+  expect(Math.max(...counts)).toBeLessThanOrEqual(500)
+  expect(bytes(await store.getChunkDigests('b1'))).toEqual(bytes(chunks.map((c) => c.digest)))
+})
+
+test('caller rollback restores a deleted entry and manifest and removes an inserted entry', async () => {
+  await store.insertEntry(entry(), manifest())
+  const original = await store.getEntry('b1')
+  const originalDigests = bytes(await store.getChunkDigests('b1'))
+  await expect(
+    db.withTransaction(async (tx) => {
+      const target = await getBlobStore(tx)
+      await target.deleteEntry('b1')
+      expect(await target.getEntry('b1')).toBeNull()
+      expect(await target.getChunkDigests('b1')).toEqual([])
+      await target.insertEntry(entry({ blobID: 'b2' }), manifest())
+      expect(await target.getEntry('b2')).not.toBeNull()
+      expect(await target.getChunkDigests('b2')).toHaveLength(3)
+      throw new Error('rollback')
+    }),
+  ).rejects.toThrow('rollback')
+  expect(await store.getEntry('b1')).toEqual(original)
+  expect(bytes(await store.getChunkDigests('b1'))).toEqual(originalDigests)
+  expect(await store.getEntry('b2')).toBeNull()
+  expect(await store.getChunkDigests('b2')).toEqual([])
+})
+
 test('setPinned toggles pinned', async () => {
   await store.insertEntry(entry(), [])
   await store.setPinned('b1', true)
   expect((await store.getEntry('b1'))?.pinned).toBe(true)
   await store.setPinned('b1', false)
   expect((await store.getEntry('b1'))?.pinned).toBe(false)
-})
-test('deleteEntry removes entry, chunks, and transfer rows', async () => {
-  await store.insertEntry(entry({ state: 'remote-only' }), [])
-  await store.beginTransfer({ blobID: 'b1', chunkSize: 4, chunks: manifest(), stagingID: 'stg-1' })
-  await store.recordTransferChunk('b1', 1)
-  await store.deleteEntry('b1')
-  expect(await store.getEntry('b1')).toBeNull()
-  expect(await store.getChunkDigests('b1')).toEqual([])
-  expect(await store.getPresentChunkIndexes('b1')).toEqual([])
-})
-test('transfer lifecycle', async () => {
-  await store.insertEntry(entry({ state: 'remote-only', chunkSize: 0 }), [])
-  await store.beginTransfer({ blobID: 'b1', chunkSize: 4, chunks: manifest(), stagingID: 'stg-1' })
-  expect(await store.getEntry('b1')).toMatchObject({ state: 'partial', chunkSize: 4 })
-  await store.recordTransferChunk('b1', 1)
-  await store.recordTransferChunk('b1', 1)
-  expect(await store.getPresentChunkIndexes('b1')).toEqual([1])
-  await store.recordTransferChunk('b1', 2)
-  await store.recordTransferChunk('b1', 0)
-  expect(await store.getPresentChunkIndexes('b1')).toEqual([0, 1, 2])
-  await store.finalizeTransfer('b1')
-  expect((await store.getEntry('b1'))?.state).toBe('local')
-  expect(await store.getPresentChunkIndexes('b1')).toEqual([])
-  expect(bytes(await store.getChunkDigests('b1'))).toEqual(bytes(manifest().map((c) => c.digest)))
-})
-test('finalizeTransfer throws when chunks are missing', async () => {
-  await store.insertEntry(entry({ state: 'remote-only' }), [])
-  await store.beginTransfer({ blobID: 'b1', chunkSize: 4, chunks: manifest(2), stagingID: 'stg-1' })
-  await store.recordTransferChunk('b1', 0)
-  await expect(store.finalizeTransfer('b1')).rejects.toThrow(
-    'Cannot finalize transfer b1: 1 chunk(s) missing',
-  )
-  expect((await store.getEntry('b1'))?.state).toBe('partial')
-  expect(await store.getPresentChunkIndexes('b1')).toEqual([0])
-})
-test('beginTransfer and finalizeTransfer throw for an unknown blob', async () => {
-  await expect(
-    store.beginTransfer({ blobID: 'nope', chunkSize: 4, chunks: manifest(), stagingID: 'stg-1' }),
-  ).rejects.toThrow('Blob entry nope not found')
-  await expect(store.finalizeTransfer('nope')).rejects.toThrow('Blob entry nope not found')
-  expect(await store.getChunkDigests('nope')).toEqual([])
-})
-test('beginTransfer is atomic', async () => {
-  await expect(
-    store.beginTransfer({ blobID: 'nope', chunkSize: 4, chunks: manifest(), stagingID: 'stg-1' }),
-  ).rejects.toThrow('Blob entry nope not found')
-  expect(adapter.database.prepare('SELECT * FROM hozon_blob_chunks').all()).toEqual([])
-})
-test('uses a custom table prefix', async () => {
-  await db.close()
-  adapter = new NodeSQLiteAdapter({ database: ':memory:' })
-  db = new HozonDB({ adapter, tablePrefix: 'kubun' })
-  db.register(blobStoreDefinition)
-  store = await getBlobStore(db)
-  await store.insertEntry(entry({ state: 'remote-only' }), [])
-  await store.beginTransfer({ blobID: 'b1', chunkSize: 4, chunks: manifest(1), stagingID: 'stg-1' })
-  await store.recordTransferChunk('b1', 0)
-  await store.finalizeTransfer('b1')
-  expect((await store.getEntry('b1'))?.state).toBe('local')
-  const names = adapter.database
-    .prepare('SELECT name FROM sqlite_master ORDER BY name')
-    .all()
-    .map((row) => row.name)
-  expect(names).toEqual(
-    expect.arrayContaining(['kubun_blob_entries', 'kubun_blob_chunks', 'kubun_blob_transfers']),
-  )
-  expect(names.some((name) => String(name).startsWith('kubun_kubun_'))).toBe(false)
-  await store.deleteEntry('b1')
-  expect(await store.getEntry('b1')).toBeNull()
-})
-test('every statement stays within 500 bound parameters', async () => {
-  const prepare = vi.spyOn(adapter.database, 'prepare')
-  await store.insertEntry(entry(), manifest(600))
-  await store.insertEntry(entry({ blobID: 'b2', state: 'remote-only' }), [])
-  await store.beginTransfer({
-    blobID: 'b2',
-    chunkSize: 4,
-    chunks: manifest(600),
-    stagingID: 'stg-1',
-  })
-  const counts = prepare.mock.calls.map(([sql]) => (sql.match(/\?/g) ?? []).length)
-  expect(Math.max(...counts)).toBe(498)
-  expect(counts.filter((count) => count === 498)).toHaveLength(6)
 })
 test('insertEntry rolls back its entry and earlier manifest batches on failure', async () => {
   adapter.database.exec(
@@ -200,184 +141,11 @@ test('insertEntry rolls back its entry and earlier manifest batches on failure',
   expect(await store.getEntry('b1')).toBeNull()
   expect(await store.getChunkDigests('b1')).toEqual([])
 })
-test('beginTransfer rolls back metadata and earlier manifest batches on failure', async () => {
-  await store.insertEntry(entry({ state: 'remote-only', chunkSize: 0 }), [])
-  adapter.database.exec(
-    'CREATE TRIGGER fail_chunk BEFORE INSERT ON hozon_blob_chunks WHEN NEW."index" = 170 BEGIN SELECT RAISE(ABORT, \'chunk failed\'); END',
-  )
-  await expect(
-    store.beginTransfer({ blobID: 'b1', chunkSize: 4, chunks: manifest(200), stagingID: 'stg-1' }),
-  ).rejects.toThrow('chunk failed')
-  expect(await store.getEntry('b1')).toMatchObject({ state: 'remote-only', chunkSize: 0 })
-  expect(await store.getChunkDigests('b1')).toEqual([])
-})
-test('store mutations reuse the provider transaction and roll back together', async () => {
-  await db.withTransaction(async (tx) => {
-    const scoped = await getBlobStore(tx)
-    await scoped.insertEntry(entry({ state: 'remote-only' }), [])
-    await scoped.beginTransfer({
-      blobID: 'b1',
-      chunkSize: 4,
-      chunks: manifest(1),
-      stagingID: 'stg-1',
-    })
-    await scoped.recordTransferChunk('b1', 0)
-    await scoped.finalizeTransfer('b1')
-  })
-  await expect(
-    db.withTransaction(async (tx) => {
-      const scoped = await getBlobStore(tx)
-      await scoped.deleteEntry('b1')
-      await scoped.insertEntry(entry({ blobID: 'b2' }), manifest())
-      throw new Error('rollback')
-    }),
-  ).rejects.toThrow('rollback')
-  expect((await store.getEntry('b1'))?.state).toBe('local')
-  expect(await store.getChunkDigests('b1')).toHaveLength(1)
-  expect(await store.getEntry('b2')).toBeNull()
-})
-
-test('beginTransfer rejects changing chunk size with an existing manifest without changing progress', async () => {
-  await store.insertEntry(entry({ state: 'remote-only', contentLength: 8, chunkSize: 0 }), [])
-  await store.beginTransfer({ blobID: 'b1', chunkSize: 4, chunks: manifest(2), stagingID: 'stg-1' })
-  await store.recordTransferChunk('b1', 0)
-  await store.recordTransferChunk('b1', 1)
-  await expect(
-    store.beginTransfer({
-      blobID: 'b1',
-      chunkSize: 8,
-      chunks: [{ index: 0, digest: new Uint8Array([99]) }],
-      stagingID: 'stg-1',
-    }),
-  ).rejects.toThrow('Cannot change chunk size for blob b1: manifest already exists')
-  expect(await store.getEntry('b1')).toMatchObject({ state: 'partial', chunkSize: 4 })
-  expect(bytes(await store.getChunkDigests('b1'))).toEqual([
-    [0, 0, 0, 255],
-    [1, 0, 0, 255],
-  ])
-  expect(await store.getPresentChunkIndexes('b1')).toEqual([0, 1])
-  await store.beginTransfer({ blobID: 'b1', chunkSize: 4, chunks: manifest(2), stagingID: 'stg-1' })
-  expect(await store.getPresentChunkIndexes('b1')).toEqual([0, 1])
-  await store.finalizeTransfer('b1')
-  expect((await store.getEntry('b1'))?.state).toBe('local')
-})
-
-test('recordTransferChunk rejects an unknown blob without writing progress', async () => {
-  await expect(store.recordTransferChunk('missing', 0)).rejects.toThrow(
-    'Blob entry missing not found',
-  )
-  expect(await store.getPresentChunkIndexes('missing')).toEqual([])
-})
-
-test('recordTransferChunk rejects indexes absent from the manifest', async () => {
-  await store.insertEntry(entry({ state: 'remote-only' }), [])
-  await expect(store.recordTransferChunk('b1', 0)).rejects.toThrow(
-    'Blob chunk b1 at index 0 not found',
-  )
-  await store.beginTransfer({ blobID: 'b1', chunkSize: 4, chunks: manifest(1), stagingID: 'stg-1' })
-  await expect(store.recordTransferChunk('b1', 1)).rejects.toThrow(
-    'Blob chunk b1 at index 1 not found',
-  )
-  expect(await store.getPresentChunkIndexes('b1')).toEqual([])
-})
-
-test('late transfer callbacks cannot recreate progress after deletion or reinsertion', async () => {
-  await store.insertEntry(entry({ state: 'partial' }), manifest(1))
-  await store.recordTransferChunk('b1', 0)
-  await store.deleteEntry('b1')
-  await expect(store.recordTransferChunk('b1', 0)).rejects.toThrow('Blob entry b1 not found')
-  expect(await store.getPresentChunkIndexes('b1')).toEqual([])
-  await store.insertEntry(entry({ state: 'remote-only' }), [])
-  await expect(store.recordTransferChunk('b1', 0)).rejects.toThrow(
-    'Blob chunk b1 at index 0 not found',
-  )
-  expect(await store.getPresentChunkIndexes('b1')).toEqual([])
-})
-
-test('foreign keys prevent orphan progress and cascade manifest deletion', async () => {
-  expect(() =>
-    adapter.database
-      .prepare('INSERT INTO hozon_blob_transfers (blob_id, "index") VALUES (?, ?)')
-      .run('missing', 0),
-  ).toThrow()
-  await store.insertEntry(entry(), manifest(1))
-  await store.recordTransferChunk('b1', 0)
-  adapter.database.prepare('DELETE FROM hozon_blob_entries WHERE blob_id = ?').run('b1')
-  expect(await store.getChunkDigests('b1')).toEqual([])
-  expect(await store.getPresentChunkIndexes('b1')).toEqual([])
-})
-
 test('contentType round-trips and defaults to null', async () => {
   await store.insertEntry(entry({ blobID: 'ct', contentType: 'image/png' }), [])
   await store.insertEntry(entry({ blobID: 'none' }), [])
   expect((await store.getEntry('ct'))?.contentType).toBe('image/png')
   expect((await store.getEntry('none'))?.contentType).toBeNull()
-})
-
-test('transfer sessions track staging ID and progress', async () => {
-  vi.useFakeTimers()
-  try {
-    vi.setSystemTime(1000)
-    await store.insertEntry(entry({ state: 'remote-only' }), [])
-    expect(await store.getTransfer('b1')).toBeNull()
-    await store.beginTransfer({
-      blobID: 'b1',
-      chunkSize: 4,
-      chunks: manifest(),
-      stagingID: 'stg-1',
-    })
-    expect(await store.getTransfer('b1')).toEqual({
-      stagingID: 'stg-1',
-      updatedAt: 1000,
-      presentChunks: [],
-    })
-    expect(await store.getTransferByStagingID('stg-1')).toEqual({ blobID: 'b1', updatedAt: 1000 })
-    vi.setSystemTime(2000)
-    await store.recordTransferChunk('b1', 1)
-    expect(await store.getTransfer('b1')).toEqual({
-      stagingID: 'stg-1',
-      updatedAt: 2000,
-      presentChunks: [1],
-    })
-    vi.setSystemTime(3000)
-    await store.touchTransfer('b1')
-    expect((await store.getTransfer('b1'))?.updatedAt).toBe(3000)
-    await store.beginTransfer({
-      blobID: 'b1',
-      chunkSize: 4,
-      chunks: manifest(),
-      stagingID: 'stg-2',
-    })
-    expect(await store.getTransferByStagingID('stg-1')).toBeNull()
-    expect(await store.getTransferByStagingID('stg-2')).toMatchObject({ blobID: 'b1' })
-    expect(await store.getTransfer('b1')).toMatchObject({ stagingID: 'stg-2' })
-    expect(await store.getTransferByStagingID('missing')).toBeNull()
-  } finally {
-    vi.useRealTimers()
-  }
-})
-
-test('finalizeTransfer and deleteEntry remove the session', async () => {
-  await store.insertEntry(entry({ state: 'remote-only' }), [])
-  await store.beginTransfer({ blobID: 'b1', chunkSize: 4, chunks: manifest(1), stagingID: 'stg-1' })
-  await store.recordTransferChunk('b1', 0)
-  await store.finalizeTransfer('b1')
-  expect(await store.getTransfer('b1')).toBeNull()
-  await store.beginTransfer({ blobID: 'b1', chunkSize: 4, chunks: manifest(1), stagingID: 'stg-2' })
-  await store.deleteEntry('b1')
-  expect(await store.getTransfer('b1')).toBeNull()
-  expect(await store.getTransferByStagingID('stg-2')).toBeNull()
-})
-
-test('beginTransfer with a new staging ID clears previous progress', async () => {
-  await store.insertEntry(entry({ state: 'remote-only' }), [])
-  await store.beginTransfer({ blobID: 'b1', chunkSize: 4, chunks: manifest(), stagingID: 'stg-1' })
-  await store.recordTransferChunk('b1', 1)
-  await store.beginTransfer({ blobID: 'b1', chunkSize: 4, chunks: manifest(), stagingID: 'stg-1' })
-  expect((await store.getTransfer('b1'))?.presentChunks).toEqual([1])
-  await store.beginTransfer({ blobID: 'b1', chunkSize: 4, chunks: manifest(), stagingID: 'stg-2' })
-  expect((await store.getTransfer('b1'))?.presentChunks).toEqual([])
-  expect(await store.getPresentChunkIndexes('b1')).toEqual([])
 })
 
 test('listEntries pages by (createdAt, blobID) with an opaque cursor', async () => {
@@ -417,40 +185,12 @@ test('promoteEntry inserts a local entry with manifest when absent', async () =>
   })
   expect(bytes(await store.getChunkDigests('b1'))).toEqual(bytes(manifest().map((c) => c.digest)))
 })
-test('promoteEntry replaces a partial entry and keeps pinned and createdAt', async () => {
-  await store.insertEntry(entry({ state: 'remote-only', pinned: true, createdAt: 5 }), [])
-  await store.beginTransfer({ blobID: 'b1', chunkSize: 4, chunks: manifest(3), stagingID: 'stg-1' })
-  await store.recordTransferChunk('b1', 0)
-  const { state: _state, ...input } = entry({ chunkSize: 6, createdAt: 99, pinned: false })
-  await store.promoteEntry(input, manifest(2))
-  expect(await store.getEntry('b1')).toMatchObject({
-    state: 'local',
-    chunkSize: 6,
-    pinned: true,
-    createdAt: 5,
-  })
-  expect(await store.getChunkDigests('b1')).toHaveLength(2)
-  expect(await store.getTransfer('b1')).toBeNull()
-  expect(await store.getPresentChunkIndexes('b1')).toEqual([])
-})
 test('promoteEntry works on a remote-only stub with chunkSize 0', async () => {
   await store.insertEntry(entry({ state: 'remote-only', chunkSize: 0 }), [])
   const { state: _state, ...input } = entry()
   await store.promoteEntry(input, manifest())
   expect(await store.getEntry('b1')).toMatchObject({ state: 'local', chunkSize: 4 })
   expect(await store.getChunkDigests('b1')).toHaveLength(3)
-})
-
-test('resetTransfer returns a partial entry to remote-only', async () => {
-  await store.insertEntry(entry({ state: 'remote-only' }), [])
-  await store.beginTransfer({ blobID: 'b1', chunkSize: 4, chunks: manifest(), stagingID: 'stg-1' })
-  await store.recordTransferChunk('b1', 0)
-  await store.resetTransfer('b1')
-  expect((await store.getEntry('b1'))?.state).toBe('remote-only')
-  expect(await store.getChunkDigests('b1')).toEqual([])
-  expect(await store.getTransfer('b1')).toBeNull()
-  expect(await store.getPresentChunkIndexes('b1')).toEqual([])
-  await store.resetTransfer('missing')
 })
 
 test('fillContentType sets a null content type only', async () => {
@@ -536,55 +276,24 @@ test('getEntry outside a scope reads fresh after a batch settles', async () => {
   expect((await store.getEntry('b1'))?.contentType).toBe('text/plain')
 })
 
-type MutationName =
-  | 'insertEntry'
-  | 'setPinned'
-  | 'deleteEntry'
-  | 'beginTransfer'
-  | 'recordTransferChunk'
-  | 'finalizeTransfer'
-  | 'touchTransfer'
-  | 'promoteEntry'
-  | 'resetTransfer'
-  | 'fillContentType'
-
-function withoutState(input: BlobEntryInput): Omit<BlobEntryInput, 'state'> {
-  const { state: _state, ...rest } = input
-  return rest
-}
-
+type MutationName = 'insertEntry' | 'setPinned' | 'deleteEntry' | 'promoteEntry' | 'fillContentType'
 const mutations: Record<MutationName, (target: BlobStoreAPI) => Promise<void>> = {
   insertEntry: (target) => target.insertEntry(entry(), []),
   setPinned: (target) => target.setPinned('b1', true),
   deleteEntry: (target) => target.deleteEntry('b1'),
-  beginTransfer: (target) =>
-    target.beginTransfer({ blobID: 'b1', chunkSize: 4, chunks: manifest(), stagingID: 'stg-2' }),
-  recordTransferChunk: (target) => target.recordTransferChunk('b1', 0),
-  finalizeTransfer: (target) => target.finalizeTransfer('b1'),
-  touchTransfer: (target) => target.touchTransfer('b1'),
-  promoteEntry: (target) => target.promoteEntry(withoutState(entry()), []),
-  resetTransfer: (target) => target.resetTransfer('b1'),
+  promoteEntry: (target) => target.promoteEntry(entry(), []),
   fillContentType: (target) => target.fillContentType('b1', 'text/plain'),
 }
-
 test.each(Object.keys(mutations) as Array<MutationName>)(
   '%s clears the remembered entry inside a scope',
   async (name) => {
     await store.insertEntry(entry({ state: 'remote-only' }), manifest())
-    await store.beginTransfer({
-      blobID: 'b1',
-      chunkSize: 4,
-      chunks: manifest(),
-      stagingID: 'stg-1',
-    })
-    for (const { index } of manifest()) await store.recordTransferChunk('b1', index)
     const prepare = vi.spyOn(adapter.database, 'prepare')
     await db.withScope<{ blob: BlobStoreAPI }, void>(async (scope) => {
       const scoped = await scope.getStore('blob')
       await scoped.getEntry('b1')
       await scoped.getEntry('b1')
-      const primed = entryQueryCount(prepare)
-      expect(primed).toBe(1)
+      expect(entryQueryCount(prepare)).toBe(1)
       await mutations[name](scoped)
       const afterMutation = entryQueryCount(prepare)
       await scoped.getEntry('b1')

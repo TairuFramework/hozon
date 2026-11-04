@@ -46,13 +46,25 @@ describe.each(backendFactories)('manage ($name)', (factory) => {
     expect(await ctx.service.delete(id)).toBe(false)
   })
 
-  test('delete aborts the staging area of a partial entry', async () => {
+  test('delete aborts the staging area of an entry with sessions', async () => {
     const id = ctx.service.codec.encode({ digest: new Uint8Array(32).fill(3), contentLength: 10 })
     await ctx.store.insertEntry(
       { blobID: id, contentLength: 10, chunkSize: 4, state: 'remote-only', createdAt: 5 },
       [],
     )
-    await ctx.store.beginTransfer({ blobID: id, chunkSize: 4, chunks: [], stagingID: 'stg-del' })
+    await ctx.store.putSession({
+      owner: 'owner-a',
+      contentLength: 10,
+      contentType: null,
+      encrypted: false,
+      keyID: null,
+      createdAt: 5,
+      updatedAt: 5,
+      blobID: id,
+      chunkSize: 4,
+      chunks: [],
+      stagingID: 'stg-del',
+    })
     await backend.writeChunk('stg-del', 0, bytesOf(4))
     expect(await listStaging(backend)).toEqual(['stg-del'])
     expect(await ctx.service.delete(id)).toBe(true)

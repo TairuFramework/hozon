@@ -157,5 +157,102 @@ export function blobStoreMigrations(ctx: MigrationContext): Record<string, Migra
         await db.schema.dropTable('blob_refs').execute()
       },
     },
+    '4-fetch-sessions': {
+      async up(db) {
+        await db.schema
+          .createTable('blob_fetch_sessions')
+          .addColumn('blob_id', ctx.types.text, (c) => c.notNull())
+          .addColumn('owner', ctx.types.text, (c) => compareText(ctx)(c.notNull()))
+          .addColumn('staging_id', ctx.types.text, (c) => c.notNull().unique())
+          .addColumn('content_length', ctx.types.bigint, (c) => c.notNull())
+          .addColumn('chunk_size', 'integer', (c) => c.notNull())
+          .addColumn('content_type', ctx.types.text)
+          .addColumn('encrypted', 'integer', (c) => c.notNull().defaultTo(0))
+          .addColumn('key_id', ctx.types.text)
+          .addColumn('created_at', ctx.types.bigint, (c) => c.notNull())
+          .addColumn('updated_at', ctx.types.bigint, (c) => c.notNull())
+          .addPrimaryKeyConstraint(`${ctx.tablePrefix}_blob_fetch_sessions_pkey`, [
+            'blob_id',
+            'owner',
+          ])
+          .addForeignKeyConstraint(
+            `${ctx.tablePrefix}_blob_fetch_sessions_entry_fkey`,
+            ['blob_id'],
+            'blob_entries',
+            ['blob_id'],
+            (c) => c.onDelete('cascade'),
+          )
+          .execute()
+        await db.schema
+          .createIndex(`${ctx.tablePrefix}_blob_fetch_sessions_owner_idx`)
+          .on('blob_fetch_sessions')
+          .columns(['owner', 'blob_id'])
+          .execute()
+        await db.schema
+          .createTable('blob_fetch_chunks')
+          .addColumn('staging_id', ctx.types.text, (c) => c.notNull())
+          .addColumn('index', 'integer', (c) => c.notNull())
+          .addColumn('digest', ctx.types.binary, (c) => c.notNull())
+          .addColumn('present', 'integer', (c) => c.notNull().defaultTo(0))
+          .addPrimaryKeyConstraint(`${ctx.tablePrefix}_blob_fetch_chunks_pkey`, [
+            'staging_id',
+            'index',
+          ])
+          .addForeignKeyConstraint(
+            `${ctx.tablePrefix}_blob_fetch_chunks_session_fkey`,
+            ['staging_id'],
+            'blob_fetch_sessions',
+            ['staging_id'],
+            (c) => c.onDelete('cascade'),
+          )
+          .execute()
+        await db
+          .deleteFrom('blob_chunks')
+          .where(
+            'blob_id',
+            'in',
+            db.selectFrom('blob_entries').select('blob_id').where('state', '=', 'partial'),
+          )
+          .execute()
+        await db
+          .updateTable('blob_entries')
+          .set({ state: 'remote-only' })
+          .where('state', '=', 'partial')
+          .execute()
+        await db.schema.dropTable('blob_transfers').execute()
+        await db.schema.dropTable('blob_transfer_sessions').execute()
+      },
+      async down(db) {
+        await db.schema.dropTable('blob_fetch_chunks').execute()
+        await db.schema.dropTable('blob_fetch_sessions').execute()
+        await db.schema
+          .createTable('blob_transfer_sessions')
+          .addColumn('blob_id', ctx.types.text, (c) => c.notNull())
+          .addColumn('staging_id', ctx.types.text, (c) => c.notNull().unique())
+          .addColumn('updated_at', ctx.types.bigint, (c) => c.notNull())
+          .addPrimaryKeyConstraint(`${ctx.tablePrefix}_blob_transfer_sessions_pkey`, ['blob_id'])
+          .addForeignKeyConstraint(
+            `${ctx.tablePrefix}_blob_transfer_sessions_entry_fkey`,
+            ['blob_id'],
+            'blob_entries',
+            ['blob_id'],
+            (c) => c.onDelete('cascade'),
+          )
+          .execute()
+        await db.schema
+          .createTable('blob_transfers')
+          .addColumn('blob_id', ctx.types.text, (c) => c.notNull())
+          .addColumn('index', 'integer', (c) => c.notNull())
+          .addPrimaryKeyConstraint(`${ctx.tablePrefix}_blob_transfers_pkey`, ['blob_id', 'index'])
+          .addForeignKeyConstraint(
+            `${ctx.tablePrefix}_blob_transfers_chunk_fkey`,
+            ['blob_id', 'index'],
+            'blob_chunks',
+            ['blob_id', 'index'],
+            (c) => c.onDelete('cascade'),
+          )
+          .execute()
+      },
+    },
   }
 }

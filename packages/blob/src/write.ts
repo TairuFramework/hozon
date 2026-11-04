@@ -18,6 +18,7 @@ import type { BlobLimits } from './limits.js'
 import { lockBlobs } from './locking.js'
 import { afterCommit, reclaimOnRollback } from './manage.js'
 import { commitStaging } from './publish.js'
+import { allSessions } from './transfer.js'
 
 export type WriteOptions = {
   contentType?: string
@@ -85,6 +86,13 @@ async function cancelQuietly(stream: ReadableStream<Uint8Array>, reason: unknown
   }
 }
 
+async function sessionContentLength(ctx: WriteContext): Promise<number> {
+  // Enter through the provider so root calls retain caller-transaction scope detection.
+  return await ctx.db.withTransaction(async (tx) => {
+    return await (await getBlobStore(tx)).sumSessionContentLength()
+  })
+}
+
 export async function writeBlob(
   ctx: WriteContext,
   params: WriteParams,
@@ -110,6 +118,8 @@ export async function writeBlob(
   let contentType = options.contentType
   let expectedID: string | undefined
 
+  const sessionBytes =
+    ctx.limits.maxStagingBytes === undefined ? 0 : await sessionContentLength(ctx)
   try {
     throwIfAborted(signal)
     if (options.expectedID !== undefined) {
@@ -128,7 +138,8 @@ export async function writeBlob(
       if (
         replay?.prepared === undefined &&
         ctx.limits.maxStagingBytes !== undefined &&
-        [...ctx.activeWrites.values()].reduce((sum, size) => sum + size, 0) +
+        sessionBytes +
+          [...ctx.activeWrites.values()].reduce((sum, size) => sum + size, 0) +
           expected.contentLength >
           ctx.limits.maxStagingBytes
       ) {
@@ -167,12 +178,13 @@ export async function writeBlob(
           .pipeThrough(sizeLimiter(limit))
           .pipeThrough(
             new TransformStream<Uint8Array, Uint8Array>({
-              transform(piece, controller) {
+              async transform(piece, controller) {
                 const size = (ctx.activeWrites.get(stagingID) ?? 0) + piece.length
                 ctx.activeWrites.set(stagingID, size)
                 if (
                   ctx.limits.maxStagingBytes !== undefined &&
-                  [...ctx.activeWrites.values()].reduce((sum, bytes) => sum + bytes, 0) >
+                  (await sessionContentLength(ctx)) +
+                    [...ctx.activeWrites.values()].reduce((sum, bytes) => sum + bytes, 0) >
                     ctx.limits.maxStagingBytes
                 ) {
                   throw new StagingLimitError()
@@ -219,7 +231,7 @@ export async function writeBlob(
         return { entry: await fill(store), created: false }
       }
 
-      const transfer = existing === null ? null : await store.getTransfer(blobID)
+      const sessions = existing === null ? [] : await allSessions(store, blobID)
       throwIfAborted(signal)
 
       const input: Omit<BlobEntryInput, 'state'> = {
@@ -240,8 +252,9 @@ export async function writeBlob(
         await target.promoteEntry(input, chunks)
         const entry = await getFreshEntry(target, blobID)
         if (entry === null) throw new Error(`Blob entry ${blobID} missing after promotion`)
-        if (transfer !== null)
-          cleanup = afterCommit(ctx, provider, () => ctx.backend.abortStaging(transfer.stagingID))
+        cleanup = afterCommit(ctx, provider, async () => {
+          await Promise.all(sessions.map((session) => ctx.backend.abortStaging(session.stagingID)))
+        })
         if (ctx.db.isTransactionBound) reclaimOnRollback(ctx, provider, blobID)
         await commitStaging(ctx.backend, stagingID, blobID, originalError ?? replay?.originalError)
         staged = false
