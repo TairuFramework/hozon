@@ -10,11 +10,11 @@ jobs:
       working-directory: tests/e2e-web
       node-version: "24"
 
-  # WebKit is non-blocking: Playwright's WebKit may not provide OPFS sync access handles.
+  # WebKit is warning-only: Playwright's WebKit may not provide OPFS sync access handles.
+  # A failing run marks the step, not the job, so the check stays green.
   webkit:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    continue-on-error: true
     permissions:
       contents: read
     env:
@@ -38,8 +38,14 @@ jobs:
         run: pnpm run build
 
       - name: Run WebKit tests
+        id: webkit-tests
         working-directory: tests/e2e-web
+        continue-on-error: true
         run: pnpm run test:webkit
+
+      - name: Report WebKit failure as a warning
+        if: ${{ steps.webkit-tests.outcome == 'failure' }}
+        run: echo "::warning title=WebKit E2E::WebKit tests failed (warning only); see the playwright-report-webkit artifact."
 
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
