@@ -1,8 +1,8 @@
-import type { Adapter } from '@hozon/adapter'
+import type { Adapter, TransactionContext } from '@hozon/adapter'
 import { NodeSQLiteAdapter } from '@hozon/node-sqlite'
 import { expect, test, vi } from 'vitest'
 
-import { HozonDB, type TransactionContext, TransactionScopeError } from '../src/index.js'
+import { HozonDB, TransactionScopeError } from '../src/index.js'
 
 function fakeContext() {
   let active = false
