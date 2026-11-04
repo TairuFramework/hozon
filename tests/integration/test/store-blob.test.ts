@@ -1,6 +1,11 @@
 import { HozonDB } from '@hozon/db'
-import type { BlobChunkInput, BlobEntryInput, BlobStoreAPI } from '@hozon/store-blob'
-import { blobStoreDefinition, getBlobStore } from '@hozon/store-blob'
+import type {
+  BlobChunkInput,
+  BlobEntryInput,
+  BlobSessionInput,
+  BlobStoreAPI,
+} from '@hozon/store-blob'
+import { blobStoreDefinition, getBlobStore, withBlobLocks } from '@hozon/store-blob'
 import { afterEach, describe, expect, test } from 'vitest'
 
 import { backends } from '../src/backends.js'
@@ -27,17 +32,36 @@ function manifest(length: number): Array<BlobChunkInput> {
   }))
 }
 
+function session(input: BlobEntryInput, chunks: Array<BlobChunkInput>): BlobSessionInput {
+  return {
+    blobID: input.blobID,
+    owner: 'owner-a',
+    stagingID: 'stg-1',
+    contentLength: input.contentLength,
+    chunkSize: 4,
+    contentType: input.contentType ?? null,
+    encrypted: input.encrypted ?? false,
+    keyID: input.keyID ?? null,
+    createdAt: 1,
+    updatedAt: 1,
+    chunks,
+  }
+}
+
 function bytes(digests: Array<Uint8Array>): Array<Array<number>> {
   return digests.map((digest) => Array.from(digest))
 }
 
 describe.each(backends())('$name', (backend) => {
   const databases: Array<HozonDB> = []
-  const openStore = async (tablePrefix?: string): Promise<BlobStoreAPI> => {
+  const openDatabase = async (tablePrefix?: string): Promise<HozonDB> => {
     const db = new HozonDB({ adapter: await backend.createAdapter(), tablePrefix })
     databases.push(db)
     db.register(blobStoreDefinition)
-    return getBlobStore(db)
+    return db
+  }
+  const openStore = async (tablePrefix?: string): Promise<BlobStoreAPI> => {
+    return getBlobStore(await openDatabase(tablePrefix))
   }
 
   afterEach(async () => {
@@ -65,37 +89,46 @@ describe.each(backends())('$name', (backend) => {
     expect(bytes(digests)).toEqual(bytes(chunks.map((chunk) => chunk.digest)))
   })
 
-  test('transfer lifecycle finalizes complete chunks and clears progress', async () => {
-    const store = await openStore()
+  test('session lifecycle promotes complete chunks and clears progress', async () => {
+    const db = await openDatabase()
     const input = entry({ state: 'remote-only', chunkSize: 0 })
     const chunks = manifest(3)
-    await store.insertEntry(input, [])
-    expect(await store.getPresentChunkIndexes(input.blobID)).toEqual([])
-    await store.beginTransfer({
-      blobID: input.blobID,
-      chunkSize: 4,
-      chunks: [...chunks].reverse(),
-      stagingID: 'stg-1',
+    await withBlobLocks(db, [input.blobID], async (tx) => {
+      const store = await getBlobStore(tx)
+      await store.insertEntry(input, [])
+      expect(await store.getSession(input.blobID, 'owner-a')).toBeNull()
+      await store.putSession(session(input, [...chunks].reverse()))
+      expect(await store.getEntry(input.blobID)).toEqual(input)
+      expect((await store.getSession(input.blobID, 'owner-a'))?.presentChunks).toEqual([])
+      expect(
+        bytes((await store.getSession(input.blobID, 'owner-a'))?.chunks.map((c) => c.digest) ?? []),
+      ).toEqual(bytes(chunks.map((chunk) => chunk.digest)))
+      expect(await store.getChunkDigests(input.blobID)).toEqual([])
+      await store.markSessionChunk(input.blobID, 'owner-a', 1)
+      await store.markSessionChunk(input.blobID, 'owner-a', 1)
+      expect((await store.getSession(input.blobID, 'owner-a'))?.presentChunks).toEqual([1])
+      // Completion rejects missing chunks at the service layer; the store retains progress.
+      expect(
+        (await store.getSession(input.blobID, 'owner-a'))?.chunks
+          .filter((chunk) => !chunk.present)
+          .map((chunk) => chunk.index),
+      ).toEqual([0, 2])
+      expect((await store.getEntry(input.blobID))?.state).toBe('remote-only')
+      await store.touchSession(input.blobID, 'owner-a')
+      expect((await store.getSession(input.blobID, 'owner-a'))?.presentChunks).toEqual([1])
+      expect((await store.getSession(input.blobID, 'owner-a'))?.updatedAt).toBeGreaterThan(1)
+      await store.markSessionChunk(input.blobID, 'owner-a', 2)
+      await store.markSessionChunk(input.blobID, 'owner-a', 0)
+      expect((await store.getSession(input.blobID, 'owner-a'))?.presentChunks).toEqual([0, 1, 2])
+      const { state: _state, ...local } = input
+      await store.promoteEntry({ ...local, chunkSize: 4 }, chunks)
+      expect(await store.getEntry(input.blobID)).toEqual({ ...input, chunkSize: 4, state: 'local' })
+      expect(await store.getSession(input.blobID, 'owner-a')).toBeNull()
+      expect((await store.listSessions({ blobID: input.blobID, limit: 10 })).sessions).toEqual([])
+      expect(bytes(await store.getChunkDigests(input.blobID))).toEqual(
+        bytes(chunks.map((chunk) => chunk.digest)),
+      )
     })
-    expect(await store.getEntry(input.blobID)).toEqual({ ...input, chunkSize: 4, state: 'partial' })
-    expect(bytes(await store.getChunkDigests(input.blobID))).toEqual(
-      bytes(chunks.map((chunk) => chunk.digest)),
-    )
-    await store.recordTransferChunk(input.blobID, 1)
-    await store.recordTransferChunk(input.blobID, 1)
-    expect(await store.getPresentChunkIndexes(input.blobID)).toEqual([1])
-    await expect(store.finalizeTransfer(input.blobID)).rejects.toThrow(/chunk\(s\) missing/)
-    expect((await store.getEntry(input.blobID))?.state).toBe('partial')
-    expect(await store.getPresentChunkIndexes(input.blobID)).toEqual([1])
-    await store.recordTransferChunk(input.blobID, 2)
-    await store.recordTransferChunk(input.blobID, 0)
-    expect(await store.getPresentChunkIndexes(input.blobID)).toEqual([0, 1, 2])
-    await store.finalizeTransfer(input.blobID)
-    expect(await store.getEntry(input.blobID)).toEqual({ ...input, chunkSize: 4, state: 'local' })
-    expect(await store.getPresentChunkIndexes(input.blobID)).toEqual([])
-    expect(bytes(await store.getChunkDigests(input.blobID))).toEqual(
-      bytes(chunks.map((chunk) => chunk.digest)),
-    )
   })
 
   test('listEntries pages by (createdAt, blobID)', async () => {
@@ -114,51 +147,55 @@ describe.each(backends())('$name', (backend) => {
     await expect(store.listEntries({ limit: 0 })).rejects.toThrow()
   })
 
-  test('promoteEntry replaces a partial entry atomically', async () => {
-    const store = await openStore()
-    await store.insertEntry(entry({ state: 'remote-only', pinned: true, createdAt: 5 }), [])
-    await store.beginTransfer({
-      blobID: 'blob-1',
-      chunkSize: 4,
-      chunks: manifest(3),
-      stagingID: 'stg-1',
+  test('promoteEntry replaces an entry with an active session atomically', async () => {
+    const db = await openDatabase()
+    await withBlobLocks(db, ['blob-1', 'blob-2'], async (tx) => {
+      const store = await getBlobStore(tx)
+      const remote = entry({ state: 'remote-only', pinned: true, createdAt: 5 })
+      await store.insertEntry(remote, [])
+      await store.putSession(session(remote, manifest(3)))
+      await store.markSessionChunk('blob-1', 'owner-a', 0)
+      const { state: _state, ...input } = entry({ chunkSize: 6, createdAt: 99, pinned: false })
+      await store.promoteEntry(input, manifest(2))
+      expect(await store.getEntry('blob-1')).toMatchObject({
+        state: 'local',
+        chunkSize: 6,
+        pinned: true,
+        createdAt: 5,
+      })
+      expect(await store.getChunkDigests('blob-1')).toHaveLength(2)
+      expect(await store.getSession('blob-1', 'owner-a')).toBeNull()
+      const { state: _s, ...fresh } = entry({ blobID: 'blob-2' })
+      await store.promoteEntry(fresh, manifest(3))
+      expect((await store.getEntry('blob-2'))?.state).toBe('local')
+      expect(await store.getChunkDigests('blob-2')).toHaveLength(3)
     })
-    await store.recordTransferChunk('blob-1', 0)
-    const { state: _state, ...input } = entry({ chunkSize: 6, createdAt: 99, pinned: false })
-    await store.promoteEntry(input, manifest(2))
-    expect(await store.getEntry('blob-1')).toMatchObject({
-      state: 'local',
-      chunkSize: 6,
-      pinned: true,
-      createdAt: 5,
-    })
-    expect(await store.getChunkDigests('blob-1')).toHaveLength(2)
-    expect(await store.getTransfer('blob-1')).toBeNull()
-    const { state: _s, ...fresh } = entry({ blobID: 'blob-2' })
-    await store.promoteEntry(fresh, manifest(3))
-    expect((await store.getEntry('blob-2'))?.state).toBe('local')
-    expect(await store.getChunkDigests('blob-2')).toHaveLength(3)
   })
 
-  test('resetTransfer returns a partial entry to remote-only', async () => {
-    const store = await openStore()
-    await store.insertEntry(entry({ state: 'remote-only' }), [])
-    await store.beginTransfer({
-      blobID: 'blob-1',
-      chunkSize: 4,
-      chunks: manifest(3),
-      stagingID: 'stg-1',
+  test('deleting sessions leaves the entry remote-only', async () => {
+    const db = await openDatabase()
+    await withBlobLocks(db, ['blob-1', 'missing'], async (tx) => {
+      const store = await getBlobStore(tx)
+      const input = entry({ state: 'remote-only' })
+      await store.insertEntry(input, [])
+      await store.putSession(session(input, manifest(3)))
+      await store.markSessionChunk('blob-1', 'owner-a', 0)
+      await store.deleteSession('blob-1', 'owner-a')
+      expect((await store.getEntry('blob-1'))?.state).toBe('remote-only')
+      expect(await store.getChunkDigests('blob-1')).toEqual([])
+      expect(await store.getSession('blob-1', 'owner-a')).toBeNull()
+      await store.deleteSession('missing', 'owner-a')
+      await store.putSession(session(input, manifest(3)))
+      await store.deleteSessions('blob-1')
+      expect((await store.listSessions({ blobID: 'blob-1', limit: 10 })).sessions).toEqual([])
+      expect((await store.getEntry('blob-1'))?.state).toBe('remote-only')
+      expect(await store.getChunkDigests('blob-1')).toEqual([])
+      await store.deleteSessions('missing')
     })
-    await store.recordTransferChunk('blob-1', 0)
-    await store.resetTransfer('blob-1')
-    expect((await store.getEntry('blob-1'))?.state).toBe('remote-only')
-    expect(await store.getChunkDigests('blob-1')).toEqual([])
-    expect(await store.getTransfer('blob-1')).toBeNull()
-    await store.resetTransfer('missing')
   })
 
-  test('custom kubun table prefix supports an entry round trip', async () => {
-    const store = await openStore('kubun')
+  test('custom table prefix supports an entry round trip', async () => {
+    const store = await openStore('custom')
     const input = entry()
     await store.insertEntry(input, [])
     expect(await store.getEntry(input.blobID)).toEqual(input)
