@@ -1,0 +1,7 @@
+---
+"@hozon/blob": minor
+---
+
+Breaking: remove the configurable blob lock. Coordinate mutations through database transaction locks and bind caller transactions with `using(provider)` and lock-scoped `withLocks` views. Add durable deletion replay through `drainByteDeletions`, rollback byte reclaim, shared staging protection, writes-only `maxStagingBytes`, and bounded PostgreSQL deadlock retry for service-owned transactions.
+
+Run locked metadata statements before final byte publication, preserving intact staging across statement-deadlock retries. Retain prepared writes across `writeWith` attempts and preserve the original error when retry bytes no longer exist. Cleanup uses the lifetime-independent provider root and a dependency-free logger contract.

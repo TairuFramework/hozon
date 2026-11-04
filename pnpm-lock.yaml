@@ -203,9 +203,6 @@ catalogs:
     '@sozai/json':
       specifier: ^0.3.0
       version: 0.3.0
-    '@sozai/lock':
-      specifier: ^0.1.2
-      version: 0.1.2
     '@sozai/log':
       specifier: ^0.4.0
       version: 0.4.0
@@ -321,6 +318,9 @@ importers:
       '@hozon/node-sqlite':
         specifier: workspace:^
         version: link:../node-sqlite
+      '@hozon/postgres':
+        specifier: workspace:^
+        version: link:../postgres
       '@sozai/codec':
         specifier: 'catalog:'
         version: 0.4.4
@@ -370,9 +370,6 @@ importers:
       '@hozon/blob-backend':
         specifier: workspace:^
         version: link:../blob-backend
-      '@sozai/lock':
-        specifier: 'catalog:'
-        version: 0.1.2
     devDependencies:
       '@types/node':
         specifier: 'catalog:'
@@ -2333,9 +2330,6 @@ packages:
 
   '@sozai/json@0.3.0':
     resolution: {integrity: sha512-ArThPadz4kZjDqVnHI+UROwervbL9riIEYQ4b0g9e9mtA22EZ54lvNgsNvEUHL+oK53tlhgmHsgO2w5FwCTrhg==}
-
-  '@sozai/lock@0.1.2':
-    resolution: {integrity: sha512-OiC2CI9KULPQhlrIBJ6OcGbvIh5CD45gcVU+4YNs52tkzJtCb3jC2ThhPea3CLkpBbOnByJoqRRoZouqQKucfw==}
 
   '@sozai/log@0.4.0':
     resolution: {integrity: sha512-t/r0WfnC3n94s21pw3/2YV/C/0WTKzbrtsNGv8gNdDeKBFJ0a9jYEo8MBpcLr1c1zn15S5k3Gpt9sf3VvFGPEQ==}
@@ -6822,10 +6816,6 @@ snapshots:
       '@sozai/json': 0.3.0
 
   '@sozai/json@0.3.0': {}
-
-  '@sozai/lock@0.1.2':
-    dependencies:
-      '@sozai/async': 0.4.1
 
   '@sozai/log@0.4.0(@logtape/logtape@2.4.2)':
     dependencies:

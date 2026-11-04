@@ -83,3 +83,10 @@ export class TransferIncompleteError extends Error {
     this.name = 'TransferIncompleteError'
   }
 }
+
+export class StagingLimitError extends Error {
+  constructor() {
+    super('Staging byte limit exceeded')
+    this.name = 'StagingLimitError'
+  }
+}

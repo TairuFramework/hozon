@@ -217,12 +217,25 @@ The plugin would prefix unqualified names such as `sqlite_master` or `informatio
 Transaction and savepoint providers report `true`.
 Their `transactionRoot` identifies the outermost transaction provider, shared across savepoints and inline scopes.
 Independent transactions have distinct roots.
+`root` identifies the lifetime-independent root database provider across external scopes, transactions, savepoints, and lock-scoped providers.
+For `HozonDB`, `db.root === db`. Derived providers retain this identity after their transaction or scope settles.
+This permits post-commit or post-rollback cleanup to open a fresh transaction through the surviving database.
+WARNING: use the current transaction provider for work inside an active transaction. `root` does not provide atomic nesting.
+Custom `StoreProvider` implementations may omit `root`. A transaction-bound custom provider needs a root for cleanup after settlement.
+
 `transactionRoot` provides identity only, for example as a key for caller-owned state in a `WeakMap`.
 It does not change loader ownership or dispatch.
 
 WARNING: obtain all reading APIs through the supplied transaction or savepoint provider inside a transaction.
 Root and external scope APIs retain their original executor, which can deadlock on single-connection SQLite when awaited inside a transaction.
 Reads through the transaction provider complete on that connection.
+Root `withTransaction` calls inside an active caller transaction throw `TransactionScopeError` on single-connection SQLite when async context is available.
+This includes transactions opened through an external scope.
+Use the supplied transaction provider, or a service view bound through `using(tx)`, inside the callback.
+Unrelated concurrent calls still queue normally.
+Node, Bun, and Deno use their available `AsyncLocalStorage` implementation without a static Node runtime import.
+Expo and browser runtimes without async context cannot detect this misuse. Their callers must also use the supplied transaction provider.
+Work inheriting a completed transaction's context can open a fresh transaction.
 `context.provider.isTransactionBound` reflects this binding, while `context.root.isTransactionBound` remains `false`.
 
 Preflight checks schema versions before adapter preparation and migrations. Concurrent callers share one preflight attempt. A successful preflight is cached for the instance; a failed one (a check or `prepare()` rejection) is not, so the next `migrate()`, `getStore()` or `withTransaction()` reruns the read-only checks and then preparation. Every SQLite dialect is wrapped so migrations run in a transaction. A failed migration rolls back and retries on the next open. There is no per-driver opt-out. `withTransaction` passes a scoped provider to the callback. Store methods needing atomicity use `withStoreTransaction`; they do not call `.transaction()` directly. `withKeepSet` requires a transaction and serializes concurrent calls that share one transaction and keep-table name, in call order, so concurrent `deleteBefore` calls with keep lists inside one `withTransaction` both succeed. Its callback must not call `withKeepSet` for the same table.

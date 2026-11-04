@@ -99,5 +99,23 @@ export function blobStoreMigrations(ctx: MigrationContext): Record<string, Migra
         await db.schema.alterTable('blob_entries').dropColumn('content_type').execute()
       },
     },
+    '2-byte-deletions': {
+      async up(db) {
+        await db.schema
+          .createTable('blob_byte_deletions')
+          .addColumn('blob_id', ctx.types.text, (column) => column.notNull())
+          .addColumn('queued_at', ctx.types.bigint, (column) => column.notNull())
+          .addPrimaryKeyConstraint(`${ctx.tablePrefix}_blob_byte_deletions_pkey`, ['blob_id'])
+          .execute()
+        await db.schema
+          .createIndex(`${ctx.tablePrefix}_blob_byte_deletions_at_idx`)
+          .on('blob_byte_deletions')
+          .column('queued_at')
+          .execute()
+      },
+      async down(db) {
+        await db.schema.dropTable('blob_byte_deletions').execute()
+      },
+    },
   }
 }

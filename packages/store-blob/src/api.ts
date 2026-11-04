@@ -107,6 +107,28 @@ export function createBlobStoreAPI(
   }
 
   return {
+    async enqueueByteDeletion(blobID, queuedAt = Date.now()) {
+      await db
+        .insertInto('blob_byte_deletions')
+        .values({ blob_id: blobID, queued_at: queuedAt })
+        .onConflict((oc) => oc.column('blob_id').doUpdateSet({ queued_at: queuedAt }))
+        .execute()
+    },
+    async listByteDeletions({ limit = 100 } = {}) {
+      assertBatchSize(limit, 500)
+      if (!Number.isInteger(limit) || limit < 1) throw new Error('Invalid limit')
+      const rows = await db
+        .selectFrom('blob_byte_deletions')
+        .selectAll()
+        .orderBy('queued_at', 'asc')
+        .orderBy('blob_id', 'asc')
+        .limit(limit)
+        .execute()
+      return rows.map((row) => ({ blobID: row.blob_id, queuedAt: row.queued_at }))
+    },
+    async deleteByteDeletion(blobID) {
+      await db.deleteFrom('blob_byte_deletions').where('blob_id', '=', blobID).execute()
+    },
     async insertEntry(entry, chunks) {
       return mutate(entry.blobID, async () => {
         await withStoreTransaction(db, async (trx) => {
@@ -381,6 +403,7 @@ export function createBlobStoreAPI(
           await trx.deleteFrom('blob_transfers').where('blob_id', '=', entry.blobID).execute()
           await trx.deleteFrom('blob_chunks').where('blob_id', '=', entry.blobID).execute()
           await insertManifest(trx, entry.blobID, chunks)
+          await trx.deleteFrom('blob_byte_deletions').where('blob_id', '=', entry.blobID).execute()
         })
       })
     },

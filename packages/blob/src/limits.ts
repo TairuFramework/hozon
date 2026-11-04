@@ -1,4 +1,5 @@
 export type BlobLimits = {
+  maxStagingBytes: number | undefined
   maxBlobSize: number
   maxChunkSize: number
   minChunkSize: number
@@ -7,6 +8,7 @@ export type BlobLimits = {
 export const DEFAULT_CHUNK_SIZE = 1024 * 1024
 
 export const DEFAULT_LIMITS: BlobLimits = {
+  maxStagingBytes: undefined,
   maxBlobSize: 1024 * 1024 * 1024,
   maxChunkSize: 16 * 1024 * 1024,
   minChunkSize: 1024,
@@ -18,11 +20,14 @@ function isPositiveInteger(value: number): boolean {
 
 export function resolveLimits(limits: Partial<BlobLimits> = {}): BlobLimits {
   const resolved: BlobLimits = {
+    maxStagingBytes: limits.maxStagingBytes,
     maxBlobSize: limits.maxBlobSize ?? DEFAULT_LIMITS.maxBlobSize,
     maxChunkSize: limits.maxChunkSize ?? DEFAULT_LIMITS.maxChunkSize,
     minChunkSize: limits.minChunkSize ?? DEFAULT_LIMITS.minChunkSize,
   }
   if (
+    (resolved.maxStagingBytes !== undefined &&
+      (!Number.isSafeInteger(resolved.maxStagingBytes) || resolved.maxStagingBytes < 0)) ||
     !Number.isSafeInteger(resolved.maxBlobSize) ||
     resolved.maxBlobSize < 0 ||
     !isPositiveInteger(resolved.minChunkSize) ||

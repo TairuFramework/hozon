@@ -11,6 +11,7 @@ import {
   SavepointOverlapError,
   SavepointReleasedError,
   StoreAlreadyRegisteredError,
+  TransactionScopeError,
 } from './errors.js'
 import { LoaderRegistry } from './loader-registry.js'
 import { checkStore, readAppliedMigrations } from './preflight.js'
@@ -21,6 +22,7 @@ import {
   settleSyncProvider,
 } from './sync.js'
 import { TablePrefixPlugin } from './table-prefix.js'
+import { createTransactionContext } from './transaction-context.js'
 
 export type MigrationContext = {
   tablePrefix: string
@@ -66,6 +68,8 @@ export type StoreDefinition<Tables, API, Ext extends ContextExtension = {}> = {
 }
 
 export type StoreProvider<Stores extends Record<string, unknown> = Record<string, unknown>> = {
+  /** Lifetime-independent root database provider, when supplied by the implementation. */
+  readonly root?: StoreProvider
   readonly isTransactionBound: boolean
   /** Identity of the outermost transaction provider, shared by savepoints. Absent outside transactions. */
   readonly transactionRoot?: StoreProvider
@@ -134,6 +138,7 @@ type StoredDefinition<Ext extends ContextExtension> = {
 
 // biome-ignore lint/complexity/noBannedTypes: The default adds no context fields.
 export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider {
+  #transactionContext = createTransactionContext()
   #context?: ContextFactory<Ext>
   #closeHooks: Array<() => Promise<void> | void> = []
   #tablePrefix: string
@@ -174,6 +179,10 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
 
   get adapter(): Adapter {
     return this.#adapter
+  }
+
+  get root(): StoreProvider {
+    return this
   }
 
   get isTransactionBound(): boolean {
@@ -231,6 +240,7 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
     const registry = new LoaderRegistry({ remember: true })
     const storeAPIs = new Map<string, unknown>()
     const provider: StoreProvider<Stores> = {
+      root: this,
       isTransactionBound: false,
       getStore: async <S extends keyof Stores & string>(name: S): Promise<Stores[S]> => {
         this.#assertOpen()
@@ -272,8 +282,9 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
    * underlying driver serializes them.
    *
    * Callers MUST use the provided `tx` inside the callback. Calling
-   * `db.withTransaction` on the same instance inside the callback opens a
-   * new independent transaction (no atomic nesting) and is a bug.
+   * `db.withTransaction` on the same instance inside the callback is a bug.
+   * On SQLite with async context, it throws TransactionScopeError. Without
+   * async context it can deadlock. Postgres opens an independent transaction.
    */
   async withTransaction<Stores extends Record<string, unknown>, R>(
     fn: (tx: StoreProvider<Stores>) => Promise<R>,
@@ -285,6 +296,10 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
     fn: (tx: StoreProvider<Stores>) => Promise<R>,
     beforeHooks?: () => void,
   ): Promise<R> {
+    const transactionContext = await this.#transactionContext
+    if (this.#adapter.kind === 'sqlite' && transactionContext?.getStore()?.active) {
+      throw new TransactionScopeError()
+    }
     // Migrate every registered store before opening the transaction. Stores
     // are internal and known up front, so a broken migration should fail fast
     // at startup rather than leave a runtime partition where one store's
@@ -320,6 +335,7 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
           }
           const txStoreAPIs = new Map<string, unknown>()
           const provider: StoreProvider<Stores> = {
+            root: this,
             isTransactionBound: true,
             get transactionRoot() {
               return transactionRoot ?? provider
@@ -456,11 +472,16 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
           return provider
         }
 
-        try {
-          return await fn(createScopedProvider(commitHooks, rollbackHooks))
-        } finally {
-          registry.dispatchAll()
+        const state = { active: true }
+        const run = async () => {
+          try {
+            return await fn(createScopedProvider(commitHooks, rollbackHooks))
+          } finally {
+            state.active = false
+            registry.dispatchAll()
+          }
         }
+        return transactionContext == null ? await run() : await transactionContext.run(state, run)
       })
     } catch (err) {
       registry.close()

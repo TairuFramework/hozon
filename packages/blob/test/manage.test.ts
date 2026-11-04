@@ -1,8 +1,8 @@
-import type { BlobBackend, BlobLock } from '@hozon/blob-backend'
-import { createMemoryBlobLock } from '@hozon/blob-backend'
+import type { BlobBackend } from '@hozon/blob-backend'
 import { afterEach, beforeEach, describe, expect, test } from 'vitest'
 
 import { BlobNotFoundError } from '../src/index.js'
+import { deferred, gatedBackend } from './gated-backend.js'
 import {
   backendFactories,
   bytesOf,
@@ -69,44 +69,29 @@ describe.each(backendFactories)('manage ($name)', (factory) => {
         let sawPresent = 0
         let sawAbsent = 0
         for (let i = 0; i < 10; i++) {
-          const base = createMemoryBlobLock()
-          let calls = 0
-          let armed = false
-          let started: Promise<void> | undefined
-          let release: () => void = () => {}
-          const secondRequested = new Promise<void>((resolve) => {
-            release = resolve
-          })
-          let startOther: () => Promise<unknown> = async () => {}
-          const lock: BlobLock = {
-            withLock(id, fn) {
-              const n = armed ? ++calls : 0
-              if (n === 2) release()
-              return base.withLock(id, async () => {
-                if (n === 1) {
-                  if (order === 'write-first') started = startOther().then(() => {})
-                  else await secondRequested
-                }
-                return await fn()
-              })
-            },
-          }
-          const built = await createTestService({ backend, chunkSize: 4096, lock })
+          const gate = gatedBackend(backend)
+          const built = await createTestService({ backend: gate.backend, chunkSize: 4096 })
           try {
             const id = (await built.service.write({ stream: sourceOf(data).stream })).entry.blobID
-            armed = true
-            let first: Promise<unknown>
-            let second: Promise<unknown>
             if (order === 'write-first') {
-              // The delete is issued once the write holds the lock.
-              startOther = () => built.service.delete(id)
-              first = built.service.write({ stream: sourceOf(data, 500).stream })
+              const entered = deferred()
+              const release = deferred()
+              const first = built.service.withLocks([id], async (ops) => {
+                await ops.write({ stream: sourceOf(data, 500).stream })
+                entered.resolve()
+                await release.promise
+              })
+              await entered.promise
+              const second = built.service.delete(id)
+              release.resolve()
               await first
-              await started
+              await second
             } else {
-              // The delete holds the lock until the write has requested it.
-              first = built.service.delete(id)
-              second = built.service.write({ stream: sourceOf(data, 500).stream })
+              const parked = gate.park('delete')
+              const first = built.service.delete(id)
+              await parked.entered
+              const second = built.service.write({ stream: sourceOf(data, 500).stream })
+              parked.release()
               await Promise.all([first, second])
             }
             const row = (await built.store.getEntry(id)) !== null
@@ -120,7 +105,7 @@ describe.each(backendFactories)('manage ($name)', (factory) => {
           }
         }
         expect(order === 'delete-first' ? sawPresent : sawAbsent).toBe(10)
-      })
+      }, 30_000)
     },
   )
 })

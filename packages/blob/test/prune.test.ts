@@ -1,5 +1,4 @@
-import type { BlobBackend, BlobLock } from '@hozon/blob-backend'
-import { createMemoryBlobLock } from '@hozon/blob-backend'
+import type { BlobBackend } from '@hozon/blob-backend'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 import type { TransferManifest } from '../src/index.js'
@@ -57,37 +56,16 @@ async function orphanStaging(backend: BlobBackend, stagingID: string): Promise<v
   await writer.close()
 }
 
-// Lock that runs a one-shot hook before acquiring the underlying lock.
-function hookedLock(): { lock: BlobLock; arm(hook: () => Promise<void>): void } {
-  const inner = createMemoryBlobLock()
-  let hook: (() => Promise<void>) | null = null
-  return {
-    lock: {
-      async withLock(id, fn) {
-        const pending = hook
-        hook = null
-        await pending?.()
-        return await inner.withLock(id, fn)
-      },
-    },
-    arm(next) {
-      hook = next
-    },
-  }
-}
-
 describe.each(backendFactories)('pruneStaging ($name)', (factory) => {
   let backend: BlobBackend
   let cleanup: () => Promise<void>
   let touchStaging: (stagingID: string, time: Date) => Promise<void>
   let ctx: TestService
-  let hooked: ReturnType<typeof hookedLock>
 
   beforeEach(async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     ;({ backend, cleanup, touchStaging } = await factory.create())
-    hooked = hookedLock()
-    ctx = await createTestService({ backend, chunkSize: CHUNK, lock: hooked.lock })
+    ctx = await createTestService({ backend, chunkSize: CHUNK })
   })
   afterEach(async () => {
     vi.useRealTimers()
@@ -168,8 +146,11 @@ describe.each(backendFactories)('pruneStaging ($name)', (factory) => {
     await ctx.service.stageChunk({ id: src.id, index: 0, bytes: src.chunks[0] as Uint8Array })
 
     vi.setSystemTime(Date.now() + 2 * HOUR)
-    hooked.arm(async () => {
+    const lookup = ctx.store.getTransferByStagingID.bind(ctx.store)
+    vi.spyOn(ctx.store, 'getTransferByStagingID').mockImplementationOnce(async (stagingID) => {
+      const session = await lookup(stagingID)
       await ctx.service.stageChunk({ id: src.id, index: 1, bytes: src.chunks[1] as Uint8Array })
+      return session
     })
     const result = await ctx.service.pruneStaging(new Date(Date.now() - HOUR))
     expect(result).toEqual({ removed: 0, failed: 0 })

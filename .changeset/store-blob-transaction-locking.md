@@ -1,0 +1,5 @@
+---
+"@hozon/store-blob": minor
+---
+
+Breaking: require `withBlobLocks` around entry, transfer, and deletion-journal mutations. Export `BLOB_LOCK_TABLE` and `withBlobLocks`. Add the `2-byte-deletions` migration and journal methods for durable byte cleanup without changing applied migrations.

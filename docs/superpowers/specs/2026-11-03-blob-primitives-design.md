@@ -183,7 +183,8 @@ export type BlobService = BlobOperations & {
 2. `withBlobLocks(P, [blobID], tx => ...)`:
    - read the entry fresh;
    - if `local`: discard staging, fill a null content type, return `created: false`;
-   - else `backend.commit(stagingID, blobID)`, then `promoteEntry` (keeps `pinned` and `createdAt`), delete every fetch session of the blob, delete its byte-deletion journal row, upsert its release row (section 2).
+   - else `promoteEntry` (keeps `pinned` and `createdAt`), delete every fetch session of the blob, delete its byte-deletion journal row, upsert its release row (section 2), then `backend.commit(stagingID, blobID)` as the last step before the transaction commits.
+   - Bytes commit last because Postgres raises `40P01` only on a statement that waits for a lock. Every such statement runs before `backend.commit`, so a deadlock victim rolls back with its staging intact, and the retry commits it. A failure of `COMMIT` itself leaves orphan bytes for `reconcileBytes`. A retry that finds neither its staging nor the committed key rethrows the original error.
 3. Staging areas of the deleted sessions are aborted after commit (`tx.onCommit`). On a provider that is not transaction-bound this is right after the call.
 4. On a transaction-bound `P`, register `tx.onRollback(() => reclaim(blobID))`. `reclaim` runs in its own transaction, under the lock: if no `local` row exists, `backend.delete(blobID)`.
 
@@ -482,7 +483,7 @@ export class BlobNotLocalError extends BlobNotFoundError {
   1. read the session; if absent: entry `local` gives `{ entry, fetched: false }`, else `TransferNotFoundError`;
   2. all chunks present, else `TransferIncompleteError`;
   3. hash the staging area (outside the lock when allowed);
-  4. under the lock: re-read the session; staging ID changed or session gone: as step 1. Entry already `local`: end this session, return `fetched: false`. Hash mismatch: end only this session, throw `BlobIDMismatchError`. Else `backend.commit`, promote (metadata from the entry, null fields filled from the session manifest; chunk rows from the session manifest, replacing any stored layout), delete every session of the blob, clear the journal row, upsert a release row. Staging of ended sessions is aborted after commit.
+  4. under the lock: re-read the session; staging ID changed or session gone: as step 1. Entry already `local`: end this session, return `fetched: false`. Hash mismatch: end only this session, throw `BlobIDMismatchError`. Else promote (metadata from the entry, null fields filled from the session manifest; chunk rows from the session manifest, replacing any stored layout), delete every session of the blob, clear the journal row, upsert a release row, then `backend.commit` last, as in the write path. Staging of ended sessions is aborted after commit.
 - `abortFetch({ id, owner })`: under the lock, end this session.
 - `abortFetches({ owner })` or `abortFetches({ ownerPrefix })`: page through `listTransfers` with the same selector and abort each session, one lock per blob. Both are served by the `(owner, blob_id)` index; the prefix uses the exact ASCII bound.
 - `listTransfers`: keyset pagination; by owner or owner prefix uses the `(owner, blob_id)` index.
@@ -833,6 +834,7 @@ Order: hozon PRs merged and published; teikyo bumps its hozon range, drops `lock
 - No stub: refs without an entry are allowed; `beginFetch` creates the entry.
 - Staging stability: part of the `BlobBackend` contract, with a backend suite case, documented on `@hozon/blob-node-fs`.
 - Deadlock retry: only hozon-opened transactions, on `40P01`, three attempts with jitter.
+- Retry and bytes: `write` and `completeFetch` run `backend.commit` after every database statement of the locked transaction, so a deadlock victim keeps its staging for the retry.
 - Owners: printable ASCII, at most 255 characters; `abortFetches({ ownerPrefix })` served by the `(owner, blob_id)` index.
 
 ## Open questions

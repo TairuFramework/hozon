@@ -12,6 +12,7 @@ import {
   InvalidManifestError,
   TransferIncompleteError,
 } from '../src/index.js'
+import { gatedBackend } from './gated-backend.js'
 import {
   backendFactories,
   bytesOf,
@@ -402,13 +403,19 @@ describe.each(backendFactories)('transfer ($name)', (factory) => {
     await ctx.service.beginFetch(src.id, src.manifest)
     for (const [index, chunk] of src.chunks.entries())
       await ctx.service.stageChunk({ id: src.id, index, bytes: chunk })
-    const done = ctx.service.completeFetch(src.id)
-    const late = ctx.service.stageChunk({
+    const gate = gatedBackend(backend)
+    const service = createBlobService({ db: ctx.db, backend: gate.backend, chunkSize: CHUNK })
+    const parked = gate.park('commit')
+    const done = service.completeFetch(src.id)
+    await parked.entered
+    const late = service.stageChunk({
       id: src.id,
       index: 0,
       bytes: src.chunks[0] as Uint8Array,
     })
-    await expect(late).rejects.toThrow(BlobNotFoundError)
+    const rejected = expect(late).rejects.toThrow(BlobNotFoundError)
+    parked.release()
+    await rejected
     expect((await done).state).toBe('local')
     expect(await listStaging(backend)).toEqual([])
   })

@@ -1,4 +1,3 @@
-export { BlobLockTimeoutError } from '@hozon/blob-backend'
 export { InvalidBlobIDError } from '@hozon/blob-id'
 export { InvalidCursorError } from '@hozon/store-blob'
 
@@ -16,10 +15,16 @@ export {
   type ContentTypeMismatchErrorParams,
   InvalidManifestError,
   InvalidRangeError,
+  StagingLimitError,
   TransferIncompleteError,
   type TransferIncompleteErrorParams,
 } from './errors.js'
 export { type BlobLimits, DEFAULT_CHUNK_SIZE, DEFAULT_LIMITS } from './limits.js'
-export { type BlobService, type BlobServiceParams, createBlobService } from './service.js'
+export {
+  type BlobOperations,
+  type BlobService,
+  type BlobServiceParams,
+  createBlobService,
+} from './service.js'
 export type { StageChunkParams, TransferManifest } from './transfer.js'
 export type { WriteOptions, WriteParams, WriteResult } from './write.js'

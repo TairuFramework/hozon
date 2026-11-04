@@ -1,5 +1,7 @@
 import { getBlobStore } from '@hozon/store-blob'
 
+import { lockBlobs } from './locking.js'
+import { afterCommit } from './manage.js'
 import type { WriteContext } from './write.js'
 
 // Removes abandoned staging areas last modified before `olderThan`. Only areas
@@ -24,6 +26,7 @@ export async function pruneStaging(
 
   for (const stagingID of old) {
     try {
+      if (ctx.activeWrites.has(stagingID)) continue
       const session = await store.getTransferByStagingID(stagingID)
       if (session === null) {
         // Write staging IDs are random and never reused, so a flag check is enough.
@@ -37,16 +40,21 @@ export async function pruneStaging(
 
       // One lock acquisition per transfer area; the session is re-read under it
       // because a chunk may have been staged since the listing.
-      const pruned = await ctx.lock.withLock(session.blobID, async () => {
-        const locked = await getBlobStore(ctx.db)
+      let cleanup: Promise<boolean> | undefined
+      const pruned = await lockBlobs(ctx.db, [session.blobID], async (tx) => {
+        const locked = await getBlobStore(tx)
         const current = await locked.getTransfer(session.blobID)
         if (current === null || current.stagingID !== stagingID || current.updatedAt >= cutoff) {
           return false
         }
-        await ctx.backend.abortStaging(stagingID)
         await locked.resetTransfer(session.blobID)
+        cleanup = afterCommit(ctx, tx, () => ctx.backend.abortStaging(stagingID))
         return true
       })
+      if (!ctx.db.isTransactionBound && (await cleanup) === false) {
+        failed++
+        continue
+      }
       if (pruned) removed++
     } catch {
       failed++
