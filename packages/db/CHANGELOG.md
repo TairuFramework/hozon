@@ -1,5 +1,16 @@
 # @hozon/db
 
+## 0.5.1
+
+### Patch Changes
+
+- Throw `TransactionScopeError` when a root transaction starts inside its active caller transaction on single-connection SQLite. Detect caller context through optional adapter-provided transaction context without runtime probing or platform imports, while preserving unrelated concurrent queueing and transaction-bound nesting.
+
+  Expose optional `StoreProvider.root` identity across scopes, transactions, savepoints, and lock-derived providers so cleanup can open fresh transactions after settlement.
+
+- Updated dependencies:
+  - @hozon/adapter@0.3.0
+
 ## 0.5.0
 
 ### Minor Changes

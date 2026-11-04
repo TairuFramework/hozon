@@ -1,6 +1,6 @@
 {
   "name": "@hozon/adapter",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Database adapter interfaces and dialect behavior for Hozon",
   "repository": {
     "type": "git",

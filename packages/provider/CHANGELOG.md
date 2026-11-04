@@ -1,5 +1,13 @@
 # @hozon/provider
 
+## 0.3.1
+
+### Patch Changes
+
+- Updated dependencies:
+  - @hozon/adapter@0.3.0
+  - @hozon/node-sqlite@0.3.0
+
 ## 0.3.0
 
 ### Minor Changes
