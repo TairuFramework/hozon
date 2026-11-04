@@ -44,11 +44,6 @@ export type BlobByteDeletionTable = { blob_id: string; queued_at: number }
 export type BlobRefTable = { blob_id: string; kind: string; key: string; created_at: number }
 export type BlobReleaseTable = { blob_id: string; released_at: number }
 
-export type BlobByteDeletionTable = { blob_id: string; queued_at: number }
-
-export type BlobRefTable = { blob_id: string; kind: string; key: string; created_at: number }
-export type BlobReleaseTable = { blob_id: string; released_at: number }
-
 export type BlobTables = {
   blob_refs: BlobRefTable
   blob_releases: BlobReleaseTable
