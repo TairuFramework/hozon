@@ -2,15 +2,33 @@ import type { BlobBackend, BlobRange } from '@hozon/blob-backend'
 import type { BlobIDCodec } from '@hozon/blob-id'
 import { blake3Codec } from '@hozon/blob-id'
 import type { StoreProvider } from '@hozon/db'
-import type { BlobEntry } from '@hozon/store-blob'
+import type {
+  BlobEntry,
+  BlobHolderSelector,
+  BlobRef,
+  BlobRefInput,
+  FindRefsParams,
+} from '@hozon/store-blob'
 import type { Runtime } from '@sozai/runtime'
 import { createRuntime } from '@sozai/runtime'
 
 import { assertChunkSize, type BlobLimits, DEFAULT_CHUNK_SIZE, resolveLimits } from './limits.js'
 import { lockBlobs, retryTransaction } from './locking.js'
-import { deleteBlob, drainByteDeletions, setBlobPinned } from './manage.js'
+import {
+  type CollectParams,
+  type CollectResult,
+  collect,
+  type MaintenanceParams,
+  type MaintenanceResult,
+  type ReconcileParams,
+  type ReconcileResult,
+  reconcileBytes,
+  runMaintenance,
+} from './maintenance.js'
+import { deleteBlob, drainByteDeletions, evictBlob, setBlobPinned } from './manage.js'
 import { pruneStaging } from './prune.js'
 import { createBlobReadStream, getChunkDigests, getEntry, hasBlob, listEntries } from './read.js'
+import { addRefs, findRefs, listRefs, removeHolders, removeRefs } from './refs.js'
 import {
   beginFetch,
   completeFetch,
@@ -49,7 +67,13 @@ export type BlobOperations = {
   getChunkDigests(id: string): Promise<Array<Uint8Array>>
   createReadStream(id: string, range?: BlobRange): Promise<ReadableStream<Uint8Array>>
   setPinned(id: string, pinned: boolean): Promise<void>
-  delete(id: string): Promise<boolean>
+  delete(id: string, options?: { force?: boolean }): Promise<boolean>
+  evict(id: string): Promise<boolean>
+  addRefs(refs: Array<BlobRefInput>): Promise<Map<string, BlobEntry | null>>
+  removeRefs(refs: Array<BlobRefInput>): Promise<number>
+  removeHolders(selector: BlobHolderSelector): Promise<number>
+  listRefs(id: string): Promise<Array<BlobRef>>
+  findRefs(params: FindRefsParams): Promise<{ refs: Array<BlobRef>; nextCursor: string | null }>
   beginFetch(id: string, manifest: TransferManifest): Promise<void>
   getPresentChunks(id: string): Promise<Array<number>>
   stageChunk(params: StageChunkParams): Promise<void>
@@ -61,6 +85,9 @@ export type BlobOperations = {
 }
 
 export type BlobService = BlobOperations & {
+  collect(params: CollectParams): Promise<CollectResult>
+  reconcileBytes(params: ReconcileParams): Promise<ReconcileResult>
+  runMaintenance(params: MaintenanceParams): Promise<MaintenanceResult>
   using(provider: StoreProvider): BlobOperations
   writeWith<T>(
     params: WriteParams & { fn: (tx: StoreProvider, entry: BlobEntry) => Promise<T> },
@@ -105,7 +132,13 @@ export function createBlobService(params: BlobServiceParams): BlobService {
       getChunkDigests: (id) => getChunkDigests(view, id),
       createReadStream: (id, range) => createBlobReadStream(view, id, range),
       setPinned: (id, pinned) => setBlobPinned(view, id, pinned),
-      delete: (id) => deleteBlob(view, id),
+      delete: (id, options) => deleteBlob(view, id, options),
+      evict: (id) => evictBlob(view, id),
+      addRefs: (refs) => addRefs(view, refs),
+      removeRefs: (refs) => removeRefs(view, refs),
+      removeHolders: (selector) => removeHolders(view, selector),
+      listRefs: (id) => listRefs(view, id),
+      findRefs: (params) => findRefs(view, params),
       beginFetch: (id, manifest) => beginFetch(view, id, manifest),
       getPresentChunks: (id) => getPresentChunks(view, id),
       stageChunk: (params) => stageChunk(view, params),
@@ -123,6 +156,9 @@ export function createBlobService(params: BlobServiceParams): BlobService {
   return {
     ...ops,
     using,
+    collect: (params) => collect(ctx, params),
+    reconcileBytes: (params) => reconcileBytes(ctx, params),
+    runMaintenance: (params) => runMaintenance(ctx, params),
     codec: ctx.codec,
     limits: ctx.limits,
     pruneStaging: (olderThan) => pruneStaging(ctx, olderThan),

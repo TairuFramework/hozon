@@ -143,6 +143,26 @@ export class FSBlobBackend implements BlobBackend {
     }
   }
 
+  async *listKeys(): AsyncIterable<{ key: string; modifiedAt: Date }> {
+    let names: Array<string>
+    try {
+      names = await readdir(this.#contentDir)
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return
+      throw error
+    }
+    for (const key of names) {
+      assertSafeName(key)
+      try {
+        const info = await stat(join(this.#contentDir, key))
+        if (info.isFile()) yield { key, modifiedAt: info.mtime }
+      } catch (error) {
+        if (error instanceof Error && 'code' in error && error.code === 'ENOENT') continue
+        throw error
+      }
+    }
+  }
+
   async createReadStream(key: string, range?: BlobRange): Promise<ReadableStream<Uint8Array>> {
     // createReadStream's `end` is inclusive, matching BlobRange.
     const options = range == null ? undefined : { start: range.start, end: range.end }

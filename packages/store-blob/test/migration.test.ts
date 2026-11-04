@@ -9,6 +9,51 @@ import { blobStoreMigrations } from '../src/migrations.js'
 
 type Tables = Record<string, unknown>
 
+test('holder migration leaves existing entries unreleased and drops only its own tables', async () => {
+  const adapter = new NodeSQLiteAdapter({ database: ':memory:' })
+  const db = new HozonDB({ adapter })
+  db.register<Tables, Kysely<Tables>>({ name: 'raw', migrations: {}, createAPI: (query) => query })
+  try {
+    const raw = await db.getStore<Kysely<Tables>>('raw')
+    const migrations = blobStoreMigrations({
+      tablePrefix: 'hozon',
+      kind: adapter.kind,
+      types: adapter.types,
+      functions: adapter.functions,
+    })
+    for (const name of ['0-init', '1-sessions', '2-byte-deletions']) {
+      const migration = migrations[name]
+      if (migration === undefined) throw new Error('Missing migration')
+      await migration.up(raw)
+    }
+    await raw
+      .insertInto('blob_entries')
+      .values({ blob_id: 'old', content_length: 8, chunk_size: 4, state: 'local', created_at: 1 })
+      .execute()
+    const migration = migrations['3-holders']
+    if (migration?.down === undefined) throw new Error('Missing holder migration')
+    await migration.up(raw)
+    expect(await raw.selectFrom('blob_releases').selectAll().execute()).toEqual([])
+    await raw
+      .insertInto('blob_refs')
+      .values({ blob_id: 'absent', kind: 'doc', key: 'owner-a', created_at: 1 })
+      .execute()
+    const names = (await raw.introspection.getTables()).map((t) => t.name)
+    expect(names).toContain('hozon_blob_refs')
+    expect(names).toContain('hozon_blob_releases')
+    await migration.down(raw)
+    expect((await raw.introspection.getTables()).map((t) => t.name)).not.toContain(
+      'hozon_blob_refs',
+    )
+    expect(adapter.database.prepare('SELECT blob_id FROM hozon_blob_entries').all()).toEqual([
+      { blob_id: 'old' },
+    ])
+    expect(await raw.selectFrom('blob_byte_deletions').selectAll().execute()).toEqual([])
+  } finally {
+    await db.close()
+  }
+})
+
 test('1-sessions backfills partial entries to remote-only and keeps local ones', async () => {
   const adapter = new NodeSQLiteAdapter({ database: ':memory:' })
   const db = new HozonDB({ adapter })

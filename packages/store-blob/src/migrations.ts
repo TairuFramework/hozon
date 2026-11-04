@@ -1,4 +1,5 @@
 import type { Migration, MigrationContext } from '@hozon/db'
+import { compareText } from '@hozon/db'
 
 export function blobStoreMigrations(ctx: MigrationContext): Record<string, Migration> {
   return {
@@ -115,6 +116,45 @@ export function blobStoreMigrations(ctx: MigrationContext): Record<string, Migra
       },
       async down(db) {
         await db.schema.dropTable('blob_byte_deletions').execute()
+      },
+    },
+    '3-holders': {
+      async up(db) {
+        await db.schema
+          .createTable('blob_refs')
+          .addColumn('blob_id', ctx.types.text, (c) => c.notNull())
+          .addColumn('kind', ctx.types.text, (c) => compareText(ctx)(c.notNull()))
+          .addColumn('key', ctx.types.text, (c) => compareText(ctx)(c.notNull()))
+          .addColumn('created_at', ctx.types.bigint, (c) => c.notNull())
+          .addPrimaryKeyConstraint(`${ctx.tablePrefix}_blob_refs_pkey`, ['blob_id', 'kind', 'key'])
+          .execute()
+        await db.schema
+          .createIndex(`${ctx.tablePrefix}_blob_refs_holder_idx`)
+          .on('blob_refs')
+          .columns(['kind', 'key', 'blob_id'])
+          .execute()
+        await db.schema
+          .createTable('blob_releases')
+          .addColumn('blob_id', ctx.types.text, (c) => c.notNull())
+          .addColumn('released_at', ctx.types.bigint, (c) => c.notNull())
+          .addPrimaryKeyConstraint(`${ctx.tablePrefix}_blob_releases_pkey`, ['blob_id'])
+          .addForeignKeyConstraint(
+            `${ctx.tablePrefix}_blob_releases_entry_fkey`,
+            ['blob_id'],
+            'blob_entries',
+            ['blob_id'],
+            (c) => c.onDelete('cascade'),
+          )
+          .execute()
+        await db.schema
+          .createIndex(`${ctx.tablePrefix}_blob_releases_at_idx`)
+          .on('blob_releases')
+          .column('released_at')
+          .execute()
+      },
+      async down(db) {
+        await db.schema.dropTable('blob_releases').execute()
+        await db.schema.dropTable('blob_refs').execute()
       },
     },
   }

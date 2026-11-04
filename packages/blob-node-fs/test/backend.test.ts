@@ -86,6 +86,25 @@ describe.each(backends)('$name', ({ create }) => {
     expect(Array.from(read)).toEqual(Array.from(BLOB))
   })
 
+  test('listKeys enumerates committed keys with times and excludes staging', async () => {
+    const before = Date.now()
+    await writeBlob(backend, 'stg-listed', BLOB)
+    await backend.commit('stg-listed', 'listed-key')
+    await writeBlob(backend, 'stg-uncommitted', BLOB)
+    const keys = []
+    if (backend.listKeys === undefined) throw new Error('Missing listKeys')
+    for await (const item of backend.listKeys()) keys.push(item)
+    expect(
+      keys.find((item) => item.key === 'listed-key')?.modifiedAt.getTime(),
+    ).toBeGreaterThanOrEqual(before - 1000)
+    expect(keys.some((item) => item.key === 'stg-uncommitted')).toBe(false)
+    await backend.delete('listed-key')
+    const remaining = []
+    for await (const item of backend.listKeys()) remaining.push(item.key)
+    expect(remaining).not.toContain('listed-key')
+    await backend.abortStaging('stg-uncommitted')
+  })
+
   test('range read returns the inclusive slice', async () => {
     const read = await drain(await backend.createReadStream(key, { start: 10, end: 19 }))
     expect(Array.from(read)).toEqual(Array.from(BLOB.subarray(10, 20)))

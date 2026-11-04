@@ -3,7 +3,7 @@ import type { BlobIDCodec } from '@hozon/blob-id'
 import type { StoreProvider } from '@hozon/db'
 import { getBlobStore } from '@hozon/store-blob'
 
-import { BlobNotFoundError } from './errors.js'
+import { BlobNotFoundError, BlobPinnedError, BlobReferencedError } from './errors.js'
 import { getFreshEntry } from './fresh.js'
 import { lockBlobs } from './locking.js'
 
@@ -98,12 +98,18 @@ export async function setBlobPinned(
   })
 }
 
-export async function deleteBlob(ctx: ManageContext, id: string): Promise<boolean> {
+export async function deleteBlob(
+  ctx: ManageContext,
+  id: string,
+  options?: { force?: boolean },
+): Promise<boolean> {
   const blobID = ctx.codec.canonicalize(id)
   let cleanup: Promise<boolean> | undefined
   const result = await lockBlobs(ctx.db, [blobID], async (tx) => {
     const store = await getBlobStore(tx)
     const entry = await getFreshEntry(store, blobID)
+    if (options?.force) await store.deleteRefs(await store.listRefs(blobID))
+    else if (await store.countRefs(blobID)) throw new BlobReferencedError(blobID)
     if (entry === null) return null
     const transfer = await store.getTransfer(blobID)
     await store.deleteEntry(blobID)
@@ -119,4 +125,21 @@ export async function deleteBlob(ctx: ManageContext, id: string): Promise<boolea
   if (result === null) return false
   if (result === 'local' && !ctx.db.isTransactionBound) await deleteBytes(ctx, blobID)
   return true
+}
+
+export async function evictBlob(ctx: ManageContext, id: string): Promise<boolean> {
+  const blobID = ctx.codec.canonicalize(id)
+  const evicted = await lockBlobs(ctx.db, [blobID], async (tx) => {
+    const store = await getBlobStore(tx)
+    const entry = await getFreshEntry(store, blobID)
+    if (entry?.state !== 'local') return false
+    if (entry.pinned) throw new BlobPinnedError(blobID)
+    await store.setState(blobID, 'remote')
+    await store.enqueueByteDeletion(blobID)
+    await store.upsertReleases([blobID])
+    if (ctx.db.isTransactionBound) afterCommit(ctx, tx, () => deleteBytes(ctx, blobID))
+    return true
+  })
+  if (evicted && !ctx.db.isTransactionBound) await deleteBytes(ctx, blobID)
+  return evicted
 }

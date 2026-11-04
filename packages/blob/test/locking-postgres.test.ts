@@ -1,7 +1,8 @@
 import { blake3Codec } from '@hozon/blob-id'
-import { getBlobStore, withBlobLocks } from '@hozon/store-blob'
+import { blobStoreDefinition, getBlobStore, withBlobLocks } from '@hozon/store-blob'
 import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from 'vitest'
 
+import { BlobReferencedError } from '../src/index.js'
 import { deferred } from './gated-backend.js'
 import { bytesOf, digestOf, sourceOf } from './helpers.js'
 import { createPostgresService, type RowsAPI, startBlobPostgres } from './locking-postgres.js'
@@ -173,5 +174,139 @@ describe.skipIf(process.env.HOZON_BLOB_POSTGRES !== '1')('Postgres blob locking'
       }),
     ).rejects.toMatchObject({ code: '40P01' })
     expect(attempts).toBe(1)
+  }, 15_000)
+  test('collection waits for an uncommitted publisher then keeps its referenced entry', async () => {
+    const { db, service, backend } = await setup()
+    const held = deferred()
+    const release = deferred()
+    const caller = db.withTransaction(async (tx) => {
+      const ops = service.using(tx)
+      await ops.write(write())
+      await ops.addRefs([{ blobID: id, kind: 'doc', key: 'owner-a' }])
+      held.resolve()
+      await release.promise
+    })
+    await held.promise
+    const collecting = service.collect({ releasedBefore: new Date(Date.now() + 1000) })
+    release.resolve()
+    await caller
+    await collecting
+    expect(await service.has(id)).toBe(true)
+    expect(await backend.has(id)).toBe(true)
+  }, 15_000)
+
+  test('uncommitted addRefs holds the blob lock against collection and explicit delete', async () => {
+    const { db, service, backend } = await setup()
+    await service.write(write())
+    const held = deferred()
+    const release = deferred()
+    const caller = db.withTransaction(async (tx) => {
+      await service.using(tx).addRefs([{ blobID: id, kind: 'doc', key: 'owner-a' }])
+      held.resolve()
+      await release.promise
+    })
+    await held.promise
+    let collected = false
+    const collecting = service
+      .collect({ releasedBefore: new Date(Date.now() + 1000) })
+      .then((result) => {
+        collected = true
+        return result
+      })
+    const deleting = expect(service.delete(id)).rejects.toBeInstanceOf(BlobReferencedError)
+    try {
+      await tick()
+      expect(collected).toBe(false)
+    } finally {
+      release.resolve()
+    }
+    await caller
+    expect((await collecting).kept).toBe(1)
+    await deleting
+    expect(await backend.has(id)).toBe(true)
+  }, 15_000)
+
+  test('reconciliation waits for the transaction publishing bytes', async () => {
+    const { db, service, backend } = await setup()
+    const held = deferred()
+    const release = deferred()
+    const caller = db.withTransaction(async (tx) => {
+      await service.using(tx).write(write())
+      held.resolve()
+      await release.promise
+    })
+    await held.promise
+    let ended = false
+    const reconciling = service
+      .reconcileBytes({ olderThan: new Date(Date.now() + 1000) })
+      .then((result) => {
+        ended = true
+        return result
+      })
+    try {
+      await tick()
+      expect(ended).toBe(false)
+    } finally {
+      release.resolve()
+    }
+    await caller
+    expect((await reconciling).deleted).toBe(0)
+    expect(await backend.has(id)).toBe(true)
+  }, 15_000)
+
+  test('pin and eviction serialise across caller transactions', async () => {
+    const { db, service, backend } = await setup()
+    await service.write(write())
+    const held = deferred()
+    const release = deferred()
+    const caller = db.withTransaction(async (tx) => {
+      await service.using(tx).setPinned(id, true)
+      held.resolve()
+      await release.promise
+    })
+    await held.promise
+    const evicting = expect(service.evict(id)).rejects.toMatchObject({ name: 'BlobPinnedError' })
+    release.resolve()
+    await Promise.all([caller, evicting])
+    expect(await backend.has(id)).toBe(true)
+  }, 15_000)
+
+  test('ref removal during a collector decision leaves a fresh release for the next collection', async () => {
+    const { service, store } = await setup()
+    await service.write(write())
+    const ref = { blobID: id, kind: 'doc', key: 'owner-a' }
+    await service.addRefs([ref])
+    const counted = deferred()
+    const release = deferred()
+    let park = true
+    const createAPI = blobStoreDefinition.createAPI
+    vi.spyOn(blobStoreDefinition, 'createAPI').mockImplementation((query, adapter, context) => {
+      const api = createAPI(query, adapter, context)
+      const countRefs = api.countRefs
+      api.countRefs = async (blobID) => {
+        const count = await countRefs(blobID)
+        if (park && blobID === id) {
+          park = false
+          counted.resolve()
+          await release.promise
+        }
+        return count
+      }
+      return api
+    })
+    const collecting = service.collect({ releasedBefore: new Date(Date.now() + 1000) })
+    await counted.promise
+    const removing = service.removeRefs([ref])
+    try {
+      await tick()
+    } finally {
+      release.resolve()
+    }
+    await Promise.all([collecting, removing])
+    expect(await store.countRefs(id)).toBe(0)
+    expect(await store.listReleases({ releasedBefore: new Date(Date.now() + 1000) })).toHaveLength(
+      1,
+    )
+    expect((await service.collect({ releasedBefore: new Date(Date.now() + 1000) })).deleted).toBe(1)
   }, 15_000)
 })

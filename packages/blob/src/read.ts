@@ -4,7 +4,7 @@ import type { StoreProvider } from '@hozon/db'
 import type { BlobEntry } from '@hozon/store-blob'
 import { getBlobStore } from '@hozon/store-blob'
 
-import { BlobNotFoundError, InvalidRangeError } from './errors.js'
+import { BlobNotFoundError, BlobNotLocalError, InvalidRangeError } from './errors.js'
 
 export type ReadContext = {
   db: StoreProvider
@@ -32,7 +32,7 @@ export async function hasBlob(ctx: ReadContext, id: string): Promise<boolean> {
 export async function getChunkDigests(ctx: ReadContext, id: string): Promise<Array<Uint8Array>> {
   const blobID = ctx.codec.canonicalize(id)
   const store = await getBlobStore(ctx.db)
-  // Digests of non-local entries come from an unverified peer manifest.
+  // Only local entries advertise manifests to peers.
   const entry = await store.getEntry(blobID)
   if (entry?.state !== 'local') return []
   return await store.getChunkDigests(blobID)
@@ -46,7 +46,8 @@ export async function createBlobReadStream(
   const blobID = ctx.codec.canonicalize(id)
   const store = await getBlobStore(ctx.db)
   const entry = await store.getEntry(blobID)
-  if (entry === null || entry.state !== 'local') throw new BlobNotFoundError(blobID)
+  if (entry === null) throw new BlobNotFoundError(blobID)
+  if (entry.state !== 'local') throw new BlobNotLocalError({ id: blobID, state: entry.state })
   if (range !== undefined) {
     const { start, end } = range
     if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start > end) {

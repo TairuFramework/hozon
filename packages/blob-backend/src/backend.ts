@@ -31,6 +31,8 @@ export type BlobBackend = {
   // Enumerate live staging areas with their last write time, for cleanup of
   // abandoned uploads.
   listStaging?(): AsyncIterable<{ stagingID: string; modifiedAt: Date }>
+  // Enumerate committed keys with their commit time, excluding staging areas.
+  listKeys?(): AsyncIterable<{ key: string; modifiedAt: Date }>
   // Read committed bytes, optionally a byte range.
   createReadStream(key: string, range?: BlobRange): Promise<ReadableStream<Uint8Array>>
   has(key: string): Promise<boolean>
