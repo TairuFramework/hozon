@@ -11,7 +11,6 @@ export async function pruneStaging(
   ctx: WriteContext,
   olderThan: Date,
 ): Promise<{ removed: number; failed: number }> {
-  if (ctx.backend.listStaging === undefined) return { removed: 0, failed: 0 }
   const cutoff = olderThan.getTime()
   const store = await getBlobStore(ctx.db)
   let removed = 0
@@ -19,7 +18,9 @@ export async function pruneStaging(
 
   // Collect first: aborting while iterating could disturb the backend's listing.
   const old: Array<string> = []
-  for await (const area of ctx.backend.listStaging()) {
+  const existing = new Set<string>()
+  for await (const area of ctx.backend.listStaging?.() ?? []) {
+    existing.add(area.stagingID)
     if (!isOwnedStagingID(area.stagingID)) continue
     if (area.modifiedAt.getTime() < cutoff) old.push(area.stagingID)
   }
@@ -27,7 +28,7 @@ export async function pruneStaging(
   for (const stagingID of old) {
     try {
       if (ctx.activeWrites.has(stagingID)) continue
-      const session = await store.getTransferByStagingID(stagingID)
+      const session = await store.getSessionByStagingID(stagingID)
       if (session === null) {
         // Write staging IDs are random and never reused, so a flag check is enough.
         // Other processes' writes are protected by the age threshold.
@@ -43,11 +44,11 @@ export async function pruneStaging(
       let cleanup: Promise<boolean> | undefined
       const pruned = await lockBlobs(ctx.db, [session.blobID], async (tx) => {
         const locked = await getBlobStore(tx)
-        const current = await locked.getTransfer(session.blobID)
+        const current = await locked.getSession(session.blobID, session.owner)
         if (current === null || current.stagingID !== stagingID || current.updatedAt >= cutoff) {
           return false
         }
-        await locked.resetTransfer(session.blobID)
+        await locked.deleteSession(session.blobID, session.owner)
         cleanup = afterCommit(ctx, tx, () => ctx.backend.abortStaging(stagingID))
         return true
       })
@@ -60,6 +61,41 @@ export async function pruneStaging(
       failed++
     }
   }
+  // Lazy staging creation and vanished areas must not leave sessions holding blobs forever.
+  let cursor: string | undefined
+  do {
+    const page = await store.listSessions({ limit: 500, cursor })
+    for (const session of page.sessions) {
+      if (
+        existing.has(session.stagingID) ||
+        ctx.activeWrites.has(session.stagingID) ||
+        session.updatedAt >= cutoff
+      )
+        continue
+      try {
+        let cleanup: Promise<boolean> | undefined
+        const pruned = await lockBlobs(ctx.db, [session.blobID], async (tx) => {
+          const locked = await getBlobStore(tx)
+          const current = await locked.getSession(session.blobID, session.owner)
+          if (
+            current === null ||
+            current.stagingID !== session.stagingID ||
+            current.updatedAt >= cutoff ||
+            ctx.activeWrites.has(current.stagingID)
+          )
+            return false
+          await locked.deleteSession(current.blobID, current.owner)
+          cleanup = afterCommit(ctx, tx, () => ctx.backend.abortStaging(current.stagingID))
+          return true
+        })
+        if (!ctx.db.isTransactionBound && (await cleanup) === false) failed++
+        else if (pruned) removed++
+      } catch {
+        failed++
+      }
+    }
+    cursor = page.nextCursor ?? undefined
+  } while (cursor !== undefined)
   return { removed, failed }
 }
 

@@ -29,6 +29,7 @@ export {
   StagingLimitError,
   TransferIncompleteError,
   type TransferIncompleteErrorParams,
+  TransferNotFoundError,
 } from './errors.js'
 export { type BlobLimits, DEFAULT_CHUNK_SIZE, DEFAULT_LIMITS } from './limits.js'
 export type {
@@ -45,5 +46,14 @@ export {
   type BlobServiceParams,
   createBlobService,
 } from './service.js'
-export type { StageChunkParams, TransferManifest } from './transfer.js'
+export type {
+  BeginFetchParams,
+  BeginFetchResult,
+  BlobTransferInfo,
+  CompleteFetchResult,
+  ListTransfersParams,
+  StageChunkParams,
+  TransferKey,
+  TransferManifest,
+} from './transfer.js'
 export type { WriteOptions, WriteParams, WriteResult } from './write.js'

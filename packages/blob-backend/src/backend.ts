@@ -2,6 +2,8 @@
 // and serves bytes back. The store owns hashing and the key format.
 // The backend never inspects content. Web Streams keep it portable across
 // Node.js, browsers, and mobile runtimes.
+// Written staging bytes remain unchanged until re-written, committed or aborted.
+// Re-staging identical bytes at the same offsets preserves the staged content.
 
 export type BlobRange = {
   // Inclusive byte offsets.

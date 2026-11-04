@@ -30,12 +30,20 @@ import { pruneStaging } from './prune.js'
 import { createBlobReadStream, getChunkDigests, getEntry, hasBlob, listEntries } from './read.js'
 import { addRefs, findRefs, listRefs, removeHolders, removeRefs } from './refs.js'
 import {
+  abortFetch,
+  abortFetches,
+  type BeginFetchParams,
+  type BeginFetchResult,
+  type BlobTransferInfo,
   beginFetch,
+  type CompleteFetchResult,
   completeFetch,
   getPresentChunks,
+  type ListTransfersParams,
+  listTransfers,
   type StageChunkParams,
   stageChunk,
-  type TransferManifest,
+  type TransferKey,
 } from './transfer.js'
 import {
   type WriteContext,
@@ -74,10 +82,15 @@ export type BlobOperations = {
   removeHolders(selector: BlobHolderSelector): Promise<number>
   listRefs(id: string): Promise<Array<BlobRef>>
   findRefs(params: FindRefsParams): Promise<{ refs: Array<BlobRef>; nextCursor: string | null }>
-  beginFetch(id: string, manifest: TransferManifest): Promise<void>
-  getPresentChunks(id: string): Promise<Array<number>>
+  beginFetch(params: BeginFetchParams): Promise<BeginFetchResult>
+  getPresentChunks(params: TransferKey): Promise<Array<number>>
   stageChunk(params: StageChunkParams): Promise<void>
-  completeFetch(id: string): Promise<BlobEntry>
+  completeFetch(params: TransferKey): Promise<CompleteFetchResult>
+  abortFetch(params: TransferKey): Promise<boolean>
+  abortFetches(params: { owner: string } | { ownerPrefix: string }): Promise<number>
+  listTransfers(
+    params: ListTransfersParams,
+  ): Promise<{ transfers: Array<BlobTransferInfo>; nextCursor: string | null }>
   withLocks<R>(
     ids: Array<string>,
     fn: (ops: BlobOperations, tx: StoreProvider) => Promise<R>,
@@ -139,10 +152,13 @@ export function createBlobService(params: BlobServiceParams): BlobService {
       removeHolders: (selector) => removeHolders(view, selector),
       listRefs: (id) => listRefs(view, id),
       findRefs: (params) => findRefs(view, params),
-      beginFetch: (id, manifest) => beginFetch(view, id, manifest),
+      beginFetch: (params) => beginFetch(view, params),
       getPresentChunks: (id) => getPresentChunks(view, id),
       stageChunk: (params) => stageChunk(view, params),
       completeFetch: (id) => completeFetch(view, id),
+      abortFetch: (params) => abortFetch(view, params),
+      abortFetches: (params) => abortFetches(view, params),
+      listTransfers: (params) => listTransfers(view, params),
       write: (params) => writeBlob(view, params, replay),
       withLocks: (ids, fn) =>
         lockBlobs(

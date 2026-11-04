@@ -5,6 +5,7 @@ import { b64uFromUTF, b64uToUTF } from '@sozai/codec'
 
 import { InvalidCursorError } from './errors.js'
 import { createRefMethods, upsertReleases } from './refs.js'
+import { createSessionMethods } from './sessions.js'
 import type { BlobTables } from './tables.js'
 import type { BlobChunkInput, BlobEntry, BlobStoreAPI } from './types.js'
 
@@ -109,6 +110,7 @@ export function createBlobStoreAPI(
 
   return {
     ...createRefMethods(db, adapter),
+    ...createSessionMethods(db, adapter),
     async setState(blobID, state) {
       await mutate(blobID, async () => {
         await db.updateTable('blob_entries').set({ state }).where('blob_id', '=', blobID).execute()
@@ -186,171 +188,10 @@ export function createBlobStoreAPI(
     async deleteEntry(blobID) {
       return mutate(blobID, async () => {
         await withStoreTransaction(db, async (trx) => {
-          await trx.deleteFrom('blob_transfer_sessions').where('blob_id', '=', blobID).execute()
-          await trx.deleteFrom('blob_transfers').where('blob_id', '=', blobID).execute()
+          await trx.deleteFrom('blob_fetch_sessions').where('blob_id', '=', blobID).execute()
           await trx.deleteFrom('blob_chunks').where('blob_id', '=', blobID).execute()
           await trx.deleteFrom('blob_entries').where('blob_id', '=', blobID).execute()
         })
-      })
-    },
-    async beginTransfer({ blobID, chunkSize, chunks, stagingID }) {
-      return mutate(blobID, async () => {
-        await withStoreTransaction(db, async (trx) => {
-          let query = trx
-            .selectFrom('blob_entries')
-            .select(['blob_id', 'chunk_size', 'state'])
-            .where('blob_id', '=', blobID)
-          if (adapter.kind === 'postgres') query = query.forUpdate()
-          const entry = await query.executeTakeFirst()
-          if (entry === undefined) throw new Error(`Blob entry ${blobID} not found`)
-          if (entry.chunk_size !== chunkSize) {
-            const manifest = await trx
-              .selectFrom('blob_chunks')
-              .select('index')
-              .where('blob_id', '=', blobID)
-              .executeTakeFirst()
-            if (manifest !== undefined) {
-              throw new Error(
-                `Cannot change chunk size for blob ${blobID}: manifest already exists`,
-              )
-            }
-          }
-          await trx
-            .updateTable('blob_entries')
-            .set({ chunk_size: chunkSize, state: entry.state === 'remote' ? 'remote' : 'partial' })
-            .where('blob_id', '=', blobID)
-            .execute()
-          await insertManifest(trx, blobID, chunks)
-          const existing = await trx
-            .selectFrom('blob_transfer_sessions')
-            .select('staging_id')
-            .where('blob_id', '=', blobID)
-            .executeTakeFirst()
-          // A new staging area holds none of the previous session's chunks.
-          if (existing !== undefined && existing.staging_id !== stagingID) {
-            await trx.deleteFrom('blob_transfers').where('blob_id', '=', blobID).execute()
-          }
-          const updatedAt = Date.now()
-          await trx
-            .insertInto('blob_transfer_sessions')
-            .values({ blob_id: blobID, staging_id: stagingID, updated_at: updatedAt })
-            .onConflict((oc) =>
-              oc.column('blob_id').doUpdateSet({ staging_id: stagingID, updated_at: updatedAt }),
-            )
-            .execute()
-        })
-      })
-    },
-    async recordTransferChunk(blobID, index) {
-      return mutate(blobID, async () => {
-        await withStoreTransaction(db, async (trx) => {
-          const entry = await trx
-            .selectFrom('blob_entries')
-            .select('blob_id')
-            .where('blob_id', '=', blobID)
-            .executeTakeFirst()
-          if (entry === undefined) throw new Error(`Blob entry ${blobID} not found`)
-          const chunk = await trx
-            .selectFrom('blob_chunks')
-            .select('index')
-            .where('blob_id', '=', blobID)
-            .where('index', '=', index)
-            .executeTakeFirst()
-          if (chunk === undefined)
-            throw new Error(`Blob chunk ${blobID} at index ${index} not found`)
-          await trx
-            .insertInto('blob_transfers')
-            .values({ blob_id: blobID, index })
-            .onConflict((oc) => oc.columns(['blob_id', 'index']).doNothing())
-            .execute()
-          await trx
-            .updateTable('blob_transfer_sessions')
-            .set({ updated_at: Date.now() })
-            .where('blob_id', '=', blobID)
-            .execute()
-        })
-      })
-    },
-    async getPresentChunkIndexes(blobID) {
-      const rows = await db
-        .selectFrom('blob_transfers')
-        .select('index')
-        .where('blob_id', '=', blobID)
-        .orderBy('index', 'asc')
-        .execute()
-      return rows.map((row) => row.index)
-    },
-    async finalizeTransfer(blobID) {
-      return mutate(blobID, async () => {
-        await withStoreTransaction(db, async (trx) => {
-          const entry = await trx
-            .selectFrom('blob_entries')
-            .select('blob_id')
-            .where('blob_id', '=', blobID)
-            .executeTakeFirst()
-          if (entry === undefined) throw new Error(`Blob entry ${blobID} not found`)
-          const manifest = await trx
-            .selectFrom('blob_chunks')
-            .select('index')
-            .where('blob_id', '=', blobID)
-            .execute()
-          const present = await trx
-            .selectFrom('blob_transfers')
-            .select('index')
-            .where('blob_id', '=', blobID)
-            .execute()
-          const presentSet = new Set(present.map((row) => row.index))
-          const missing = manifest.filter((row) => !presentSet.has(row.index))
-          if (missing.length > 0) {
-            throw new Error(
-              `Cannot finalize transfer ${blobID}: ${missing.length} chunk(s) missing`,
-            )
-          }
-          await trx
-            .updateTable('blob_entries')
-            .set({ state: 'local' })
-            .where('blob_id', '=', blobID)
-            .execute()
-          await trx.deleteFrom('blob_transfers').where('blob_id', '=', blobID).execute()
-          await trx.deleteFrom('blob_transfer_sessions').where('blob_id', '=', blobID).execute()
-          await upsertReleases(trx, [blobID])
-        })
-      })
-    },
-    async getTransfer(blobID) {
-      const session = await db
-        .selectFrom('blob_transfer_sessions')
-        .select(['staging_id', 'updated_at'])
-        .where('blob_id', '=', blobID)
-        .executeTakeFirst()
-      if (session === undefined) return null
-      const rows = await db
-        .selectFrom('blob_transfers')
-        .select('index')
-        .where('blob_id', '=', blobID)
-        .orderBy('index', 'asc')
-        .execute()
-      return {
-        stagingID: session.staging_id,
-        updatedAt: session.updated_at,
-        presentChunks: rows.map((row) => row.index),
-      }
-    },
-    async getTransferByStagingID(stagingID) {
-      const row = await db
-        .selectFrom('blob_transfer_sessions')
-        .select(['blob_id', 'updated_at'])
-        .where('staging_id', '=', stagingID)
-        .executeTakeFirst()
-      return row === undefined ? null : { blobID: row.blob_id, updatedAt: row.updated_at }
-    },
-    async touchTransfer(blobID) {
-      return mutate(blobID, async () => {
-        await db
-          .updateTable('blob_transfer_sessions')
-          .set({ updated_at: Date.now() })
-          .where('blob_id', '=', blobID)
-          .execute()
       })
     },
     async listEntries(params) {
@@ -409,38 +250,11 @@ export function createBlobStoreAPI(
             })
             .onConflict((oc) => oc.column('blob_id').doUpdateSet(values))
             .execute()
-          await trx
-            .deleteFrom('blob_transfer_sessions')
-            .where('blob_id', '=', entry.blobID)
-            .execute()
-          await trx.deleteFrom('blob_transfers').where('blob_id', '=', entry.blobID).execute()
+          await trx.deleteFrom('blob_fetch_sessions').where('blob_id', '=', entry.blobID).execute()
           await trx.deleteFrom('blob_chunks').where('blob_id', '=', entry.blobID).execute()
           await insertManifest(trx, entry.blobID, chunks)
           await trx.deleteFrom('blob_byte_deletions').where('blob_id', '=', entry.blobID).execute()
           await upsertReleases(trx, [entry.blobID])
-        })
-      })
-    },
-    async resetTransfer(blobID) {
-      return mutate(blobID, async () => {
-        await withStoreTransaction(db, async (trx) => {
-          let lock = trx
-            .selectFrom('blob_entries')
-            .select(['blob_id', 'state'])
-            .where('blob_id', '=', blobID)
-          if (adapter.kind === 'postgres') lock = lock.forUpdate()
-          const entry = await lock.executeTakeFirst()
-          if (entry === undefined) return
-          await trx.deleteFrom('blob_transfer_sessions').where('blob_id', '=', blobID).execute()
-          await trx.deleteFrom('blob_transfers').where('blob_id', '=', blobID).execute()
-          if (entry.state !== 'remote')
-            await trx.deleteFrom('blob_chunks').where('blob_id', '=', blobID).execute()
-          await trx
-            .updateTable('blob_entries')
-            .set({ state: entry.state === 'remote' ? 'remote' : 'remote-only' })
-            .where('blob_id', '=', blobID)
-            .execute()
-          await upsertReleases(trx, [blobID])
         })
       })
     },

@@ -1,15 +1,16 @@
 import type { BlobBackend } from '@hozon/blob-backend'
 import type { StoreProvider } from '@hozon/db'
-import type { BlobEntry, BlobStoreAPI, BlobTransfer } from '@hozon/store-blob'
+import type { BlobEntry, BlobSession, BlobStoreAPI } from '@hozon/store-blob'
 import { getBlobStore } from '@hozon/store-blob'
 
 import {
   BlobIDMismatchError,
-  BlobNotFoundError,
   ChunkDigestMismatchError,
   ChunkLengthError,
   InvalidManifestError,
+  StagingLimitError,
   TransferIncompleteError,
+  TransferNotFoundError,
 } from './errors.js'
 import { getFreshEntry } from './fresh.js'
 import { lockBlobs } from './locking.js'
@@ -29,15 +30,38 @@ export type TransferManifest = {
   keyID?: string
 }
 
-export type StageChunkParams = { id: string; index: number; bytes: Uint8Array }
-
+export type TransferKey = { id: string; owner: string }
+export type BeginFetchParams = TransferKey & { manifest: TransferManifest }
+export type BeginFetchResult =
+  | { status: 'local' }
+  | { status: 'started' | 'resumed' | 'restarted'; presentChunks: Array<number> }
+export type StageChunkParams = TransferKey & { index: number; bytes: Uint8Array }
+export type CompleteFetchResult = { entry: BlobEntry; fetched: boolean }
+export type BlobTransferInfo = {
+  blobID: string
+  owner: string
+  chunkSize: number
+  chunkCount: number
+  presentCount: number
+  createdAt: number
+  updatedAt: number
+}
+export type ListTransfersParams = {
+  owner?: string
+  ownerPrefix?: string
+  blobID?: string
+  limit: number
+  cursor?: string
+}
 export type TransferContext = WriteContext
 
-type ActiveTransfer = {
-  store: BlobStoreAPI
-  entry: BlobEntry
-  transfer: BlobTransfer
-  digests: Array<Uint8Array>
+function validateOwner(owner: string): void {
+  if (typeof owner !== 'string' || !/^[\x20-\x7e]{1,255}$/.test(owner))
+    throw new Error('Owner must be printable ASCII, 1 to 255 characters')
+}
+function transferKey(ctx: TransferContext, key: TransferKey): string {
+  validateOwner(key.owner)
+  return ctx.codec.canonicalize(key.id)
 }
 
 function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
@@ -61,7 +85,11 @@ function chunkCount(contentLength: number, chunkSize: number): number {
 }
 
 // Expected length of chunk `index`: `chunkSize`, or the remainder for the last chunk.
-function chunkLength(entry: BlobEntry, count: number, index: number): number {
+function chunkLength(
+  entry: { chunkSize: number; contentLength: number },
+  count: number,
+  index: number,
+): number {
   return index < count - 1 ? entry.chunkSize : entry.contentLength - (count - 1) * entry.chunkSize
 }
 
@@ -140,7 +168,7 @@ async function abortQuietly(backend: BlobBackend, stagingID: string): Promise<vo
 // Backends create staging lazily, so a session without chunks has no area yet.
 async function stagingExists(
   backend: BlobBackend,
-  transfer: BlobTransfer,
+  transfer: BlobSession,
   chunkSize: number,
 ): Promise<boolean> {
   const first = transfer.presentChunks[0]
@@ -160,79 +188,82 @@ async function stagingExists(
   return true
 }
 
-// Lock held: require an active transfer.
-async function requireTransfer(ctx: TransferContext, blobID: string): Promise<ActiveTransfer> {
-  const store = await getBlobStore(ctx.db)
-  const entry = await getFreshEntry(store, blobID)
-  const transfer =
-    entry?.state === 'partial' || entry?.state === 'remote' ? await store.getTransfer(blobID) : null
-  if (entry === null || transfer === null) {
-    throw new BlobNotFoundError(blobID, { cause: new Error('No active transfer') })
-  }
-  return { store, entry, transfer, digests: await store.getChunkDigests(blobID) }
+async function missing(store: BlobStoreAPI, blobID: string, owner: string) {
+  return new TransferNotFoundError({
+    id: blobID,
+    owner,
+    blobState: (await getFreshEntry(store, blobID))?.state ?? null,
+  })
 }
 
 export async function beginFetch(
   ctx: TransferContext,
-  id: string,
-  manifest: TransferManifest,
-): Promise<void> {
-  const blobID = ctx.codec.canonicalize(id)
-  const contentType = validateManifest(ctx, blobID, manifest)
-  let cleanup: Promise<boolean> | undefined
-  await lockBlobs(ctx.db, [blobID], async (tx) => {
+  params: BeginFetchParams,
+): Promise<BeginFetchResult> {
+  const blobID = transferKey(ctx, params)
+  const { owner, manifest } = params
+  const cleanups: Array<Promise<boolean>> = []
+  const result = await lockBlobs(ctx.db, [blobID], async (tx): Promise<BeginFetchResult> => {
     const store = await getBlobStore(tx)
     const entry = await getFreshEntry(store, blobID)
-    if (entry?.state === 'local') return
-    // Remote layouts remain verified, including the chunk size of an empty blob.
-    const chunkSize =
-      entry?.state === 'remote' || manifest.contentLength > 0 ? manifest.chunkSize : ctx.chunkSize
-    // A stub with another length could never complete against this manifest.
-    if (entry !== null && entry.contentLength !== manifest.contentLength) {
-      throw new InvalidManifestError(
-        `contentLength ${manifest.contentLength} does not match the stored entry (${entry.contentLength})`,
-      )
-    }
-
-    if (entry?.state === 'remote') {
-      if (entry.chunkSize !== chunkSize)
-        throw new InvalidManifestError('chunk size differs from the verified layout')
-      if (!digestsEqual(await store.getChunkDigests(blobID), manifest.chunks))
-        throw new InvalidManifestError('digests differ from the verified layout')
-    }
-    const transfer = entry === null ? null : await store.getTransfer(blobID)
-    if (entry !== null && transfer !== null) {
-      const identical =
-        (entry.state === 'partial' || entry.state === 'remote') &&
-        entry.chunkSize === chunkSize &&
-        digestsEqual(await store.getChunkDigests(blobID), manifest.chunks)
-      if (identical && (await stagingExists(ctx.backend, transfer, entry.chunkSize))) {
-        await store.touchTransfer(blobID)
-        return
+    const session = await store.getSession(blobID, owner)
+    if (entry?.state === 'local') {
+      if (session !== null) {
+        await store.deleteSession(blobID, owner)
+        cleanups.push(awaitEnd(session))
       }
-      cleanup = afterCommit(ctx, tx, () => abortQuietly(ctx.backend, transfer.stagingID))
+      return { status: 'local' }
     }
-
+    const contentType = validateManifest(ctx, blobID, manifest) ?? null
+    const chunkSize =
+      manifest.contentLength > 0 || entry?.state === 'remote' ? manifest.chunkSize : ctx.chunkSize
+    if (entry !== null && entry.contentLength !== manifest.contentLength)
+      throw new InvalidManifestError('contentLength differs from the stored entry')
+    if (
+      entry?.state === 'remote' &&
+      entry.chunkSize === chunkSize &&
+      !digestsEqual(await store.getChunkDigests(blobID), manifest.chunks)
+    )
+      throw new InvalidManifestError('digests differ from the verified layout')
+    if (
+      session !== null &&
+      session.chunkSize === chunkSize &&
+      session.contentType === contentType &&
+      session.encrypted === (manifest.encrypted ?? false) &&
+      session.keyID === (manifest.keyID ?? null) &&
+      digestsEqual(
+        session.chunks.map((c) => c.digest),
+        manifest.chunks,
+      ) &&
+      (await stagingExists(ctx.backend, session, chunkSize))
+    ) {
+      await store.touchSession(blobID, owner)
+      return { status: 'resumed', presentChunks: session.presentChunks }
+    }
+    if (
+      ctx.limits.maxStagingBytes !== undefined &&
+      (await store.sumSessionContentLength()) +
+        [...ctx.activeWrites.values()].reduce((sum, bytes) => sum + bytes, 0) +
+        manifest.contentLength >
+        ctx.limits.maxStagingBytes
+    )
+      throw new StagingLimitError()
     if (entry === null) {
       await store.insertEntry(
         {
           blobID,
           contentLength: manifest.contentLength,
-          encrypted: manifest.encrypted ?? false,
-          keyID: manifest.keyID ?? null,
           chunkSize,
           state: 'remote-only',
           createdAt: Date.now(),
-          contentType: contentType ?? null,
+          contentType,
+          encrypted: manifest.encrypted ?? false,
+          keyID: manifest.keyID ?? null,
         },
         [],
       )
-    } else {
-      // Reset progress; remote entries retain their verified layout.
-      await store.resetTransfer(blobID)
-      if (contentType !== undefined) await store.fillContentType(blobID, contentType)
     }
-    const chunks = manifest.chunks.map((digest, index) => ({ index, digest }))
+    if (session !== null) cleanups.push(awaitEnd(session))
     const stagingID = createStagingID(ctx.runtime, 't')
     ctx.activeWrites.set(stagingID, 0)
     tx.onCommit(() => {
@@ -242,69 +273,80 @@ export async function beginFetch(
       ctx.activeWrites.delete(stagingID)
       void abortQuietly(ctx.backend, stagingID)
     })
-    await store.beginTransfer({
+    await store.putSession({
       blobID,
-      chunkSize,
-      chunks,
+      owner,
       stagingID,
+      contentLength: manifest.contentLength,
+      chunkSize,
+      contentType,
+      encrypted: manifest.encrypted ?? false,
+      keyID: manifest.keyID ?? null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      chunks: manifest.chunks.map((digest, index) => ({ index, digest, present: false })),
     })
+    return { status: session === null ? 'started' : 'restarted', presentChunks: [] }
+    function awaitEnd(old: BlobSession): Promise<boolean> {
+      // Register cleanup synchronously; do not await a commit hook inside its transaction.
+      return afterCommit(ctx, tx, () => abortQuietly(ctx.backend, old.stagingID))
+    }
   })
-  if (!ctx.db.isTransactionBound) await cleanup
+  if (!ctx.db.isTransactionBound) await Promise.all(cleanups)
+  return result
 }
 
-export async function getPresentChunks(ctx: TransferContext, id: string): Promise<Array<number>> {
-  const blobID = ctx.codec.canonicalize(id)
+export async function getPresentChunks(
+  ctx: TransferContext,
+  key: TransferKey,
+): Promise<Array<number>> {
+  const blobID = transferKey(ctx, key)
   return await lockBlobs(ctx.db, [blobID], async (tx) => {
     const store = await getBlobStore(tx)
-    const entry = await getFreshEntry(store, blobID)
-    if (entry?.state !== 'partial' && entry?.state !== 'remote') return []
-    const transfer = await store.getTransfer(blobID)
-    if (transfer === null) return []
-    if (!(await stagingExists(ctx.backend, transfer, entry.chunkSize))) {
-      await store.resetTransfer(blobID)
+    const session = await store.getSession(blobID, key.owner)
+    if (session === null) return []
+    if (!(await stagingExists(ctx.backend, session, session.chunkSize))) {
+      await store.deleteSession(blobID, key.owner)
       return []
     }
-    return transfer.presentChunks
+    return session.presentChunks
   })
 }
 
 export async function stageChunk(ctx: TransferContext, params: StageChunkParams): Promise<void> {
-  const { id, index, bytes } = params
-  const blobID = ctx.codec.canonicalize(id)
-  async function prepare(view: TransferContext): Promise<ActiveTransfer> {
-    const active = await requireTransfer(view, blobID)
-    const { entry, transfer, digests } = active
-    if (!Number.isSafeInteger(index) || index < 0 || index >= digests.length) {
-      throw new InvalidManifestError(`chunk index ${index} is outside [0, ${digests.length})`)
-    }
-    const expectedLength = chunkLength(entry, digests.length, index)
-    if (bytes.length !== expectedLength) {
+  const blobID = transferKey(ctx, params)
+  const { owner, index, bytes } = params
+  async function prepare(provider: StoreProvider): Promise<BlobSession> {
+    const store = await getBlobStore(provider)
+    const session = await store.getSession(blobID, owner)
+    if (session === null) throw await missing(store, blobID, owner)
+    if (!Number.isSafeInteger(index) || index < 0 || index >= session.chunks.length)
+      throw new InvalidManifestError('chunk index outside the manifest')
+    const expectedLength = chunkLength(session, session.chunks.length, index)
+    if (bytes.length !== expectedLength)
       throw new ChunkLengthError({
         id: blobID,
         index,
         expected: expectedLength,
         actual: bytes.length,
       })
-    }
     const hasher = ctx.codec.createHasher()
     hasher.update(bytes)
-    if (!bytesEqual(hasher.digest(), digests[index] as Uint8Array)) {
+    if (!bytesEqual(hasher.digest(), (session.chunks[index] as { digest: Uint8Array }).digest))
       throw new ChunkDigestMismatchError({ id: blobID, index })
-    }
-    await ctx.backend.writeChunk(transfer.stagingID, index * entry.chunkSize, bytes)
-    return active
+    await ctx.backend.writeChunk(session.stagingID, index * session.chunkSize, bytes)
+    return session
   }
-  const prepared = ctx.db.isTransactionBound ? undefined : await prepare(ctx)
+  const prepared = ctx.db.isTransactionBound ? undefined : await prepare(ctx.db)
   let cleanup: Promise<boolean> | undefined
   const error = await lockBlobs(ctx.db, [blobID], async (tx) => {
-    const active = prepared ?? (await prepare({ ...ctx, db: tx }))
+    const session = prepared ?? (await prepare(tx))
     const store = await getBlobStore(tx)
-    const current = await store.getTransfer(blobID)
-    if (current?.stagingID !== active.transfer.stagingID) {
-      cleanup = afterCommit(ctx, tx, () => abortQuietly(ctx.backend, active.transfer.stagingID))
-      return new BlobNotFoundError(blobID)
+    if ((await store.getSession(blobID, owner))?.stagingID !== session.stagingID) {
+      cleanup = afterCommit(ctx, tx, () => abortQuietly(ctx.backend, session.stagingID))
+      return await missing(store, blobID, owner)
     }
-    await store.recordTransferChunk(blobID, index)
+    await store.markSessionChunk(blobID, owner, index)
     return null
   })
   if (!ctx.db.isTransactionBound) await cleanup
@@ -338,61 +380,95 @@ async function hashStaging(
   return { digest: hasher.digest(), length }
 }
 
-export async function completeFetch(ctx: TransferContext, id: string): Promise<BlobEntry> {
-  const blobID = ctx.codec.canonicalize(id)
+export async function completeFetch(
+  ctx: TransferContext,
+  key: TransferKey,
+): Promise<CompleteFetchResult> {
+  const blobID = transferKey(ctx, key)
+  const { owner } = key
   const expected = ctx.codec.decode(blobID)
-  async function prepare(view: TransferContext) {
-    const active = await requireTransfer(view, blobID)
-    const { transfer, digests } = active
-    const present = new Set(transfer.presentChunks)
-    const missing = digests.length - digests.filter((_, index) => present.has(index)).length
-    if (missing > 0) throw new TransferIncompleteError({ id: blobID, missing })
-    if (digests.length === 0) await ctx.backend.writeChunk(transfer.stagingID, 0, new Uint8Array(0))
+  async function prepare(provider: StoreProvider) {
+    const store = await getBlobStore(provider)
+    const session = await store.getSession(blobID, owner)
+    if (session === null) return { session, hashed: null }
+    const missingCount = session.chunks.length - session.presentChunks.length
+    if (missingCount > 0) throw new TransferIncompleteError({ id: blobID, missing: missingCount })
+    if (session.chunks.length === 0)
+      await ctx.backend.writeChunk(session.stagingID, 0, new Uint8Array())
     try {
-      const stream = await ctx.backend.createStagingReadStream(transfer.stagingID)
-      return { active, hashed: await hashStaging(ctx, stream, expected.contentLength), error: null }
-    } catch (cause) {
-      return { active, hashed: null, error: new BlobNotFoundError(blobID, { cause }) }
+      return {
+        session,
+        hashed: await hashStaging(
+          ctx,
+          await ctx.backend.createStagingReadStream(session.stagingID),
+          expected.contentLength,
+        ),
+      }
+    } catch {
+      return { session, hashed: null }
     }
   }
-  const prepared = ctx.db.isTransactionBound ? undefined : await prepare(ctx)
-  let cleanup: Promise<boolean> | undefined
+  const prepared = ctx.db.isTransactionBound ? undefined : await prepare(ctx.db)
+  const cleanups: Array<Promise<boolean>> = []
   const result = await lockBlobs(ctx.db, [blobID], async (tx, originalError) => {
-    const { active, hashed, error } = prepared ?? (await prepare({ ...ctx, db: tx }))
-    const { entry, transfer, digests } = active
+    const { session, hashed } = prepared ?? (await prepare(tx))
     const store = await getBlobStore(tx)
-    const current = await store.getTransfer(blobID)
-    if (current?.stagingID !== transfer.stagingID) {
-      cleanup = afterCommit(ctx, tx, () => abortQuietly(ctx.backend, transfer.stagingID))
-      return { error: new BlobNotFoundError(blobID) }
+    const entry = await getFreshEntry(store, blobID)
+    const current = await store.getSession(blobID, owner)
+    if (entry?.state === 'local') {
+      if (session !== null && session.stagingID !== current?.stagingID)
+        cleanups.push(afterCommit(ctx, tx, () => abortQuietly(ctx.backend, session.stagingID)))
+      if (current !== null) {
+        await store.deleteSession(blobID, owner)
+        cleanups.push(afterCommit(ctx, tx, () => abortQuietly(ctx.backend, current.stagingID)))
+      }
+      return { entry, fetched: false }
     }
-    if (error !== null || hashed === null) {
-      await store.resetTransfer(blobID)
-      return { error: error ?? new BlobNotFoundError(blobID) }
+    if (session === null || current?.stagingID !== session.stagingID) {
+      if (session !== null)
+        cleanups.push(afterCommit(ctx, tx, () => abortQuietly(ctx.backend, session.stagingID)))
+      return { error: await missing(store, blobID, owner) }
     }
-    if (hashed.length !== expected.contentLength || !bytesEqual(hashed.digest, expected.digest)) {
-      await store.resetTransfer(blobID)
-      cleanup = afterCommit(ctx, tx, () => abortQuietly(ctx.backend, transfer.stagingID))
-      const actual = ctx.codec.encode({
-        digest: hashed.digest,
-        contentLength: hashed.length,
-        ...(expected.contentType === undefined ? {} : { contentType: expected.contentType }),
-      })
-      return { error: new BlobIDMismatchError({ expected: blobID, actual }) }
+    if (
+      hashed === null ||
+      hashed.length !== expected.contentLength ||
+      !bytesEqual(hashed.digest, expected.digest)
+    ) {
+      await store.deleteSession(blobID, owner)
+      cleanups.push(afterCommit(ctx, tx, () => abortQuietly(ctx.backend, session.stagingID)))
+      if (hashed === null) return { error: await missing(store, blobID, owner) }
+      return {
+        error: new BlobIDMismatchError({
+          expected: blobID,
+          actual: ctx.codec.encode({
+            digest: hashed.digest,
+            contentLength: hashed.length,
+            ...(expected.contentType === undefined ? {} : { contentType: expected.contentType }),
+          }),
+        }),
+      }
     }
+    if (entry === null) return { error: await missing(store, blobID, owner) }
+    const sessions = await allSessions(store, blobID)
     const publish = async (provider: StoreProvider) => {
       const target = await getBlobStore(provider)
       await target.promoteEntry(
-        { ...entry },
-        digests.map((digest, index) => ({ index, digest })),
+        {
+          ...entry,
+          chunkSize: session.chunkSize,
+          contentType: entry.contentType ?? session.contentType,
+          keyID: entry.keyID ?? session.keyID,
+        },
+        session.chunks.map(({ index, digest }) => ({ index, digest })),
       )
       if (ctx.db.isTransactionBound) reclaimOnRollback(ctx, provider, blobID)
       const promoted = await getFreshEntry(target, blobID)
-      if (promoted === null) throw new Error(`Blob entry ${blobID} missing after promotion`)
-      await commitStaging(ctx.backend, transfer.stagingID, blobID, originalError)
-      return { entry: promoted }
+      if (promoted === null) throw new Error('Missing promoted entry')
+      for (const ended of sessions)
+        cleanups.push(afterCommit(ctx, provider, () => abortQuietly(ctx.backend, ended.stagingID)))
+      await commitStaging(ctx.backend, session.stagingID, blobID, originalError)
+      return { entry: promoted, fetched: true }
     }
-    // A caller can catch publication failure and still commit its transaction.
     if (ctx.db.isTransactionBound) {
       if (tx.withSavepoint === undefined)
         throw new Error('Blob publication requires savepoint support')
@@ -400,7 +476,77 @@ export async function completeFetch(ctx: TransferContext, id: string): Promise<B
     }
     return await publish(tx)
   })
-  if (!ctx.db.isTransactionBound) await cleanup
+  if (!ctx.db.isTransactionBound) await Promise.all(cleanups)
   if ('error' in result) throw result.error
-  return result.entry
+  return result
+}
+
+export async function allSessions(
+  store: BlobStoreAPI,
+  blobID: string,
+): Promise<Array<BlobSession>> {
+  const sessions: Array<BlobSession> = []
+  let cursor: string | undefined
+  do {
+    const page = await store.listSessions({ blobID, limit: 500, cursor })
+    sessions.push(...page.sessions)
+    cursor = page.nextCursor ?? undefined
+  } while (cursor !== undefined)
+  return sessions
+}
+
+export async function abortFetch(ctx: TransferContext, key: TransferKey): Promise<boolean> {
+  const blobID = transferKey(ctx, key)
+  let cleanup: Promise<boolean> | undefined
+  const ended = await lockBlobs(ctx.db, [blobID], async (tx) => {
+    const store = await getBlobStore(tx)
+    const session = await store.getSession(blobID, key.owner)
+    if (session === null) return false
+    await store.deleteSession(blobID, key.owner)
+    cleanup = afterCommit(ctx, tx, () => abortQuietly(ctx.backend, session.stagingID))
+    return true
+  })
+  if (!ctx.db.isTransactionBound) await cleanup
+  return ended
+}
+
+export async function listTransfers(
+  ctx: TransferContext,
+  params: ListTransfersParams,
+): Promise<{ transfers: Array<BlobTransferInfo>; nextCursor: string | null }> {
+  if (params.owner !== undefined) validateOwner(params.owner)
+  if (params.ownerPrefix !== undefined) validateOwner(params.ownerPrefix)
+  if (params.owner !== undefined && params.ownerPrefix !== undefined)
+    throw new Error('Choose owner or ownerPrefix')
+  const page = await (await getBlobStore(ctx.db)).listSessions({
+    ...params,
+    ...(params.blobID === undefined ? {} : { blobID: ctx.codec.canonicalize(params.blobID) }),
+  })
+  return {
+    transfers: page.sessions.map((s) => ({
+      blobID: s.blobID,
+      owner: s.owner,
+      chunkSize: s.chunkSize,
+      chunkCount: s.chunks.length,
+      presentCount: s.presentChunks.length,
+      createdAt: s.createdAt,
+      updatedAt: s.updatedAt,
+    })),
+    nextCursor: page.nextCursor,
+  }
+}
+
+export async function abortFetches(
+  ctx: TransferContext,
+  selector: { owner: string } | { ownerPrefix: string },
+): Promise<number> {
+  let cursor: string | undefined
+  let count = 0
+  do {
+    const page = await listTransfers(ctx, { ...selector, limit: 500, cursor })
+    for (const transfer of page.transfers)
+      if (await abortFetch(ctx, { id: transfer.blobID, owner: transfer.owner })) count++
+    cursor = page.nextCursor ?? undefined
+  } while (cursor !== undefined)
+  return count
 }

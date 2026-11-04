@@ -307,7 +307,7 @@ describe.each(backendFactories)('write ($name)', (factory) => {
     expect(await listStaging(backend)).toEqual([])
   })
 
-  test('promotes a partial entry and discards its transfer staging', async () => {
+  test('promotes an entry with sessions and discards its transfer staging', async () => {
     const data = bytesOf(10)
     const id = idOf(data)
     await ctx.store.insertEntry(
@@ -315,20 +315,27 @@ describe.each(backendFactories)('write ($name)', (factory) => {
       [],
     )
     const chunks = [0, 1, 2].map((index) => ({ index, digest: new Uint8Array(32) }))
-    await ctx.store.beginTransfer({
+    await ctx.store.putSession({
+      owner: 'owner-a',
+      contentLength: 10,
+      contentType: null,
+      encrypted: false,
+      keyID: null,
+      createdAt: 5,
+      updatedAt: 5,
       blobID: id,
       chunkSize: 4,
       chunks: chunks,
       stagingID: 'stg-transfer',
     })
     await backend.writeChunk('stg-transfer', 0, data.subarray(0, 4))
-    await ctx.store.recordTransferChunk(id, 0)
+    await ctx.store.markSessionChunk(id, 'owner-a', 0)
 
     const { entry, created } = await ctx.service.write({ stream: sourceOf(data).stream })
     expect(created).toBe(true)
     expect(entry).toMatchObject({ blobID: id, state: 'local', chunkSize: 4096, createdAt: 5 })
     expect(await ctx.store.getChunkDigests(id)).toEqual(await hashChunks(data, 4096))
-    expect(await ctx.store.getTransfer(id)).toBeNull()
+    expect(await ctx.store.getSession(id, 'owner-a')).toBeNull()
     expect(await listStaging(backend)).toEqual([])
   })
 
@@ -374,14 +381,21 @@ describe.each(backendFactories)('write ($name)', (factory) => {
       expect(await ctx.store.getEntry(idOf(data))).toBeNull()
     })
 
-    test('keeps a partial transfer when fn throws', async () => {
+    test('keeps a fetch session when fn throws', async () => {
       const data = bytesOf(10)
       const id = idOf(data)
       await ctx.store.insertEntry(
         { blobID: id, contentLength: 10, chunkSize: 4, state: 'remote-only', createdAt: 5 },
         [],
       )
-      await ctx.store.beginTransfer({
+      await ctx.store.putSession({
+        owner: 'owner-a',
+        contentLength: 10,
+        contentType: null,
+        encrypted: false,
+        keyID: null,
+        createdAt: 5,
+        updatedAt: 5,
         blobID: id,
         chunkSize: 4,
         chunks: [],
@@ -396,7 +410,7 @@ describe.each(backendFactories)('write ($name)', (factory) => {
           },
         }),
       ).rejects.toThrow('fn failed')
-      expect((await ctx.store.getEntry(id))?.state).toBe('partial')
+      expect((await ctx.store.getEntry(id))?.state).toBe('remote-only')
       expect(await listStaging(backend)).toEqual(['stg-transfer'])
     })
 

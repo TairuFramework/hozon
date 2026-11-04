@@ -64,3 +64,7 @@ Optional `listKeys()` enumerates committed keys and their commit times for orpha
 Both memory and filesystem backends implement it. Memory retains each key's publication time until deletion.
 Filesystem enumeration walks the committed directory and reports file modification times. Concurrently removed files are skipped.
 Reconciliation is opt-in and requires an explicit minimum age. It retains keys with local metadata under the database blob lock.
+
+Written staging bytes read back unchanged until re-written, committed, or aborted.
+Re-staging identical verified bytes at the same offsets preserves staging content.
+The filesystem backend uses plain files, written in place and never moved before commit.

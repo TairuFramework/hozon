@@ -114,8 +114,13 @@ describe.each(backendFactories)('pruneStaging ($name)', (factory) => {
 
   test('aborts an old transfer whose session is also old and resets the entry', async () => {
     const src = await sourceBlob(bytesOf(2500, 1))
-    await ctx.service.beginFetch(src.id, src.manifest)
-    await ctx.service.stageChunk({ id: src.id, index: 0, bytes: src.chunks[0] as Uint8Array })
+    await ctx.service.beginFetch({ id: src.id, owner: 'owner-a', manifest: src.manifest })
+    await ctx.service.stageChunk({
+      owner: 'owner-a',
+      id: src.id,
+      index: 0,
+      bytes: src.chunks[0] as Uint8Array,
+    })
     expect(await listStaging(backend)).toHaveLength(1)
 
     vi.setSystemTime(Date.now() + 2 * HOUR)
@@ -123,39 +128,54 @@ describe.each(backendFactories)('pruneStaging ($name)', (factory) => {
     expect(result).toEqual({ removed: 1, failed: 0 })
     expect(await listStaging(backend)).toEqual([])
     expect((await ctx.service.get(src.id))?.state).toBe('remote-only')
-    expect(await ctx.store.getTransfer(src.id)).toBeNull()
+    expect(await ctx.store.getSession(src.id, 'owner-a')).toBeNull()
   })
 
   test('keeps a transfer whose staging is old but whose session was touched recently', async () => {
     const src = await sourceBlob(bytesOf(2500, 2))
-    await ctx.service.beginFetch(src.id, src.manifest)
-    await ctx.service.stageChunk({ id: src.id, index: 0, bytes: src.chunks[0] as Uint8Array })
+    await ctx.service.beginFetch({ id: src.id, owner: 'owner-a', manifest: src.manifest })
+    await ctx.service.stageChunk({
+      owner: 'owner-a',
+      id: src.id,
+      index: 0,
+      bytes: src.chunks[0] as Uint8Array,
+    })
 
     vi.setSystemTime(Date.now() + 2 * HOUR)
-    await ctx.service.beginFetch(src.id, src.manifest) // identical: touches the session
+    await ctx.service.beginFetch({ id: src.id, owner: 'owner-a', manifest: src.manifest }) // identical: touches the session
     const olderThan = new Date(Date.now() - HOUR)
     // The staging area is old for the FS backend; the session decides either way.
     expect(await ctx.service.pruneStaging(olderThan)).toEqual({ removed: 0, failed: 0 })
     expect(await listStaging(backend)).toHaveLength(1)
-    expect((await ctx.service.get(src.id))?.state).toBe('partial')
+    expect((await ctx.service.get(src.id))?.state).toBe('remote-only')
   })
 
   test('skips a transfer touched between listing and locking', async () => {
     const src = await sourceBlob(bytesOf(2500, 3))
-    await ctx.service.beginFetch(src.id, src.manifest)
-    await ctx.service.stageChunk({ id: src.id, index: 0, bytes: src.chunks[0] as Uint8Array })
+    await ctx.service.beginFetch({ id: src.id, owner: 'owner-a', manifest: src.manifest })
+    await ctx.service.stageChunk({
+      owner: 'owner-a',
+      id: src.id,
+      index: 0,
+      bytes: src.chunks[0] as Uint8Array,
+    })
 
     vi.setSystemTime(Date.now() + 2 * HOUR)
-    const lookup = ctx.store.getTransferByStagingID.bind(ctx.store)
-    vi.spyOn(ctx.store, 'getTransferByStagingID').mockImplementationOnce(async (stagingID) => {
+    const lookup = ctx.store.getSessionByStagingID.bind(ctx.store)
+    vi.spyOn(ctx.store, 'getSessionByStagingID').mockImplementationOnce(async (stagingID) => {
       const session = await lookup(stagingID)
-      await ctx.service.stageChunk({ id: src.id, index: 1, bytes: src.chunks[1] as Uint8Array })
+      await ctx.service.stageChunk({
+        owner: 'owner-a',
+        id: src.id,
+        index: 1,
+        bytes: src.chunks[1] as Uint8Array,
+      })
       return session
     })
     const result = await ctx.service.pruneStaging(new Date(Date.now() - HOUR))
     expect(result).toEqual({ removed: 0, failed: 0 })
     expect(await listStaging(backend)).toHaveLength(1)
-    expect(await ctx.service.getPresentChunks(src.id)).toEqual([0, 1])
+    expect(await ctx.service.getPresentChunks({ id: src.id, owner: 'owner-a' })).toEqual([0, 1])
   })
 
   test('leaves foreign-named staging areas untouched', async () => {

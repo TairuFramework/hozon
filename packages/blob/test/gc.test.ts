@@ -86,15 +86,19 @@ test('pin blocks collection and unpin starts a fresh grace period', async () => 
 
 test('refs may precede entries and fetch sessions block collection until pruned', async () => {
   expect((await ctx.service.addRefs([ref])).get(id)).toBeNull()
-  await ctx.service.beginFetch(id, {
-    contentLength: body.length,
-    chunkSize: 65536,
-    chunks: [digestOf(body)],
+  await ctx.service.beginFetch({
+    id: id,
+    owner: 'owner-a',
+    manifest: {
+      contentLength: body.length,
+      chunkSize: 65536,
+      chunks: [digestOf(body)],
+    },
   })
   expect((await ctx.service.collect({ releasedBefore: cutoff() })).kept).toBe(1)
   await ctx.service.removeRefs([ref])
   expect((await ctx.service.collect({ releasedBefore: cutoff() })).kept).toBe(1)
-  await ctx.service.stageChunk({ id, index: 0, bytes: body })
+  await ctx.service.stageChunk({ owner: 'owner-a', id, index: 0, bytes: body })
   await ctx.service.pruneStaging(cutoff())
   expect((await ctx.service.collect({ releasedBefore: cutoff() })).deleted).toBe(1)
 })
@@ -216,13 +220,17 @@ test.each(['write', 'fetch'] as const)(
     })
     if (operation === 'write') await write()
     else {
-      await ctx.service.beginFetch(id, {
-        contentLength: body.length,
-        chunkSize: 65536,
-        chunks: [digestOf(body)],
+      await ctx.service.beginFetch({
+        id: id,
+        owner: 'owner-a',
+        manifest: {
+          contentLength: body.length,
+          chunkSize: 65536,
+          chunks: [digestOf(body)],
+        },
       })
-      await ctx.service.stageChunk({ id, index: 0, bytes: body })
-      await ctx.service.completeFetch(id)
+      await ctx.service.stageChunk({ owner: 'owner-a', id, index: 0, bytes: body })
+      await ctx.service.completeFetch({ id: id, owner: 'owner-a' }).then((result) => result.entry)
     }
     expect(await ctx.store.listByteDeletions()).toEqual([])
     await ctx.service.drainByteDeletions()
