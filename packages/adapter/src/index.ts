@@ -15,5 +15,6 @@ export type {
   SearchHit,
   SearchIndex,
   SearchQuery,
+  TransactionContext,
   UpdatedAtColumn,
 } from './types.js'
