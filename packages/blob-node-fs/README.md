@@ -31,3 +31,7 @@ Staging and content directories must share a filesystem that supports hard links
 `createStagingReadStream(stagingID, range?)` reads a staging file (inclusive range) and rejects when it does not exist. `listStaging()` yields `{ stagingID, modifiedAt }` from the staging file `mtime`, and yields nothing when no staging directory exists.
 
 See the [blob backend reference](../../docs/reference/blob-backends.md#fsblobbackend).
+
+
+`listKeys()` enumerates files in the committed content directory with their modification times, excluding staging.
+Files removed concurrently are skipped. Use an explicit minimum age when reconciling orphan bytes.

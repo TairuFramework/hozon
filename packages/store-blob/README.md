@@ -30,7 +30,8 @@ Entries map integer flags to booleans and expose camelCase fields.
 Encryption and key IDs are optional metadata that the store does not interpret.
 Repeated entry and manifest inserts preserve existing rows.
 
-For a known remote entry, `beginTransfer({ blobID, chunkSize, chunks, stagingID })` records its manifest, sets its state to `partial`, and records a transfer session for `stagingID`.
+For an unverified entry, `beginTransfer({ blobID, chunkSize, chunks, stagingID })` records its manifest, sets `partial`, and records a session.
+Verified `remote` entries keep their state and layout. The service validates equal chunk size and digests before starting.
 Retries with the same chunk size preserve manifest digests. Progress is preserved only while `stagingID` matches the session; a different `stagingID` clears it.
 `getTransfer`, `getTransferByStagingID`, and `touchTransfer` read and refresh the session.
 Changing chunk size while a manifest exists rejects with `Cannot change chunk size for blob <blobID>: manifest already exists`.
@@ -44,7 +45,8 @@ Entries carry an optional `contentType` (`string | null`).
 `listEntries({ limit, cursor })` pages entries by `(createdAt, blobID)` with an opaque cursor; `limit` is 1 to 1000.
 `promoteEntry(entry, chunks)` atomically replaces an entry's manifest and marks it `local`, keeping `pinned` and `createdAt` and clearing transfers and session.
 `fillContentType(blobID, contentType)` sets the content type only when the stored one is null.
-`resetTransfer(blobID)` atomically drops the session, progress, and manifest and sets the entry to `remote-only`.
+`resetTransfer(blobID)` atomically drops session and progress. Unverified entries also lose their manifest and become `remote-only`.
+Verified remote entries retain their state and manifest. Reset refreshes the release row.
 The `1-sessions` migration resets existing `partial` entries to `remote-only`, dropping their manifests; this is not reversible.
 Manifest chunks reference entries, and transfer rows reference manifest chunks, with cascading deletion preventing orphan progress.
 
@@ -65,3 +67,14 @@ Multi-statement mutations are atomic and reuse a provider transaction.
 Manifest inserts use batches of 166 rows to stay below 500 bound parameters.
 
 See the [store reference](../../docs/reference/stores/blob.md).
+
+
+## Holders and releases
+
+Migration `3-holders` adds entry-independent `blob_refs` and cascading `blob_releases`, without releasing existing entries.
+The store exposes `insertRefs`, `deleteRefs`, `deleteRefsByHolder`, `countRefs`, `listRefs`, and keyset-paged `findRefs`.
+`upsertReleases`, `listReleases`, and `deleteRelease` maintain the collection work list. `setState` supports `remote`.
+Creation, promotion, unpin, ref removal, and transfer reset refresh releases atomically.
+Ref inserts batch at 125 rows, release upserts at 250, and ID lists at 500 bindings.
+Ref insertion and entry mutations require `withBlobLocks`. Ref removals only need their own transaction.
+Remote transfers preserve verified chunk rows and state until successful promotion.

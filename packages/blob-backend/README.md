@@ -28,3 +28,7 @@ Concurrent duplicate commits preserve the first published bytes, even when compe
 It copies buffers on write and read, isolating stored bytes from caller mutations.
 
 See the [blob backend reference](../../docs/reference/blob-backends.md).
+
+
+Optional `listKeys()` yields committed `{ key, modifiedAt: Date }` records for age-guarded orphan reconciliation.
+It excludes staging areas. `MemoryBlobBackend` implements it and preserves publication times across duplicate commits.

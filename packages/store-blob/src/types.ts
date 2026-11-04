@@ -1,6 +1,6 @@
 import type { BatchReadOptions } from '@hozon/db'
 
-export type BlobState = 'local' | 'partial' | 'remote-only'
+export type BlobState = 'local' | 'remote' | 'partial' | 'remote-only'
 
 export type BlobEntryInput = {
   blobID: string
@@ -47,7 +47,41 @@ export type BlobTransfer = {
 // Persists metadata and transfer progress. Callers own byte storage and verification.
 export type BlobByteDeletion = { blobID: string; queuedAt: number }
 
+export type BlobHolder = { kind: string; key: string }
+export type BlobRefInput = BlobHolder & { blobID: string }
+export type BlobRef = BlobRefInput & { createdAt: number }
+export type BlobHolderSelector = { kind: string; key: string } | { kind: string; keyPrefix: string }
+export type FindRefsParams = {
+  kind: string
+  key?: string
+  keyPrefix?: string
+  blobID?: string
+  limit: number
+  cursor?: string
+}
+export type BlobRelease = { blobID: string; releasedAt: number }
+
 export type BlobStoreAPI = {
+  // Call under `withBlobLocks`.
+  insertRefs(refs: Array<BlobRefInput>): Promise<void>
+  // Removal and release updates share a transaction; removal needs no blob lock.
+  deleteRefs(refs: Array<BlobRefInput>): Promise<Array<string>>
+  deleteRefsByHolder(selector: BlobHolderSelector): Promise<Array<string>>
+  countRefs(blobID: string): Promise<number>
+  listRefs(blobID: string): Promise<Array<BlobRef>>
+  findRefs(params: FindRefsParams): Promise<{ refs: Array<BlobRef>; nextCursor: string | null }>
+  // Call under `withBlobLocks`, or in the transaction removing refs.
+  upsertReleases(blobIDs: Array<string>, releasedAt?: number): Promise<void>
+  listReleases(params: {
+    releasedBefore: Date
+    limit?: number
+    blobID?: string
+    forUpdate?: boolean
+  }): Promise<Array<BlobRelease>>
+  // Call under `withBlobLocks`.
+  deleteRelease(blobID: string): Promise<void>
+  // Call under `withBlobLocks`.
+  setState(blobID: string, state: BlobState): Promise<void>
   // Call under `withBlobLocks`.
   enqueueByteDeletion(blobID: string, queuedAt?: number): Promise<void>
   listByteDeletions(params?: { limit?: number }): Promise<Array<BlobByteDeletion>>

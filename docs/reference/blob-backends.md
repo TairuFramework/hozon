@@ -13,6 +13,7 @@ type BlobBackend = {
   abortStaging(stagingID: string): Promise<void>
   createStagingReadStream(stagingID: string, range?: BlobRange): Promise<ReadableStream<Uint8Array>>
   listStaging?(): AsyncIterable<{ stagingID: string; modifiedAt: Date }>
+  listKeys?(): AsyncIterable<{ key: string; modifiedAt: Date }>
   createReadStream(key: string, range?: BlobRange): Promise<ReadableStream<Uint8Array>>
   has(key: string): Promise<boolean>
   delete(key: string): Promise<void>
@@ -55,3 +56,11 @@ They must contain none of `..`, `/`, `\`, `:`, or NUL.
 Invalid names reject with `Invalid blob key: <JSON.stringify(value)>`.
 
 Blob metadata, manifests, and transfer progress live in the [blob store](stores/blob.md).
+
+
+## Committed key enumeration
+
+Optional `listKeys()` enumerates committed keys and their commit times for orphan reconciliation. It never enumerates staging areas.
+Both memory and filesystem backends implement it. Memory retains each key's publication time until deletion.
+Filesystem enumeration walks the committed directory and reports file modification times. Concurrently removed files are skipped.
+Reconciliation is opt-in and requires an explicit minimum age. It retains keys with local metadata under the database blob lock.

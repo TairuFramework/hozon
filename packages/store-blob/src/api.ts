@@ -4,6 +4,7 @@ import { assertBatchSize, chunk, withStoreTransaction } from '@hozon/db'
 import { b64uFromUTF, b64uToUTF } from '@sozai/codec'
 
 import { InvalidCursorError } from './errors.js'
+import { createRefMethods, upsertReleases } from './refs.js'
 import type { BlobTables } from './tables.js'
 import type { BlobChunkInput, BlobEntry, BlobStoreAPI } from './types.js'
 
@@ -107,6 +108,12 @@ export function createBlobStoreAPI(
   }
 
   return {
+    ...createRefMethods(db, adapter),
+    async setState(blobID, state) {
+      await mutate(blobID, async () => {
+        await db.updateTable('blob_entries').set({ state }).where('blob_id', '=', blobID).execute()
+      })
+    },
     async enqueueByteDeletion(blobID, queuedAt = Date.now()) {
       await db
         .insertInto('blob_byte_deletions')
@@ -132,7 +139,7 @@ export function createBlobStoreAPI(
     async insertEntry(entry, chunks) {
       return mutate(entry.blobID, async () => {
         await withStoreTransaction(db, async (trx) => {
-          await trx
+          const inserted = await trx
             .insertInto('blob_entries')
             .values({
               blob_id: entry.blobID,
@@ -146,7 +153,9 @@ export function createBlobStoreAPI(
               content_type: entry.contentType ?? null,
             })
             .onConflict((oc) => oc.column('blob_id').doNothing())
+            .returning('blob_id')
             .execute()
+          if (inserted.length > 0) await upsertReleases(trx, [entry.blobID])
           await insertManifest(trx, entry.blobID, chunks)
         })
       })
@@ -164,11 +173,14 @@ export function createBlobStoreAPI(
     },
     async setPinned(blobID, pinned) {
       return mutate(blobID, async () => {
-        await db
-          .updateTable('blob_entries')
-          .set({ pinned: pinned ? 1 : 0 })
-          .where('blob_id', '=', blobID)
-          .execute()
+        await withStoreTransaction(db, async (trx) => {
+          await trx
+            .updateTable('blob_entries')
+            .set({ pinned: pinned ? 1 : 0 })
+            .where('blob_id', '=', blobID)
+            .execute()
+          if (!pinned) await upsertReleases(trx, [blobID])
+        })
       })
     },
     async deleteEntry(blobID) {
@@ -186,7 +198,7 @@ export function createBlobStoreAPI(
         await withStoreTransaction(db, async (trx) => {
           let query = trx
             .selectFrom('blob_entries')
-            .select(['blob_id', 'chunk_size'])
+            .select(['blob_id', 'chunk_size', 'state'])
             .where('blob_id', '=', blobID)
           if (adapter.kind === 'postgres') query = query.forUpdate()
           const entry = await query.executeTakeFirst()
@@ -205,7 +217,7 @@ export function createBlobStoreAPI(
           }
           await trx
             .updateTable('blob_entries')
-            .set({ chunk_size: chunkSize, state: 'partial' })
+            .set({ chunk_size: chunkSize, state: entry.state === 'remote' ? 'remote' : 'partial' })
             .where('blob_id', '=', blobID)
             .execute()
           await insertManifest(trx, blobID, chunks)
@@ -301,6 +313,7 @@ export function createBlobStoreAPI(
             .execute()
           await trx.deleteFrom('blob_transfers').where('blob_id', '=', blobID).execute()
           await trx.deleteFrom('blob_transfer_sessions').where('blob_id', '=', blobID).execute()
+          await upsertReleases(trx, [blobID])
         })
       })
     },
@@ -404,24 +417,30 @@ export function createBlobStoreAPI(
           await trx.deleteFrom('blob_chunks').where('blob_id', '=', entry.blobID).execute()
           await insertManifest(trx, entry.blobID, chunks)
           await trx.deleteFrom('blob_byte_deletions').where('blob_id', '=', entry.blobID).execute()
+          await upsertReleases(trx, [entry.blobID])
         })
       })
     },
     async resetTransfer(blobID) {
       return mutate(blobID, async () => {
         await withStoreTransaction(db, async (trx) => {
-          let lock = trx.selectFrom('blob_entries').select('blob_id').where('blob_id', '=', blobID)
+          let lock = trx
+            .selectFrom('blob_entries')
+            .select(['blob_id', 'state'])
+            .where('blob_id', '=', blobID)
           if (adapter.kind === 'postgres') lock = lock.forUpdate()
           const entry = await lock.executeTakeFirst()
           if (entry === undefined) return
           await trx.deleteFrom('blob_transfer_sessions').where('blob_id', '=', blobID).execute()
           await trx.deleteFrom('blob_transfers').where('blob_id', '=', blobID).execute()
-          await trx.deleteFrom('blob_chunks').where('blob_id', '=', blobID).execute()
+          if (entry.state !== 'remote')
+            await trx.deleteFrom('blob_chunks').where('blob_id', '=', blobID).execute()
           await trx
             .updateTable('blob_entries')
-            .set({ state: 'remote-only' })
+            .set({ state: entry.state === 'remote' ? 'remote' : 'remote-only' })
             .where('blob_id', '=', blobID)
             .execute()
+          await upsertReleases(trx, [blobID])
         })
       })
     },

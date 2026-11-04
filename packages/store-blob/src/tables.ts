@@ -35,7 +35,12 @@ export type BlobTransferSessionTable = {
 
 export type BlobByteDeletionTable = { blob_id: string; queued_at: number }
 
+export type BlobRefTable = { blob_id: string; kind: string; key: string; created_at: number }
+export type BlobReleaseTable = { blob_id: string; released_at: number }
+
 export type BlobTables = {
+  blob_refs: BlobRefTable
+  blob_releases: BlobReleaseTable
   blob_byte_deletions: BlobByteDeletionTable
   blob_entries: BlobEntryTable
   blob_chunks: BlobChunkTable

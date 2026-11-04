@@ -34,7 +34,7 @@ Known lengths are checked before staging. Unknown lengths are counted while stre
 2. The body streams into a fresh staging area while hashing. Crossing `min(maxSize, limits.maxBlobSize)` throws `BlobTooLargeError`. A stream error aborts staging and rethrows it.
 3. A computed ID different from `expectedID` throws `BlobIDMismatchError`.
 4. Under the blob lock, a local blob keeps its metadata, fills a null content type, and returns `created: false`.
-   Otherwise all metadata and manifest statements run first, replacing `remote-only` or `partial` state and clearing pending deletion work.
+   Otherwise all metadata and manifest statements run first, replacing `remote`, `remote-only`, or `partial` state and clearing pending deletion work.
    `backend.commit` publishes the bytes last, before the database transaction commits. Replaced transfer staging is discarded after commit.
 
 Metadata statements run before byte publication, while metadata remains uncommitted.
@@ -67,7 +67,7 @@ Transfer staging cleanup also runs after commit.
 
 ## Peer transfer
 
-- `beginFetch(id, { contentLength, chunkSize, chunks, contentType?, encrypted?, keyID? })` validates the untrusted manifest (`InvalidManifestError`) against the ID and limits, then records the entry as `partial` with a fresh staging ID. A local blob is a no-op; an identical manifest with live staging is idempotent; a different one resets the transfer first. An existing stub whose stored `contentLength` differs from the manifest throws `InvalidManifestError`. A zero-length blob records the service's `chunkSize`, not the peer's.
+- `beginFetch(id, { contentLength, chunkSize, chunks, contentType?, encrypted?, keyID? })` validates the untrusted manifest (`InvalidManifestError`) against the ID and limits, then records a fresh session. Unverified entries become `partial`; verified remote entries remain `remote`. A local blob is a no-op; an identical manifest with live staging is idempotent; a different one resets the transfer first. An existing stub whose stored `contentLength` differs from the manifest throws `InvalidManifestError`. An unverified zero-length blob records the service's `chunkSize`. Remote blobs require their stored size, including empty blobs.
 - `getPresentChunks(id)` lists staged indexes for resume. If the staging area vanished, the transfer is reset and the list is empty.
 - `stageChunk({ id, index, bytes })` checks length (`ChunkLengthError`) and digest (`ChunkDigestMismatchError`) before writing.
 - `completeFetch(id)` throws `TransferIncompleteError` while chunks are missing. It verifies length and whole-blob digest from the staged bytes before committing; on mismatch it aborts staging, resets the transfer, and throws `BlobIDMismatchError`.
@@ -82,7 +82,8 @@ Pruning skips writes in progress and transfer staging created inside an unfinish
 Other processes are protected only by age. The age threshold must exceed the longest upload and caller transaction that begins a fetch.
 A backend without `listStaging` returns `{ removed: 0, failed: 0 }`.
 The backend's staging namespace must not be shared with non-service writers that use `w-`/`t-` IDs: such areas would be pruned.
-Abandoned `remote-only` stub rows (for example after a reset) are never removed automatically; there is no garbage collection for them.
+Abandoned `remote-only` entries become eligible for explicit `collect` after their session ends and their release passes grace.
+No scheduler runs automatically.
 
 ## Locking
 
@@ -139,3 +140,23 @@ The caller must register `blobStoreDefinition` on the `HozonDB` before creating 
 
 `BlobNotFoundError`, `BlobTooLargeError`, `BlobIDMismatchError`, `ContentTypeMismatchError`, `ChunkDigestMismatchError`, `ChunkLengthError`, `InvalidManifestError`, `InvalidRangeError`, `BlobWriteAbortedError`, `TransferIncompleteError`, `StagingLimitError`, and the re-exported `InvalidBlobIDError`.
 `TransactionScopeError` is exported by `@hozon/db`.
+
+
+## Holders, eviction and maintenance
+
+`addRefs([{ blobID, kind: 'doc', key: 'owner-a' }])` keeps blobs and returns their fresh entries, including null for missing entries.
+Use `removeRefs`, `removeHolders`, `listRefs`, and `findRefs` to manage opaque holders.
+Kinds match `^[a-z][a-z0-9_-]{0,63}$`. Keys contain 1 to 512 printable ASCII characters.
+`collect({ releasedBefore, limit? })` removes released blobs only when refs, pins, and fetch sessions are absent.
+Every caller chooses its grace cutoff. Existing entries receive no release row during migration.
+`delete(id)` throws `BlobReferencedError` when held. `delete(id, { force: true })` removes refs atomically.
+
+`evict(id)` retains metadata, refs, and verified digests while dropping bytes and setting state `remote`.
+Pinned local blobs throw `BlobPinnedError`. Non-local reads throw `BlobNotLocalError`, exposing `state`.
+Writing re-populates a remote entry. Fetching requires its stored chunk size and equal verified digests.
+Other digests or chunk sizes throw `InvalidManifestError` before session creation. Reset preserves the remote layout.
+
+`reconcileBytes({ olderThan, limit? })` removes orphan committed keys when the backend supports optional `listKeys`.
+The age must exceed the longest caller transaction that writes. Unsupported backends throw `BlobReconcileUnsupportedError`.
+`runMaintenance({ grace, stagingOlderThan, bytesOlderThan?, limit? })` runs drain, prune, collect, then optional reconciliation.
+Durations are explicit milliseconds. Every step reports counts. Logged step failures allow later steps to run.

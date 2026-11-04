@@ -8,7 +8,7 @@ Exports include `BLOB_STORE`, `blobStoreDefinition`, `getBlobStore`, `BlobStoreA
 `BlobTransfer`, `BLOB_LOCK_TABLE`, and `withBlobLocks` are also exported. Table types are `BlobTables`, `BlobEntryTable`, `BlobChunkTable`, `BlobTransferTable`, and `BlobTransferSessionTable`.
 
 ```ts
-type BlobState = 'local' | 'partial' | 'remote-only'
+type BlobState = 'local' | 'remote' | 'partial' | 'remote-only'
 type BlobEntryInput = {
   blobID: string; contentLength: number; encrypted?: boolean; keyID?: string | null
   chunkSize: number; state: BlobState; pinned?: boolean; createdAt: number
@@ -177,7 +177,8 @@ A session ties an entry's transfer progress to one staging area.
 `nextCursor` is `null` on the last page; otherwise it is an opaque base64url encoding of JSON `[createdAt, blobID]`. A malformed cursor throws `Invalid cursor`.
 `promoteEntry(entry, chunks)` runs in one transaction: it upserts the entry with `state: 'local'`, updating every column except `blob_id`, `created_at`, and `pinned`, then deletes existing chunks, transfers, and the session for the ID, and inserts `chunks`.
 The chunk size may differ from a previous manifest.
-`resetTransfer(blobID)` runs in one transaction: it deletes the session, transfers, and manifest chunks and sets the state to `remote-only`. It is a no-op for unknown IDs.
+`resetTransfer(blobID)` deletes session and progress atomically. Unverified entries also lose manifest chunks and become `remote-only`.
+Verified remote entries retain state and chunks. Reset refreshes release eligibility. Unknown IDs are a no-op.
 On Postgres, `beginTransfer`, `promoteEntry`, and `resetTransfer` lock the entry row with `FOR UPDATE`.
 
 ## Publication and deletion
@@ -203,7 +204,9 @@ Logging failures never reject cleanup hooks.
 `deleteByteDeletion(blobID)` clears a journal row. Both journal mutations require the blob lock.
 The journal has no foreign key because deletion can remove metadata first.
 
-Service `delete(id)` removes metadata and enqueues local bytes in one locked transaction.
+Service `delete(id, { force? })` refuses referenced blobs with `BlobReferencedError` unless forced.
+Force removes refs in the same transaction. Pins do not block explicit deletion.
+Deletion removes metadata and enqueues local bytes in one locked transaction.
 After commit, a fresh locked transaction deletes bytes only when no local entry exists, then clears the journal.
 Publication clears its pending deletion row and keeps its bytes.
 Root-bound deletion runs byte cleanup inline. Cleanup failures propagate and leave replayable journal work.
@@ -238,3 +241,63 @@ It backfills existing `partial` entries: their manifests and progress are droppe
 The backfill is not reversible; the down migration drops the column and table only.
 
 Byte storage lives in a backend; see [Blob backends](../blob-backends.md).
+
+
+## Holders and collection
+
+A ref `(blobID, kind, key)` keeps a blob. Refs may precede an entry without creating one.
+Kinds match `^[a-z][a-z0-9_-]{0,63}$`. Keys contain 1 to 512 printable ASCII characters (`0x20` to `0x7e`).
+Holder strings are opaque. Hash longer or non-ASCII natural keys before using them.
+
+`addRefs(refs)` accepts at most 500 refs, canonicalises IDs, and locks all distinct blobs together.
+It inserts idempotently and returns a map of fresh entries or `null` per canonical ID.
+`removeRefs(refs)` and `removeHolders({ kind, key } | { kind, keyPrefix })` return the number removed.
+Removal and release updates share a transaction, including when called through `using(tx)`.
+Removal needs no blob lock because collection rechecks holders under its lock.
+`listRefs(id)` returns refs. `findRefs({ kind, key?, keyPrefix?, blobID?, limit, cursor? })` pages by `(kind, key, blob_id)`.
+Choose either `key` or `keyPrefix`. The prefix bound is exact: `key >= prefix AND key < prefix || '\x7f'`.
+Limits for ref pages range from 1 to 1000. Cursors are opaque.
+
+`collect({ releasedBefore, limit? })` drains pending byte deletions, then considers release rows oldest first.
+Its default limit is 100, with a maximum of 500. The cutoff is strict: `released_at < releasedBefore`.
+Every candidate gets its own locked transaction. Collection locks its release row before checking entry, refs, pin, and session.
+This serialises release upserts from concurrent lock-free ref removals, preventing fresh work from being discarded.
+Refs, pins, and active fetch sessions keep entries and clear their stale release rows.
+Unheld entries are removed. Local bytes use the durable two-transaction deletion protocol.
+The result contains `{ deleted, kept, failed }`. A byte-cleanup failure counts as failed and leaves journal work for replay.
+
+Release rows refresh when refs are removed, pins clear, entries are created or promoted, fetch sessions end, or entries are evicted.
+They are a work list, not proof that a blob is unheld. Every caller supplies its grace cutoff.
+Migration `3-holders` adds `blob_refs` and `blob_releases`, with holder and release-time indexes.
+Ref rows have no entry foreign key. Release rows cascade with entry deletion.
+The migration creates no release rows for existing entries, so collection preserves them until a later release event.
+Ref inserts use 125 rows per statement, release upserts use 250, and ID lists use at most 500 bindings.
+
+## Remote entries and eviction
+
+`evict(id)` returns false for absent or non-local entries and throws `BlobPinnedError` for pinned local entries.
+It keeps metadata, refs, and verified chunk digests, changes the state to `remote`, and journals byte deletion.
+Caller-bound eviction defers byte deletion until commit. Rollback preserves the local entry and bytes.
+`has` returns false for remote entries. `getChunkDigests` returns an empty array for every non-local entry.
+`createReadStream` throws `BlobNotLocalError`, a `BlobNotFoundError` subclass exposing `state`, for known non-local entries.
+Writing the same content re-populates a remote entry, preserving its pin and creation time.
+
+A fetch of a remote entry must use its stored chunk size and identical verified digests.
+Other digests or a different chunk size throw `InvalidManifestError` before creating a session.
+Remote entries retain their state and verified digests during fetching and after session reset or pruning.
+Other in-progress entries continue using `partial` with today's single-session API.
+
+## Maintenance and reconciliation
+
+`reconcileBytes({ olderThan, limit? })` enumerates optional backend `listKeys` output.
+It considers valid codec keys older than the cutoff, then locks each blob and deletes bytes unless a local entry exists.
+The default limit is 100 byte-deletion attempts. It must be a positive integer. Retained local keys do not consume the limit.
+`scanned` includes eligible local keys, so it can exceed the limit. Invalid keys and newer keys are excluded.
+It returns `{ scanned, deleted, failed }`. Missing `listKeys` throws `BlobReconcileUnsupportedError`.
+The age must exceed the longest caller transaction that writes, protecting publication before metadata settlement.
+
+`runMaintenance({ grace, stagingOlderThan, bytesOlderThan?, limit? })` takes durations in milliseconds.
+It runs drain, prune, collect, then optional reconciliation, using one captured current time for cutoffs.
+The result contains `drained`, `pruned`, `collected`, and `reconciled`, which is null when reconciliation was omitted.
+A throwing step is logged and represented by a result with `failed: 1`. Later steps still run.
+Collection also performs its own initial drain. Scheduling belongs to the embedder.

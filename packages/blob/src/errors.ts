@@ -1,3 +1,5 @@
+import type { BlobState } from '@hozon/store-blob'
+
 export class BlobNotFoundError extends Error {
   constructor(id: string, options?: ErrorOptions) {
     super(`Blob not found: ${id}`, options)
@@ -88,5 +90,35 @@ export class StagingLimitError extends Error {
   constructor() {
     super('Staging byte limit exceeded')
     this.name = 'StagingLimitError'
+  }
+}
+
+export class BlobReferencedError extends Error {
+  constructor(id: string) {
+    super(`Blob is referenced: ${id}`)
+    this.name = 'BlobReferencedError'
+  }
+}
+export class BlobPinnedError extends Error {
+  constructor(id: string) {
+    super(`Blob is pinned: ${id}`)
+    this.name = 'BlobPinnedError'
+  }
+}
+export class BlobNotLocalError extends BlobNotFoundError {
+  #state: BlobState
+  constructor(params: { id: string; state: BlobState }) {
+    super(params.id)
+    this.name = 'BlobNotLocalError'
+    this.#state = params.state
+  }
+  get state(): BlobState {
+    return this.#state
+  }
+}
+export class BlobReconcileUnsupportedError extends Error {
+  constructor() {
+    super('Backend does not support committed key enumeration')
+    this.name = 'BlobReconcileUnsupportedError'
   }
 }

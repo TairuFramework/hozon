@@ -1,10 +1,21 @@
 export { InvalidBlobIDError } from '@hozon/blob-id'
+export type {
+  BlobHolder,
+  BlobHolderSelector,
+  BlobRef,
+  BlobRefInput,
+  FindRefsParams,
+} from '@hozon/store-blob'
 export { InvalidCursorError } from '@hozon/store-blob'
 
 export {
   BlobIDMismatchError,
   type BlobIDMismatchErrorParams,
   BlobNotFoundError,
+  BlobNotLocalError,
+  BlobPinnedError,
+  BlobReconcileUnsupportedError,
+  BlobReferencedError,
   BlobTooLargeError,
   BlobWriteAbortedError,
   ChunkDigestMismatchError,
@@ -20,6 +31,14 @@ export {
   type TransferIncompleteErrorParams,
 } from './errors.js'
 export { type BlobLimits, DEFAULT_CHUNK_SIZE, DEFAULT_LIMITS } from './limits.js'
+export type {
+  CollectParams,
+  CollectResult,
+  MaintenanceParams,
+  MaintenanceResult,
+  ReconcileParams,
+  ReconcileResult,
+} from './maintenance.js'
 export {
   type BlobOperations,
   type BlobService,

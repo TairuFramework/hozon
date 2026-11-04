@@ -9,6 +9,7 @@ export class MemoryBlobBackend implements BlobBackend {
   // Staging holds offset-addressed segments so sequential writes (createStaging)
   // and out-of-order chunk writes (writeChunk) share one assembly path.
   #staging = new Map<string, StagingArea>()
+  #committedAt = new Map<string, Date>()
   #committed = new Map<string, Uint8Array>()
 
   #area(stagingID: string): StagingArea {
@@ -56,6 +57,11 @@ export class MemoryBlobBackend implements BlobBackend {
     }
   }
 
+  async *listKeys(): AsyncIterable<{ key: string; modifiedAt: Date }> {
+    for (const [key, modifiedAt] of [...this.#committedAt])
+      yield { key, modifiedAt: new Date(modifiedAt) }
+  }
+
   async commit(stagingID: string, key: string): Promise<void> {
     if (this.#committed.has(key)) {
       this.#staging.delete(stagingID)
@@ -66,6 +72,7 @@ export class MemoryBlobBackend implements BlobBackend {
       throw new Error(`No staging area for ${stagingID}`)
     }
     this.#committed.set(key, assemble(area.segments))
+    this.#committedAt.set(key, new Date())
     this.#staging.delete(stagingID)
   }
 
@@ -87,6 +94,7 @@ export class MemoryBlobBackend implements BlobBackend {
 
   async delete(key: string): Promise<void> {
     this.#committed.delete(key)
+    this.#committedAt.delete(key)
   }
 
   // In-memory bytes have no addressable location.

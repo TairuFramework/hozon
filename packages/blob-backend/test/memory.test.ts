@@ -208,3 +208,29 @@ test('writing to a committed staging ID starts an unrelated area', async () => {
   expect(await readBytes(await backend.createReadStream('k'))).toEqual([1, 2, 3])
   expect(await readBytes(await backend.createStagingReadStream('s1'))).toEqual([9])
 })
+
+test('committed key timestamps survive duplicate publication and disappear on deletion', async () => {
+  const backend = new MemoryBlobBackend()
+  vi.useFakeTimers()
+  try {
+    vi.setSystemTime(1000)
+    await backend.writeChunk('s-first', 0, new Uint8Array([1]))
+    await backend.commit('s-first', 'key')
+    vi.setSystemTime(2000)
+    await backend.writeChunk('s-second', 0, new Uint8Array([1]))
+    await backend.commit('s-second', 'key')
+    const keys = []
+    for await (const row of backend.listKeys()) keys.push(row)
+    expect(keys).toEqual([{ key: 'key', modifiedAt: new Date(1000) }])
+    keys[0]?.modifiedAt.setTime(0)
+    const again = []
+    for await (const row of backend.listKeys()) again.push(row)
+    expect(again[0]?.modifiedAt.getTime()).toBe(1000)
+    await backend.delete('key')
+    const remaining = []
+    for await (const row of backend.listKeys()) remaining.push(row)
+    expect(remaining).toEqual([])
+  } finally {
+    vi.useRealTimers()
+  }
+})

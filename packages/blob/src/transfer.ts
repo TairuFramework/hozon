@@ -160,11 +160,12 @@ async function stagingExists(
   return true
 }
 
-// Lock held: the transfer of a `partial` entry, or BlobNotFoundError.
+// Lock held: require an active transfer.
 async function requireTransfer(ctx: TransferContext, blobID: string): Promise<ActiveTransfer> {
   const store = await getBlobStore(ctx.db)
   const entry = await getFreshEntry(store, blobID)
-  const transfer = entry?.state === 'partial' ? await store.getTransfer(blobID) : null
+  const transfer =
+    entry?.state === 'partial' || entry?.state === 'remote' ? await store.getTransfer(blobID) : null
   if (entry === null || transfer === null) {
     throw new BlobNotFoundError(blobID, { cause: new Error('No active transfer') })
   }
@@ -178,13 +179,14 @@ export async function beginFetch(
 ): Promise<void> {
   const blobID = ctx.codec.canonicalize(id)
   const contentType = validateManifest(ctx, blobID, manifest)
-  // A zero-length blob has no chunks, so the peer's chunk size is meaningless.
-  const chunkSize = manifest.contentLength === 0 ? ctx.chunkSize : manifest.chunkSize
   let cleanup: Promise<boolean> | undefined
   await lockBlobs(ctx.db, [blobID], async (tx) => {
     const store = await getBlobStore(tx)
     const entry = await getFreshEntry(store, blobID)
     if (entry?.state === 'local') return
+    // Remote layouts remain verified, including the chunk size of an empty blob.
+    const chunkSize =
+      entry?.state === 'remote' || manifest.contentLength > 0 ? manifest.chunkSize : ctx.chunkSize
     // A stub with another length could never complete against this manifest.
     if (entry !== null && entry.contentLength !== manifest.contentLength) {
       throw new InvalidManifestError(
@@ -192,10 +194,16 @@ export async function beginFetch(
       )
     }
 
+    if (entry?.state === 'remote') {
+      if (entry.chunkSize !== chunkSize)
+        throw new InvalidManifestError('chunk size differs from the verified layout')
+      if (!digestsEqual(await store.getChunkDigests(blobID), manifest.chunks))
+        throw new InvalidManifestError('digests differ from the verified layout')
+    }
     const transfer = entry === null ? null : await store.getTransfer(blobID)
     if (entry !== null && transfer !== null) {
       const identical =
-        entry.state === 'partial' &&
+        (entry.state === 'partial' || entry.state === 'remote') &&
         entry.chunkSize === chunkSize &&
         digestsEqual(await store.getChunkDigests(blobID), manifest.chunks)
       if (identical && (await stagingExists(ctx.backend, transfer, entry.chunkSize))) {
@@ -220,7 +228,7 @@ export async function beginFetch(
         [],
       )
     } else {
-      // Drops the previous manifest and progress so the new manifest replaces them.
+      // Reset progress; remote entries retain their verified layout.
       await store.resetTransfer(blobID)
       if (contentType !== undefined) await store.fillContentType(blobID, contentType)
     }
@@ -249,7 +257,7 @@ export async function getPresentChunks(ctx: TransferContext, id: string): Promis
   return await lockBlobs(ctx.db, [blobID], async (tx) => {
     const store = await getBlobStore(tx)
     const entry = await getFreshEntry(store, blobID)
-    if (entry?.state !== 'partial') return []
+    if (entry?.state !== 'partial' && entry?.state !== 'remote') return []
     const transfer = await store.getTransfer(blobID)
     if (transfer === null) return []
     if (!(await stagingExists(ctx.backend, transfer, entry.chunkSize))) {
