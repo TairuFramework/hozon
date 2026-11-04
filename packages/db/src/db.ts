@@ -22,7 +22,6 @@ import {
   settleSyncProvider,
 } from './sync.js'
 import { TablePrefixPlugin } from './table-prefix.js'
-import { createTransactionContext } from './transaction-context.js'
 
 export type MigrationContext = {
   tablePrefix: string
@@ -138,7 +137,6 @@ type StoredDefinition<Ext extends ContextExtension> = {
 
 // biome-ignore lint/complexity/noBannedTypes: The default adds no context fields.
 export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider {
-  #transactionContext = createTransactionContext()
   #context?: ContextFactory<Ext>
   #closeHooks: Array<() => Promise<void> | void> = []
   #tablePrefix: string
@@ -283,7 +281,7 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
    *
    * Callers MUST use the provided `tx` inside the callback. Calling
    * `db.withTransaction` on the same instance inside the callback is a bug.
-   * On SQLite with async context, it throws TransactionScopeError. Without
+   * On SQLite with adapter-provided context, it throws TransactionScopeError. Without
    * async context it can deadlock. Postgres opens an independent transaction.
    */
   async withTransaction<Stores extends Record<string, unknown>, R>(
@@ -296,8 +294,8 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
     fn: (tx: StoreProvider<Stores>) => Promise<R>,
     beforeHooks?: () => void,
   ): Promise<R> {
-    const transactionContext = await this.#transactionContext
-    if (this.#adapter.kind === 'sqlite' && transactionContext?.getStore()?.active) {
+    const transactionContext = this.#adapter.transactionContext
+    if (this.#adapter.kind === 'sqlite' && transactionContext?.active()) {
       throw new TransactionScopeError()
     }
     // Migrate every registered store before opening the transaction. Stores
@@ -472,16 +470,14 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
           return provider
         }
 
-        const state = { active: true }
         const run = async () => {
           try {
             return await fn(createScopedProvider(commitHooks, rollbackHooks))
           } finally {
-            state.active = false
             registry.dispatchAll()
           }
         }
-        return transactionContext == null ? await run() : await transactionContext.run(state, run)
+        return transactionContext == null ? await run() : await transactionContext.run(run)
       })
     } catch (err) {
       registry.close()
@@ -704,7 +700,9 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
       migrationTableName: `${this.#tablePrefix}_${name}_migration`,
       migrationLockTableName: `${this.#tablePrefix}_${name}_migration_lock`,
     })
-    const result = await migrator.migrateToLatest()
+    const transactionContext = this.#adapter.transactionContext
+    const run = () => migrator.migrateToLatest()
+    const result = transactionContext == null ? await run() : await transactionContext.run(run)
     if (result.error != null) {
       throw result.error
     }
