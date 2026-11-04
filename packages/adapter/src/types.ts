@@ -50,8 +50,16 @@ export type SearchCapability = {
   query<Database>(db: Kysely<Database>, params: SearchQuery): Promise<Array<SearchHit>>
 }
 
+/** Async task context supplied by adapters that support transaction-scope detection. */
+export type TransactionContext = {
+  /** Mark this async task active until the callback settles, including inherited tasks. */
+  run<R>(fn: () => Promise<R>): Promise<R>
+  active(): boolean
+}
+
 export type AbstractAdapter<T extends AdapterTypes = AdapterTypes> = {
   kind: 'sqlite' | 'postgres'
+  transactionContext?: TransactionContext
   search?: SearchCapability
   functions: Functions
   types: ColumnTypes

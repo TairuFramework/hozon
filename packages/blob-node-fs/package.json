@@ -28,8 +28,7 @@
     "test:unit": "vitest run"
   },
   "dependencies": {
-    "@hozon/blob-backend": "workspace:^",
-    "@sozai/lock": "catalog:"
+    "@hozon/blob-backend": "workspace:^"
   },
   "devDependencies": {
     "@types/node": "catalog:",

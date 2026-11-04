@@ -33,7 +33,10 @@ export type BlobTransferSessionTable = {
   updated_at: number
 }
 
+export type BlobByteDeletionTable = { blob_id: string; queued_at: number }
+
 export type BlobTables = {
+  blob_byte_deletions: BlobByteDeletionTable
   blob_entries: BlobEntryTable
   blob_chunks: BlobChunkTable
   blob_transfers: BlobTransferTable

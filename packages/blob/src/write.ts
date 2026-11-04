@@ -1,4 +1,4 @@
-import type { BlobBackend, BlobLock } from '@hozon/blob-backend'
+import type { BlobBackend } from '@hozon/blob-backend'
 import type { BlobIDCodec, HashResult } from '@hozon/blob-id'
 import { hashStream } from '@hozon/blob-id'
 import type { StoreProvider } from '@hozon/db'
@@ -11,9 +11,13 @@ import {
   BlobTooLargeError,
   BlobWriteAbortedError,
   ContentTypeMismatchError,
+  StagingLimitError,
 } from './errors.js'
 import { getFreshEntry } from './fresh.js'
 import type { BlobLimits } from './limits.js'
+import { lockBlobs } from './locking.js'
+import { afterCommit, reclaimOnRollback } from './manage.js'
+import { commitStaging } from './publish.js'
 
 export type WriteOptions = {
   contentType?: string
@@ -33,14 +37,24 @@ export type WriteContext = {
   backend: BlobBackend
   codec: BlobIDCodec
   chunkSize: number
-  lock: BlobLock
+  root: StoreProvider
+  logError(error: unknown): void
   limits: BlobLimits
   runtime: Runtime
   // Staging IDs of writes in progress, which staging pruning must skip.
-  activeWrites: Set<string>
+  activeWrites: Map<string, number>
 }
 
-export type RecordFn<T> = (tx: StoreProvider, entry: BlobEntry) => Promise<T>
+export type WriteReplay = {
+  prepared?: {
+    stagingID: string
+    hashed: HashResult
+    blobID: string
+    contentType: string | undefined
+  }
+  originalError?: unknown
+  cleanup?: () => Promise<void>
+}
 
 // Random staging ID: `prefix` (`w` for writes, `t` for transfers), a dash, 32 hex chars.
 export function createStagingID(runtime: Runtime, prefix: 'w' | 't'): string {
@@ -71,29 +85,12 @@ async function cancelQuietly(stream: ReadableStream<Uint8Array>, reason: unknown
   }
 }
 
-type Recorded<T> = { entry: BlobEntry; result: T | undefined }
-
-// Records the blob under the lock, inside a transaction when `fn` is given.
-async function record<T>(
+export async function writeBlob(
   ctx: WriteContext,
-  fn: RecordFn<T> | undefined,
-  step: (store: BlobStoreAPI) => Promise<BlobEntry>,
-): Promise<Recorded<T>> {
-  if (fn === undefined) {
-    return { entry: await step(await getBlobStore(ctx.db)), result: undefined }
-  }
-  return await ctx.db.withTransaction(async (tx) => {
-    const store = await getBlobStore(tx)
-    const entry = await step(store)
-    return { entry, result: await fn(tx, entry) }
-  })
-}
-
-export async function writeBlob<T>(
-  ctx: WriteContext,
-  params: WriteParams & { fn?: RecordFn<T> },
-): Promise<WriteResult & { result: T | undefined }> {
-  const { stream, fn, ...options } = params
+  params: WriteParams,
+  replay?: WriteReplay,
+): Promise<WriteResult> {
+  const { stream, ...options } = params
   const { signal } = options
   if (
     options.contentType !== undefined &&
@@ -113,7 +110,6 @@ export async function writeBlob<T>(
   let contentType = options.contentType
   let expectedID: string | undefined
 
-  // Step 1: validate the expected ID before reading the body.
   try {
     throwIfAborted(signal)
     if (options.expectedID !== undefined) {
@@ -129,6 +125,15 @@ export async function writeBlob<T>(
           })
         }
       }
+      if (
+        replay?.prepared === undefined &&
+        ctx.limits.maxStagingBytes !== undefined &&
+        [...ctx.activeWrites.values()].reduce((sum, size) => sum + size, 0) +
+          expected.contentLength >
+          ctx.limits.maxStagingBytes
+      ) {
+        throw new StagingLimitError()
+      }
       if (expected.contentLength > limit) throw new BlobTooLargeError(limit)
     }
   } catch (error) {
@@ -136,9 +141,8 @@ export async function writeBlob<T>(
     throw error
   }
 
-  // Step 2: stream into a fresh staging area while hashing.
-  const stagingID = createStagingID(ctx.runtime, 'w')
-  ctx.activeWrites.add(stagingID)
+  const stagingID = replay?.prepared?.stagingID ?? createStagingID(ctx.runtime, 'w')
+  if (replay?.prepared === undefined) ctx.activeWrites.set(stagingID, 0)
   let staged = true
   const discardStaging = async (): Promise<void> => {
     if (!staged) return
@@ -153,13 +157,34 @@ export async function writeBlob<T>(
   try {
     let hashed: HashResult
     try {
-      const sink = await ctx.backend.createStaging(stagingID)
-      const hasher = hashStream({ codec: ctx.codec, chunkSize: ctx.chunkSize })
-      await stream
-        .pipeThrough(sizeLimiter(limit))
-        .pipeThrough(hasher.transform)
-        .pipeTo(sink, signal === undefined ? {} : { signal })
-      hashed = await hasher.result
+      if (replay?.prepared !== undefined) {
+        hashed = replay.prepared.hashed
+        contentType = replay.prepared.contentType
+      } else {
+        const sink = await ctx.backend.createStaging(stagingID)
+        const hasher = hashStream({ codec: ctx.codec, chunkSize: ctx.chunkSize })
+        await stream
+          .pipeThrough(sizeLimiter(limit))
+          .pipeThrough(
+            new TransformStream<Uint8Array, Uint8Array>({
+              transform(piece, controller) {
+                const size = (ctx.activeWrites.get(stagingID) ?? 0) + piece.length
+                ctx.activeWrites.set(stagingID, size)
+                if (
+                  ctx.limits.maxStagingBytes !== undefined &&
+                  [...ctx.activeWrites.values()].reduce((sum, bytes) => sum + bytes, 0) >
+                    ctx.limits.maxStagingBytes
+                ) {
+                  throw new StagingLimitError()
+                }
+                controller.enqueue(piece)
+              },
+            }),
+          )
+          .pipeThrough(hasher.transform)
+          .pipeTo(sink, signal === undefined ? {} : { signal })
+        hashed = await hasher.result
+      }
     } catch (error) {
       // Releases the source when staging failed before the pipe started.
       if (!stream.locked) await cancelQuietly(stream, error)
@@ -167,7 +192,6 @@ export async function writeBlob<T>(
       throw error
     }
 
-    // Step 3: derive the ID and check it against the expected one.
     const blobID = ctx.codec.encode({
       digest: hashed.digest,
       contentLength: hashed.contentLength,
@@ -177,10 +201,11 @@ export async function writeBlob<T>(
       throw new BlobIDMismatchError({ expected: expectedID, actual: blobID })
     }
 
-    // Step 4: commit bytes, then record the entry, under the blob lock.
-    return await ctx.lock.withLock(blobID, async () => {
+    if (replay !== undefined) replay.prepared = { stagingID, hashed, blobID, contentType }
+    let cleanup: Promise<boolean> | undefined
+    const result = await lockBlobs(ctx.db, [blobID], async (tx, originalError) => {
       throwIfAborted(signal)
-      const store = await getBlobStore(ctx.db)
+      const store = await getBlobStore(tx)
       const existing = await getFreshEntry(store, blobID)
 
       if (existing?.state === 'local') {
@@ -191,15 +216,11 @@ export async function writeBlob<T>(
           await target.fillContentType(blobID, contentType)
           return (await getFreshEntry(target, blobID)) ?? existing
         }
-        const { entry, result } = await record(ctx, fn, fill)
-        return { entry, created: false, result }
+        return { entry: await fill(store), created: false }
       }
 
       const transfer = existing === null ? null : await store.getTransfer(blobID)
-      // Step 5: bytes are committed before the row. Re-check: the awaits above may outlast an abort.
       throwIfAborted(signal)
-      await ctx.backend.commit(stagingID, blobID)
-      staged = false
 
       const input: Omit<BlobEntryInput, 'state'> = {
         blobID,
@@ -214,26 +235,34 @@ export async function writeBlob<T>(
         index,
         digest,
       }))
-      const promote = async (target: BlobStoreAPI): Promise<BlobEntry> => {
+      const publish = async (provider: StoreProvider) => {
+        const target = await getBlobStore(provider)
         await target.promoteEntry(input, chunks)
         const entry = await getFreshEntry(target, blobID)
         if (entry === null) throw new Error(`Blob entry ${blobID} missing after promotion`)
-        return entry
+        if (transfer !== null)
+          cleanup = afterCommit(ctx, provider, () => ctx.backend.abortStaging(transfer.stagingID))
+        if (ctx.db.isTransactionBound) reclaimOnRollback(ctx, provider, blobID)
+        await commitStaging(ctx.backend, stagingID, blobID, originalError ?? replay?.originalError)
+        staged = false
+        return { entry, created: true }
       }
-      const { entry, result } = await record(ctx, fn, promote)
-
-      // The promoted entry no longer references the transfer's staging area.
-      if (transfer !== null) {
-        try {
-          await ctx.backend.abortStaging(transfer.stagingID)
-        } catch {
-          // Reclaimed by staging pruning.
-        }
+      // A caller can catch publication failure and still commit its transaction.
+      if (ctx.db.isTransactionBound) {
+        if (tx.withSavepoint === undefined)
+          throw new Error('Blob publication requires savepoint support')
+        return await tx.withSavepoint(publish)
       }
-      return { entry, created: true, result }
+      return await publish(tx)
     })
+    if (!ctx.db.isTransactionBound) await cleanup
+    return result
   } finally {
-    await discardStaging()
-    ctx.activeWrites.delete(stagingID)
+    const cleanup = async () => {
+      await discardStaging()
+      ctx.activeWrites.delete(stagingID)
+    }
+    if (replay === undefined) await cleanup()
+    else replay.cleanup = cleanup
   }
 }

@@ -1,8 +1,8 @@
 import { mkdtemp, rm, utimes } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { BlobBackend, BlobLock } from '@hozon/blob-backend'
-import { createMemoryBlobLock, MemoryBlobBackend } from '@hozon/blob-backend'
+import type { BlobBackend } from '@hozon/blob-backend'
+import { MemoryBlobBackend } from '@hozon/blob-backend'
 import type { BlobIDCodec, BlobIDInfo } from '@hozon/blob-id'
 import { blake3Codec, InvalidBlobIDError } from '@hozon/blob-id'
 import { FSBlobBackend } from '@hozon/blob-node-fs'
@@ -12,7 +12,7 @@ import type { BlobStoreAPI } from '@hozon/store-blob'
 import { blobStoreDefinition, getBlobStore } from '@hozon/store-blob'
 import { fromB32, fromUTF, toB32, toUTF } from '@sozai/codec'
 
-import type { BlobLimits, BlobService } from '../src/index.js'
+import type { BlobLimits, BlobService, BlobServiceParams } from '../src/index.js'
 import { createBlobService } from '../src/index.js'
 
 export type BackendFactory = {
@@ -54,7 +54,6 @@ export type TestService = {
   db: HozonDB
   store: BlobStoreAPI
   backend: BlobBackend
-  lock: BlobLock
 }
 
 export async function createTestService(
@@ -62,23 +61,22 @@ export async function createTestService(
     backend?: BlobBackend
     codec?: BlobIDCodec
     chunkSize?: number
-    lock?: BlobLock
+    logger?: BlobServiceParams['logger']
     limits?: Partial<BlobLimits>
   } = {},
 ): Promise<TestService> {
   const db = new HozonDB({ adapter: new NodeSQLiteAdapter({ database: ':memory:' }) })
   db.register(blobStoreDefinition)
   const backend = params.backend ?? new MemoryBlobBackend()
-  const lock = params.lock ?? createMemoryBlobLock()
   const service = createBlobService({
     db,
     backend,
     codec: params.codec,
     chunkSize: params.chunkSize,
-    lock,
+    logger: params.logger,
     limits: params.limits,
   })
-  return { service, db, store: await getBlobStore(db), backend, lock }
+  return { service, db, store: await getBlobStore(db), backend }
 }
 
 export function bytesOf(length: number, seed = 0): Uint8Array {

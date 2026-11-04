@@ -8,20 +8,22 @@ pnpm add @hozon/store-blob @hozon/db
 ```
 
 ```ts
-import { blobStoreDefinition, getBlobStore } from '@hozon/store-blob'
+import { blobStoreDefinition, getBlobStore, withBlobLocks } from '@hozon/store-blob'
 
 db.register(blobStoreDefinition)
-const blobs = await getBlobStore(db)
-await blobs.insertEntry(
-  {
-    blobID: 'content-key',
-    contentLength: 0,
-    chunkSize: 4,
-    state: 'local',
-    createdAt: Date.now(),
-  },
-  [],
-)
+await withBlobLocks(db, ['content-key'], async (tx) => {
+  const blobs = await getBlobStore(tx)
+  await blobs.insertEntry(
+    {
+      blobID: 'content-key',
+      contentLength: 0,
+      chunkSize: 4,
+      state: 'local',
+      createdAt: Date.now(),
+    },
+    [],
+  )
+})
 ```
 
 Entries map integer flags to booleans and expose camelCase fields.
@@ -45,6 +47,18 @@ Entries carry an optional `contentType` (`string | null`).
 `resetTransfer(blobID)` atomically drops the session, progress, and manifest and sets the entry to `remote-only`.
 The `1-sessions` migration resets existing `partial` entries to `remote-only`, dropping their manifests; this is not reversible.
 Manifest chunks reference entries, and transfer rows reference manifest chunks, with cascading deletion preventing orphan progress.
+
+All entry, transfer, and deletion-journal mutations must run under `withBlobLocks(provider, canonicalBlobIDs, fn)`.
+`BLOB_LOCK_TABLE` is `blob_entries`. The helper accepts at most 500 IDs and sorts and deduplicates database lock keys.
+It opens a transaction when needed. Inside its callback, obtain stores through the supplied provider.
+Locks remain held until transaction commit or rollback, including caller transactions.
+Acquire every required blob key together before caller row locks. Separate acquisitions can reverse lock order.
+
+The `2-byte-deletions` migration adds a durable `blob_byte_deletions` journal without changing applied migrations.
+`enqueueByteDeletion(blobID, queuedAt?)` upserts bytes for cleanup, replacing the queued timestamp.
+`listByteDeletions({ limit? })` lists queued work. `deleteByteDeletion(blobID)` clears completed work.
+The journal has no foreign key because metadata can already be gone.
+Direct store callers own byte cleanup. `@hozon/blob` provides locked deletion and `drainByteDeletions` replay.
 
 Tables follow the database's configured prefix, which defaults to `hozon`.
 Multi-statement mutations are atomic and reuse a provider transaction.

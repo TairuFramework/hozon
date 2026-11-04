@@ -55,3 +55,10 @@ export class BatchLimitError extends Error {
     this.name = 'BatchLimitError'
   }
 }
+
+export class TransactionScopeError extends Error {
+  constructor() {
+    super('Use the supplied transaction provider inside a transaction on single-connection SQLite')
+    this.name = 'TransactionScopeError'
+  }
+}

@@ -1,8 +1,7 @@
-import type { BlobBackend, BlobLock } from '@hozon/blob-backend'
-import { createMemoryBlobLock } from '@hozon/blob-backend'
+import type { BlobBackend } from '@hozon/blob-backend'
 import { blake3Codec, hashStream } from '@hozon/blob-id'
 import { getBlobStore } from '@hozon/store-blob'
-import { afterEach, beforeEach, describe, expect, test } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 import {
   BlobIDMismatchError,
@@ -11,6 +10,7 @@ import {
   ContentTypeMismatchError,
   createBlobService,
 } from '../src/index.js'
+import { deferred } from './gated-backend.js'
 import {
   backendFactories,
   bytesOf,
@@ -285,14 +285,19 @@ describe.each(backendFactories)('write ($name)', (factory) => {
 
   test('an abort after the stream ends never publishes', async () => {
     const controller = new AbortController()
-    const base = createMemoryBlobLock()
-    const lock: BlobLock = {
-      withLock(id, fn) {
-        controller.abort()
-        return base.withLock(id, fn)
-      },
-    }
-    const built = await build({ lock })
+    const createStaging = backend.createStaging.bind(backend)
+    vi.spyOn(backend, 'createStaging').mockImplementationOnce(async (stagingID) => {
+      const writer = (await createStaging(stagingID)).getWriter()
+      return new WritableStream({
+        write: (bytes) => writer.write(bytes),
+        async close() {
+          await writer.close()
+          controller.abort()
+        },
+        abort: (reason) => writer.abort(reason),
+      })
+    })
+    const built = await build()
     const data = bytesOf(10)
     await expect(
       built.service.write({ stream: sourceOf(data).stream, signal: controller.signal }),
@@ -399,19 +404,23 @@ describe.each(backendFactories)('write ($name)', (factory) => {
       const data = bytesOf(10)
       const id = idOf(data)
       const events: Array<string> = []
-      let concurrent: Promise<void> | undefined
+      const entered = deferred()
+      const release = deferred()
       const write = ctx.service.writeWith({
         stream: sourceOf(data).stream,
         fn: async (tx) => {
           events.push('fn-start')
           tx.onCommit(() => events.push('commit'))
-          concurrent = ctx.service.delete(id).then(() => {
-            events.push('delete-end')
-          })
-          for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 1))
+          entered.resolve()
+          await release.promise
           events.push('fn-end')
         },
       })
+      await entered.promise
+      const concurrent = ctx.service.delete(id).then(() => {
+        events.push('delete-end')
+      })
+      release.resolve()
       await write
       await concurrent
       expect(events).toEqual(['fn-start', 'fn-end', 'commit', 'delete-end'])

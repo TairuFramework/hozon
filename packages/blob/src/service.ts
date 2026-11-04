@@ -1,5 +1,4 @@
-import type { BlobBackend, BlobLock, BlobRange } from '@hozon/blob-backend'
-import { createMemoryBlobLock } from '@hozon/blob-backend'
+import type { BlobBackend, BlobRange } from '@hozon/blob-backend'
 import type { BlobIDCodec } from '@hozon/blob-id'
 import { blake3Codec } from '@hozon/blob-id'
 import type { StoreProvider } from '@hozon/db'
@@ -8,7 +7,8 @@ import type { Runtime } from '@sozai/runtime'
 import { createRuntime } from '@sozai/runtime'
 
 import { assertChunkSize, type BlobLimits, DEFAULT_CHUNK_SIZE, resolveLimits } from './limits.js'
-import { deleteBlob, setBlobPinned } from './manage.js'
+import { lockBlobs, retryTransaction } from './locking.js'
+import { deleteBlob, drainByteDeletions, setBlobPinned } from './manage.js'
 import { pruneStaging } from './prune.js'
 import { createBlobReadStream, getChunkDigests, getEntry, hasBlob, listEntries } from './read.js'
 import {
@@ -19,7 +19,13 @@ import {
   stageChunk,
   type TransferManifest,
 } from './transfer.js'
-import { type WriteContext, type WriteParams, type WriteResult, writeBlob } from './write.js'
+import {
+  type WriteContext,
+  type WriteParams,
+  type WriteReplay,
+  type WriteResult,
+  writeBlob,
+} from './write.js'
 
 export type BlobServiceParams = {
   // Must have `blobStoreDefinition` registered.
@@ -27,16 +33,13 @@ export type BlobServiceParams = {
   backend: BlobBackend
   codec?: BlobIDCodec
   chunkSize?: number
-  lock?: BlobLock
+  logger?: { error(message: string, properties: Record<string, unknown>): void }
   limits?: Partial<BlobLimits>
   runtime?: Runtime
 }
 
-export type BlobService = {
+export type BlobOperations = {
   write(params: WriteParams): Promise<WriteResult>
-  writeWith<T>(
-    params: WriteParams & { fn: (tx: StoreProvider, entry: BlobEntry) => Promise<T> },
-  ): Promise<WriteResult & { result: T }>
   get(id: string): Promise<BlobEntry | null>
   list(params: {
     limit: number
@@ -51,6 +54,18 @@ export type BlobService = {
   getPresentChunks(id: string): Promise<Array<number>>
   stageChunk(params: StageChunkParams): Promise<void>
   completeFetch(id: string): Promise<BlobEntry>
+  withLocks<R>(
+    ids: Array<string>,
+    fn: (ops: BlobOperations, tx: StoreProvider) => Promise<R>,
+  ): Promise<R>
+}
+
+export type BlobService = BlobOperations & {
+  using(provider: StoreProvider): BlobOperations
+  writeWith<T>(
+    params: WriteParams & { fn: (tx: StoreProvider, entry: BlobEntry) => Promise<T> },
+  ): Promise<WriteResult & { result: T }>
+  drainByteDeletions(params?: { limit?: number }): Promise<{ deleted: number; failed: number }>
   // Aborts staging areas not modified since `olderThan`: abandoned writes and stale transfers.
   pruneStaging(olderThan: Date): Promise<{ removed: number; failed: number }>
   readonly codec: BlobIDCodec
@@ -66,36 +81,69 @@ export function createBlobService(params: BlobServiceParams): BlobService {
     backend: params.backend,
     codec: params.codec ?? blake3Codec,
     chunkSize,
-    lock: params.lock ?? createMemoryBlobLock(),
+    root: params.db.root ?? params.db,
+    logError: (error) => {
+      try {
+        if (params.logger !== undefined)
+          params.logger.error('Blob cleanup failed: {error}', { error })
+        else console.error('Blob cleanup failed', error)
+      } catch {
+        /* Logging must not reject a cleanup hook. */
+      }
+    },
     limits: Object.freeze(limits),
     runtime: params.runtime ?? createRuntime(),
-    activeWrites: new Set(),
+    activeWrites: new Map(),
   }
 
+  function using(provider: StoreProvider, replay?: WriteReplay): BlobOperations {
+    const view = { ...ctx, db: provider }
+    return {
+      get: (id) => getEntry(view, id),
+      list: (params) => listEntries(view, params),
+      has: (id) => hasBlob(view, id),
+      getChunkDigests: (id) => getChunkDigests(view, id),
+      createReadStream: (id, range) => createBlobReadStream(view, id, range),
+      setPinned: (id, pinned) => setBlobPinned(view, id, pinned),
+      delete: (id) => deleteBlob(view, id),
+      beginFetch: (id, manifest) => beginFetch(view, id, manifest),
+      getPresentChunks: (id) => getPresentChunks(view, id),
+      stageChunk: (params) => stageChunk(view, params),
+      completeFetch: (id) => completeFetch(view, id),
+      write: (params) => writeBlob(view, params, replay),
+      withLocks: (ids, fn) =>
+        lockBlobs(
+          provider,
+          ids.map((id) => ctx.codec.canonicalize(id)),
+          (tx) => fn(using(tx), tx),
+        ),
+    }
+  }
+  const ops = using(params.db)
   return {
+    ...ops,
+    using,
     codec: ctx.codec,
     limits: ctx.limits,
-    get: (id) => getEntry(ctx, id),
-    list: (listParams) => listEntries(ctx, listParams),
-    has: (id) => hasBlob(ctx, id),
-    getChunkDigests: (id) => getChunkDigests(ctx, id),
-    createReadStream: (id, range) => createBlobReadStream(ctx, id, range),
-    setPinned: (id, pinned) => setBlobPinned(ctx, id, pinned),
-    delete: (id) => deleteBlob(ctx, id),
-    beginFetch: (id, manifest) => beginFetch(ctx, id, manifest),
-    getPresentChunks: (id) => getPresentChunks(ctx, id),
-    stageChunk: (params) => stageChunk(ctx, params),
-    completeFetch: (id) => completeFetch(ctx, id),
     pruneStaging: (olderThan) => pruneStaging(ctx, olderThan),
-    async write(params) {
-      const { entry, created } = await writeBlob(ctx, params)
-      return { entry, created }
-    },
-    async writeWith<T>(
-      params: WriteParams & { fn: (tx: StoreProvider, entry: BlobEntry) => Promise<T> },
-    ) {
-      const { entry, created, result } = await writeBlob(ctx, params)
-      return { entry, created, result: result as T }
-    },
+    drainByteDeletions: (params) => drainByteDeletions(ctx, params),
+    writeWith: (params) => paramsDBTransaction(params),
+  }
+
+  async function paramsDBTransaction<T>(
+    input: WriteParams & { fn: (tx: StoreProvider, entry: BlobEntry) => Promise<T> },
+  ): Promise<WriteResult & { result: T }> {
+    const replay: WriteReplay = {}
+    try {
+      return await retryTransaction(params.db, async (originalError) => {
+        replay.originalError = originalError
+        return await params.db.withTransaction(async (tx) => {
+          const written = await using(tx, replay).write(input)
+          return { ...written, result: await input.fn(tx, written.entry) }
+        })
+      })
+    } finally {
+      await replay.cleanup?.()
+    }
   }
 }

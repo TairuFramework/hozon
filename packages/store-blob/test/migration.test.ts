@@ -57,3 +57,35 @@ test('1-sessions backfills partial entries to remote-only and keeps local ones',
     await db.close()
   }
 })
+
+test('byte deletion migration creates and drops an independent journal', async () => {
+  const adapter = new NodeSQLiteAdapter({ database: ':memory:' })
+  const db = new HozonDB({ adapter })
+  db.register<Tables, Kysely<Tables>>({ name: 'raw', migrations: {}, createAPI: (query) => query })
+  try {
+    const raw = await db.getStore<Kysely<Tables>>('raw')
+    const migration = blobStoreMigrations({
+      tablePrefix: 'hozon',
+      kind: adapter.kind,
+      types: adapter.types,
+      functions: adapter.functions,
+    })['2-byte-deletions']
+    expect(migration).toBeDefined()
+    if (migration === undefined || migration.down === undefined)
+      throw new Error('Missing migration')
+    await migration.up(raw)
+    await raw
+      .insertInto('blob_byte_deletions')
+      .values({ blob_id: 'absent', queued_at: 1 })
+      .execute()
+    expect(await raw.selectFrom('blob_byte_deletions').selectAll().execute()).toEqual([
+      { blob_id: 'absent', queued_at: 1 },
+    ])
+    await migration.down(raw)
+    expect((await raw.introspection.getTables()).map((table) => table.name)).not.toContain(
+      'hozon_blob_byte_deletions',
+    )
+  } finally {
+    await db.close()
+  }
+})
