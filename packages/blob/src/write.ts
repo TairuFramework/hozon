@@ -222,6 +222,7 @@ export async function writeBlob(
 
       if (existing?.state === 'local') {
         await discardStaging()
+        await store.upsertReleases([blobID])
         // Existing metadata wins; only a null content type is filled in.
         const fill = async (target: BlobStoreAPI): Promise<BlobEntry> => {
           if (existing.contentType !== null || contentType === undefined) return existing
