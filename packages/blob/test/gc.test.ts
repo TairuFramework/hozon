@@ -54,6 +54,19 @@ test('refs before collection keep a blob; refs after collection return null', as
   expect(await ctx.service.get(id)).toBeNull()
 })
 
+test('a write of bytes already held locally restarts their grace', async () => {
+  await write()
+  const store = await getBlobStore(ctx.db)
+  const releasedBefore = new Date(Date.now() - 5000)
+  await store.upsertReleases([id], releasedBefore.getTime() - 5000)
+
+  expect((await write()).created).toBe(false)
+
+  expect(await ctx.service.collect({ releasedBefore })).toEqual({ deleted: 0, kept: 0, failed: 0 })
+  expect((await ctx.service.get(id))?.state).toBe('local')
+  expect(await ctx.backend.has(id)).toBe(true)
+})
+
 test('two holders require both removals; removal in a rolled-back caller releases nothing', async () => {
   await write()
   const other = { ...ref, key: 'owner-a/2' }
