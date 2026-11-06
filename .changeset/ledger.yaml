@@ -63,6 +63,10 @@
   intents:
     - blob-id-codec-code
     - blob-transaction-locking
+"@hozon/blob@0.4.1":
+  dir: packages/blob
+  intents:
+    - write-refreshes-release
 "@hozon/conformance@0.1.0":
   dir: packages/conformance
   intents:

@@ -1,5 +1,11 @@
 # @hozon/blob
 
+## 0.4.1
+
+### Patch Changes
+
+- A write of bytes already held locally restarts their grace, so `collect` cannot delete a blob a writer was just told is stored before it adds a ref.
+
 ## 0.4.0
 
 ### Minor Changes
