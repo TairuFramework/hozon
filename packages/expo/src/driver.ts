@@ -85,7 +85,13 @@ export class ExpoDriver implements Driver {
   }
 
   async destroy(): Promise<void> {
-    await this.#destroy()
+    // Wait for the holder: closing mid-transaction would leave it to fail on a closed handle.
+    await this.#connectionMutex.lock()
+    try {
+      await this.#destroy()
+    } finally {
+      this.#connectionMutex.unlock()
+    }
   }
 }
 
