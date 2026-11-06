@@ -113,6 +113,10 @@
   dir: packages/expo
   intents:
     - initial-expo
+"@hozon/expo@0.2.2":
+  dir: packages/expo
+  intents:
+    - expo-destroy-waits
 "@hozon/logtape@0.1.0":
   dir: packages/logtape
   intents:

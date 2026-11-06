@@ -1,5 +1,11 @@
 # @hozon/expo
 
+## 0.2.2
+
+### Patch Changes
+
+- `ExpoDriver.destroy` waits for the connection holder before closing, so a running transaction does not fail on a closed handle.
+
 ## 0.2.1
 
 ### Patch Changes

@@ -28,10 +28,10 @@ catalog:
   '@logtape/logtape': ^2.4.2
   '@noble/hashes': ^2.4.0
   '@opentelemetry/api': ^1.10.0
-  '@opentelemetry/context-async-hooks': ^3.0.0
-  '@opentelemetry/core': ^3.0.0
-  '@opentelemetry/sdk-trace': ^3.0.0
-  '@playwright/test': 1.64.1
+  '@opentelemetry/context-async-hooks': ^3.1.0
+  '@opentelemetry/core': ^3.1.0
+  '@opentelemetry/sdk-trace': ^3.1.0
+  '@playwright/test': 1.65.0
   '@sozai/async': ^0.4.3
   '@sozai/codec': ^0.4.4
   '@sozai/json': ^0.3.0
@@ -44,8 +44,8 @@ catalog:
   '@types/react-dom': ~19.3.0
   '@vitejs/plugin-react': ^6.2.1
   del-cli: ^8.0.1
-  electron: ^45.2.1
-  expo: ^58.0.22
+  electron: ^45.2.3
+  expo: ^58.0.23
   expo-sqlite: ~58.0.15
   expo-status-bar: ^58.0.4
   kysely: ^0.29.8
@@ -53,12 +53,12 @@ catalog:
   postgres: ^3.4.8
   react: 19.3.0
   react-dom: 19.3.0
-  react-native: 0.88.0
+  react-native: 0.88.1
   react-native-web: 0.21.3
   sqlocal: ^0.18.0
   testcontainers: ^12.1.0
   typescript: ^6.0.3
-  vite: ^8.3.5
+  vite: ^8.3.6
   vitest: 5.1.0
   '@kigu/dev': ^0.3.5
 
@@ -83,6 +83,7 @@ minimumReleaseAgeExclude:
   - expo-constants@57.0.2
   - expo-modules-autolinking@57.0.2
   - expo@57.0.0
+  - playwright-core@1.65.0
 
 supportedArchitectures:
   cpu: [ current ]
