@@ -157,6 +157,10 @@
   dir: packages/provider
   intents:
     - reject-conflicting-store-registration
+"@hozon/provider@0.3.2":
+  dir: packages/provider
+  intents:
+    - provider-postgres-0-3
 "@hozon/sqlocal@0.1.0":
   dir: packages/sqlocal
   intents:
