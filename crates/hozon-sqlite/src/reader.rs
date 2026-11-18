@@ -6,11 +6,11 @@ pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
-pub(crate) fn connect(path: &str, options: &OpenOptions, memory: bool) -> Result<Connection> {
+pub(crate) fn connect(path: &str, options: &OpenOptions) -> Result<Connection> {
     let connection = Connection::open(path)?;
     connection.busy_timeout(options.busy_timeout)?;
     connection.pragma_update(None, "foreign_keys", true)?;
-    if !memory {
+    {
         let mode: String =
             connection.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
         if !mode.eq_ignore_ascii_case("wal") {
@@ -31,13 +31,16 @@ struct State {
 pub(crate) struct ReaderPool {
     state: Mutex<State>,
     ready: Condvar,
+    interrupts: Vec<rusqlite::InterruptHandle>,
 }
 impl ReaderPool {
-    pub fn new(path: &str, options: &OpenOptions, memory: bool) -> Result<Self> {
+    pub fn new(path: &str, options: &OpenOptions) -> Result<Self> {
         let mut idle = Vec::new();
+        let mut interrupts = Vec::new();
         for _ in 0..options.readers {
-            let connection = connect(path, options, memory)?;
+            let connection = connect(path, options)?;
             connection.pragma_update(None, "query_only", true)?;
+            interrupts.push(connection.get_interrupt_handle());
             idle.push(connection);
         }
         Ok(Self {
@@ -47,6 +50,7 @@ impl ReaderPool {
                 closed: false,
             }),
             ready: Condvar::new(),
+            interrupts,
         })
     }
     pub fn execute(&self, sql: &str, params: &[Value]) -> Result<QueryResult> {
@@ -77,16 +81,30 @@ impl ReaderPool {
         self.ready.notify_all();
         result
     }
+    pub fn interrupt(&self) {
+        let mut state = lock(&self.state);
+        state.closed = true;
+        state.idle.clear();
+        for interrupt in &self.interrupts {
+            interrupt.interrupt();
+        }
+        self.ready.notify_all();
+    }
     pub fn close(&self) {
+        self.interrupt();
         let mut state = lock(&self.state);
         state.closed = true;
         state.idle.clear();
         self.ready.notify_all();
         while state.in_use > 0 {
+            for interrupt in &self.interrupts {
+                interrupt.interrupt();
+            }
             state = self
                 .ready
-                .wait(state)
-                .unwrap_or_else(|poison| poison.into_inner());
+                .wait_timeout(state, std::time::Duration::from_millis(5))
+                .unwrap_or_else(|poison| poison.into_inner())
+                .0;
         }
     }
 }

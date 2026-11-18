@@ -89,7 +89,7 @@ impl Registry {
             }
         }
         let sqlite_path = if memory {
-            format!("file:hozon-memory-{id}?mode=memory&cache=shared")
+            String::new()
         } else {
             let path = canonical
                 .as_ref()

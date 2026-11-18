@@ -576,7 +576,7 @@ fn memory_database_is_shared_with_readers_and_can_be_reopened_independently() {
             .execute(db, None, "PRAGMA journal_mode", &[], Mode::Read)
             .unwrap()
             .rows,
-        vec![vec![Value::Text("memory".into())]]
+        vec![vec![Value::Text("wal".into())]]
     );
     registry.close(db).unwrap();
 }
@@ -717,4 +717,355 @@ fn oversized_busy_timeout_is_an_error_without_a_panic() {
         )
     });
     assert!(matches!(result, Ok(Err(Error::InvalidInput(_)))));
+}
+
+fn memory_path(registry: &Registry, db: u64) -> PathBuf {
+    let result = registry
+        .execute(db, None, "PRAGMA database_list", &[], Mode::Read)
+        .unwrap();
+    match &result.rows[0][2] {
+        Value::Text(path) => PathBuf::from(path),
+        other => panic!("expected filename, got {other:?}"),
+    }
+}
+
+#[test]
+fn memory_readers_see_committed_snapshots_and_opens_are_isolated() {
+    let registry = Registry::new();
+    let db = registry.open(":memory:", OpenOptions::default()).unwrap();
+    registry
+        .execute(db, None, "CREATE TABLE sample(n)", &[], Mode::Write)
+        .unwrap();
+    let a = registry.begin_write(db, None).unwrap();
+    registry
+        .execute(
+            db,
+            Some(a.tx_id),
+            "INSERT INTO sample VALUES (1)",
+            &[],
+            Mode::Write,
+        )
+        .unwrap();
+    assert_eq!(
+        registry
+            .execute(db, None, "SELECT count(*) FROM sample", &[], Mode::Read)
+            .unwrap()
+            .rows,
+        vec![vec![Value::Integer(0)]]
+    );
+    registry.commit(db, a.tx_id).unwrap();
+    let other = registry.open(":memory:", OpenOptions::default()).unwrap();
+    assert!(
+        registry
+            .execute(other, None, "SELECT * FROM sample", &[], Mode::Read)
+            .is_err()
+    );
+    registry.close(db).unwrap();
+    registry.close(other).unwrap();
+}
+
+#[test]
+fn memory_files_are_removed_on_close_and_drop() {
+    for explicit_close in [true, false] {
+        let registry = Registry::new();
+        let db = registry.open(":memory:", OpenOptions::default()).unwrap();
+        let path = memory_path(&registry, db);
+        assert!(
+            path.is_file(),
+            "memory DB must have a temporary backing file"
+        );
+        assert!(
+            path.canonicalize()
+                .unwrap()
+                .starts_with(std::env::temp_dir().canonicalize().unwrap())
+        );
+        if explicit_close {
+            registry.close(db).unwrap();
+        }
+        drop(registry);
+        for suffix in ["", "-wal", "-shm"] {
+            assert!(!PathBuf::from(format!("{}{suffix}", path.display())).exists());
+        }
+    }
+}
+
+#[test]
+fn memory_writer_runs_while_reader_statement_is_in_progress() {
+    let registry = Registry::new();
+    let db = registry.open(":memory:", OpenOptions::default()).unwrap();
+    registry
+        .execute(db, None, "CREATE TABLE sample(n)", &[], Mode::Write)
+        .unwrap();
+    registry
+        .execute(
+            db,
+            None,
+            "INSERT INTO sample VALUES (1), (2)",
+            &[],
+            Mode::Write,
+        )
+        .unwrap();
+    // Open the same URI on the old implementation to reproduce shared-cache locks.
+    let path = memory_path(&registry, db);
+    let path = if path.as_os_str().is_empty() {
+        format!("file:hozon-memory-{db}?mode=memory&cache=shared")
+    } else {
+        path.to_str().unwrap().to_owned()
+    };
+    let reader = rusqlite::Connection::open(path).unwrap();
+    let mut statement = reader.prepare("SELECT * FROM sample").unwrap();
+    let mut rows = statement.query([]).unwrap();
+    assert!(rows.next().unwrap().is_some());
+    registry
+        .execute(db, None, "INSERT INTO sample VALUES (3)", &[], Mode::Write)
+        .unwrap();
+    drop(rows);
+    drop(statement);
+    drop(reader);
+    registry.close(db).unwrap();
+}
+
+#[test]
+fn busy_begin_does_not_block_reads_stats_or_enqueue_and_expires_before_grant() {
+    use std::sync::mpsc;
+    let clock = Arc::new(FakeClock::default());
+    let f = Fixture::new(OpenOptions {
+        busy_timeout: Duration::from_secs(2),
+        expire_admissions: true,
+        clock: clock.clone(),
+        ..OpenOptions::default()
+    });
+    let other = rusqlite::Connection::open(&f.path).unwrap();
+    other.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let r = f.registry.clone();
+    let db = f.db;
+    let waiter = thread::spawn(move || r.begin_write(db, Some(Duration::from_millis(10))));
+    thread::sleep(Duration::from_millis(60));
+    let r = f.registry.clone();
+    let second = thread::spawn(move || r.begin_write(db, Some(Duration::from_millis(10))));
+    let (reply, receive) = mpsc::channel();
+    let r = f.registry.clone();
+    let probe = thread::spawn(move || {
+        let result = r.execute(db, None, "SELECT count(*) FROM items", &[], Mode::Read);
+        let deadline = Instant::now() + Duration::from_millis(150);
+        let stats = loop {
+            let stats = r.stats(db).unwrap();
+            if stats.pending_admissions == 2 || Instant::now() >= deadline {
+                break stats;
+            }
+            thread::yield_now();
+        };
+        reply.send((result, stats)).unwrap();
+    });
+    let prompt = receive.recv_timeout(Duration::from_millis(250));
+    clock.0.store(10, Ordering::SeqCst);
+    other.execute_batch("ROLLBACK").unwrap();
+    let admission = waiter.join().unwrap();
+    if let Ok(a) = admission {
+        f.registry.rollback(db, a.tx_id).unwrap();
+    }
+    let second = second.join().unwrap();
+    if let Ok(a) = second {
+        f.registry.rollback(db, a.tx_id).unwrap();
+    }
+    probe.join().unwrap();
+    let (read, stats) = prompt.expect("read and stats blocked on BEGIN");
+    assert!(read.is_ok());
+    assert_eq!(stats.pending_admissions, 2);
+    assert!(matches!(second, Err(Error::AdmissionExpired { .. })));
+    assert!(matches!(admission, Err(Error::AdmissionExpired { .. })));
+    let a = f.registry.begin_write(db, None).unwrap();
+    f.registry.rollback(db, a.tx_id).unwrap();
+}
+
+#[derive(Default)]
+struct ObservedClock {
+    calls: AtomicU64,
+    panic: std::sync::atomic::AtomicBool,
+}
+impl Clock for ObservedClock {
+    fn now(&self) -> Duration {
+        if thread::current().name() == Some("hozon-sqlite-writer") {
+            assert!(!self.panic.load(Ordering::SeqCst), "injected worker panic");
+            self.calls.fetch_add(1, Ordering::SeqCst);
+        }
+        Duration::ZERO
+    }
+}
+
+#[test]
+fn admission_waits_use_deadlines_instead_of_two_ms_polling() {
+    let clock = Arc::new(ObservedClock::default());
+    let f = Fixture::new(OpenOptions {
+        clock: clock.clone(),
+        ..OpenOptions::default()
+    });
+    let holder = f.registry.begin_write(f.db, None).unwrap();
+    let r = f.registry.clone();
+    let db = f.db;
+    let waiter = thread::spawn(move || r.begin_write(db, None));
+    f.queued(1);
+    clock.calls.store(0, Ordering::SeqCst);
+    thread::sleep(Duration::from_millis(160));
+    let calls = clock.calls.load(Ordering::SeqCst);
+    f.registry.rollback(db, holder.tx_id).unwrap();
+    let a = waiter.join().unwrap().unwrap();
+    f.registry.rollback(db, a.tx_id).unwrap();
+    assert!(calls <= 8, "worker polled clock {calls} times in 160ms");
+}
+
+#[test]
+fn worker_panic_during_begin_fails_pending_and_queued_commands() {
+    use std::sync::mpsc;
+    let clock = Arc::new(ObservedClock::default());
+    let f = Fixture::new(OpenOptions {
+        clock: clock.clone(),
+        busy_timeout: Duration::from_secs(2),
+        ..OpenOptions::default()
+    });
+    let other = rusqlite::Connection::open(&f.path).unwrap();
+    other.execute_batch("BEGIN IMMEDIATE").unwrap();
+    let (reply, receive) = mpsc::channel();
+    let r = f.registry.clone();
+    let db = f.db;
+    thread::spawn(move || {
+        let _ = reply.send(r.begin_write(db, None));
+    });
+    f.queued(1);
+    thread::sleep(Duration::from_millis(60));
+    let (reply, command) = mpsc::channel();
+    let r = f.registry.clone();
+    thread::spawn(move || {
+        let _ = reply.send(r.execute(db, Some(u64::MAX), "SELECT 1", &[], Mode::Read));
+    });
+    clock.panic.store(true, Ordering::SeqCst);
+    other.execute_batch("ROLLBACK").unwrap();
+    let result = receive
+        .recv_timeout(Duration::from_secs(1))
+        .expect("worker panic stranded admission");
+    assert!(matches!(result, Err(Error::Closed | Error::WorkerStopped)));
+    let result = command
+        .recv_timeout(Duration::from_secs(1))
+        .expect("worker panic stranded command");
+    assert!(matches!(result, Err(Error::Closed | Error::WorkerStopped)));
+    assert!(matches!(
+        f.registry.execute(db, None, "SELECT 1", &[], Mode::Read),
+        Err(Error::Closed | Error::WorkerStopped)
+    ));
+}
+
+#[test]
+fn close_interrupts_a_long_running_reader_and_writer() {
+    use std::sync::mpsc;
+    for writer in [false, true] {
+        let f = Fixture::new(OpenOptions::default());
+        let tx = if writer {
+            Some(f.registry.begin_write(f.db, None).unwrap().tx_id)
+        } else {
+            None
+        };
+        let r = f.registry.clone();
+        let db = f.db;
+        let (reply, receive) = mpsc::channel();
+        let query = thread::spawn(move || {
+            r.execute(db, tx,
+            "WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x<20000000) SELECT sum(x) FROM n", &[], Mode::Read)
+        });
+        thread::sleep(Duration::from_millis(60));
+        let r = f.registry.clone();
+        thread::spawn(move || {
+            let _ = reply.send(r.close(db));
+        });
+        receive
+            .recv_timeout(Duration::from_millis(200))
+            .expect("close stranded on SQL")
+            .unwrap();
+        let error = query.join().unwrap().unwrap_err();
+        assert!(matches!(
+            error,
+            Error::Closed | Error::SQLite(rusqlite::Error::SqliteFailure(_, _))
+        ));
+        assert!(error.to_string().contains("interrupt") || error.to_string().contains("closed"));
+    }
+}
+
+#[test]
+fn busy_checkpoint_warns_but_close_succeeds() {
+    let f = Fixture::new(OpenOptions {
+        busy_timeout: Duration::from_millis(40),
+        ..OpenOptions::default()
+    });
+    let other = rusqlite::Connection::open(&f.path).unwrap();
+    other.execute_batch("BEGIN; SELECT * FROM items;").unwrap();
+    f.registry
+        .execute(
+            f.db,
+            None,
+            "INSERT INTO items VALUES (1, 'committed')",
+            &[],
+            Mode::Write,
+        )
+        .unwrap();
+    f.registry
+        .close(f.db)
+        .expect("busy checkpoint must not fail close");
+    f.registry.close(f.db).unwrap();
+    other.execute_batch("ROLLBACK").unwrap();
+}
+
+#[test]
+fn memory_pooled_reader_does_not_block_writer() {
+    let registry = Arc::new(Registry::new());
+    let db = registry.open(":memory:", OpenOptions::default()).unwrap();
+    registry
+        .execute(db, None, "CREATE TABLE sample(n)", &[], Mode::Write)
+        .unwrap();
+    registry
+        .execute(
+            db,
+            None,
+            "INSERT INTO sample VALUES (1), (2)",
+            &[],
+            Mode::Write,
+        )
+        .unwrap();
+    let r = registry.clone();
+    let reader = thread::spawn(move || {
+        r.execute(db, None,
+        "WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x<20000000) SELECT sum(n.x + sample.n) FROM sample, n",
+        &[], Mode::Read)
+    });
+    thread::sleep(Duration::from_millis(60));
+    let write = registry.execute(db, None, "INSERT INTO sample VALUES (3)", &[], Mode::Write);
+    let still_reading = !reader.is_finished();
+    registry.close(db).unwrap();
+    assert!(reader.join().unwrap().is_err());
+    write.unwrap();
+    assert!(still_reading, "reader must overlap the write");
+}
+
+#[test]
+fn worker_panic_fails_pending_and_future_calls() {
+    use std::sync::mpsc;
+    let clock = Arc::new(ObservedClock::default());
+    let f = Fixture::new(OpenOptions {
+        clock: clock.clone(),
+        ..OpenOptions::default()
+    });
+    let _holder = f.registry.begin_write(f.db, None).unwrap();
+    clock.panic.store(true, Ordering::SeqCst);
+    let (reply, receive) = mpsc::channel();
+    let r = f.registry.clone();
+    let db = f.db;
+    thread::spawn(move || {
+        let _ = reply.send(r.begin_write(db, None));
+    });
+    let result = receive
+        .recv_timeout(Duration::from_secs(1))
+        .expect("worker panic stranded admission");
+    assert!(matches!(result, Err(Error::Closed | Error::WorkerStopped)));
+    assert!(matches!(
+        f.registry.execute(db, None, "SELECT 1", &[], Mode::Read),
+        Err(Error::Closed | Error::WorkerStopped)
+    ));
 }
