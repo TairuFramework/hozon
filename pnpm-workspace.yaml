@@ -2,6 +2,9 @@ packages:
   - packages/*
   - tests/*
 
+cargo:
+  enabled: true
+
 allowBuilds:
   '@swc/core': true
   cpu-features: false
