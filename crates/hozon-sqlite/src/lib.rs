@@ -5,6 +5,7 @@ mod admission;
 mod completion;
 mod engine;
 mod error;
+mod job;
 mod reader;
 mod registry;
 mod value;
@@ -12,7 +13,9 @@ mod value;
 pub use admission::{Admission, Clock, MonotonicClock, Stats};
 pub use completion::Callback;
 pub use error::{Error, Result};
+pub use job::{TxConnection, TxJob};
 pub use registry::Registry;
+pub use rusqlite;
 use std::{sync::Arc, time::Duration};
 pub use value::{Mode, QueryResult, Value};
 
