@@ -2,6 +2,8 @@
 export type NativeDBHandle = string
 export type TxID = string
 
+export type NativeTransactionRef = { database: NativeDBHandle; txID: TxID }
+
 /** Integer cells are numbers when |value| <= Number.MAX_SAFE_INTEGER (2^53 - 1),
  * and bigint beyond that. Bigint parameters bind exactly throughout signed i64,
  * including the safe range. NativeResult changes and lastInsertRowID stay bigint.

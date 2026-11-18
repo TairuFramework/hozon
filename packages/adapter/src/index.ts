@@ -5,6 +5,7 @@ export type {
   NativePendingAdmission,
   NativeResult,
   NativeSQLite,
+  NativeTransactionRef,
   NativeValue,
   TxID,
 } from './native.js'

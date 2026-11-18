@@ -1,4 +1,4 @@
-import type { Adapter, ColumnTypes, Functions } from '@hozon/adapter'
+import type { Adapter, ColumnTypes, Functions, NativeTransactionRef } from '@hozon/adapter'
 import { getLogger, type Logger } from '@sozai/log'
 import { Kysely, sql } from 'kysely'
 import { type Migration, Migrator } from 'kysely/migration'
@@ -154,6 +154,7 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
   #migrated: Map<string, Promise<void>> = new Map()
   #loaders = new LoaderRegistry({ remember: false })
   #transactionInvalidators = new WeakMap<StoreProvider, () => void>()
+  #nativeTransactions = new WeakMap<StoreProvider, NativeTransactionRef>()
   #storeAPIs: Map<string, unknown> = new Map()
   #stores: Map<string, StoredDefinition<Ext>> = new Map()
 
@@ -299,6 +300,10 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
     invalidate()
   }
 
+  nativeTransaction(tx: StoreProvider): NativeTransactionRef | null {
+    return this.#nativeTransactions.get(tx) ?? null
+  }
+
   async #withTransaction<Stores extends Record<string, unknown>, R>(
     fn: (tx: StoreProvider<Stores>) => Promise<R>,
     beforeHooks?: () => void,
@@ -324,6 +329,11 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
     try {
       // The transaction runs on the unprefixed base so each store applies its own plugin.
       result = await this.#db.transaction().execute(async (trx) => {
+        const nativeTransaction = this.#adapter.nativeTransactionOf
+          ? await trx.getExecutor().provideConnection(async (connection) => {
+              return this.#adapter.nativeTransactionOf?.(connection) ?? null
+            })
+          : null
         const txKysely = trx as unknown as Kysely<Record<string, unknown>>
         const txStoreDB = txKysely.withPlugin(this.#defaultPlugin)
 
@@ -477,6 +487,7 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
             syncParent,
             syncSavepoint,
           )
+          if (nativeTransaction) this.#nativeTransactions.set(provider, nativeTransaction)
           this.#transactionInvalidators.set(provider, () => {
             if (!active) throw new Error('The transaction has already settled')
             assertActive()

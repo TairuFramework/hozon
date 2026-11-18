@@ -1,3 +1,4 @@
+import type { NativeTransactionRef } from '@hozon/adapter'
 import { type BatchLoader, type HozonDB, type StoreProvider, withKeyLocks } from '@hozon/db'
 
 import * as assert from '../assert.js'
@@ -101,6 +102,77 @@ async function within<T>(promise: Promise<T>, label: string): Promise<T> {
 }
 
 export const transactionContractCases: Array<ConformanceCase> = [
+  {
+    name: 'transaction contract: non-native providers have no native transaction',
+    capabilities: { nativeTransactions: false },
+    async run(ctx) {
+      const { db } = await setup(ctx)
+      assert.equal(db.nativeTransaction(db), null)
+      await db.withTransaction(async (tx) => {
+        assert.equal(db.nativeTransaction(tx), null)
+        assert.ok(tx.withSavepoint)
+        await tx.withSavepoint(async (savepoint) => {
+          assert.equal(db.nativeTransaction(savepoint), null)
+        })
+      })
+    },
+  },
+  ...([false, true] as const).map(
+    (rollback): ConformanceCase => ({
+      name: `transaction contract: native transaction shares writes and rejects after ${rollback ? 'rollback' : 'commit'}`,
+      capabilities: { nativeTransactions: true },
+      async run(ctx) {
+        const { db, root } = await setup(ctx)
+        assert.ok(ctx.nativeSQLite)
+        const sqlite = ctx.nativeSQLite
+        assert.equal(db.nativeTransaction(db), null)
+        let captured: NativeTransactionRef | null = null
+        const run = () =>
+          db.withTransaction<Stores, void>(async (tx) => {
+            const ref = db.nativeTransaction(tx)
+            assert.ok(ref)
+            captured = ref
+            const rows = await tx.getStore('rows')
+            await rows.insert('kysely')
+            const result = await sqlite.execute(
+              ref.database,
+              ref.txID,
+              'SELECT id FROM hozon_contract_rows ORDER BY id',
+              [],
+              'read',
+            )
+            assert.deepEqual(result.rows, [['kysely']])
+            assert.ok(tx.withSavepoint)
+            await tx.withSavepoint<Stores, void>(async (savepoint) => {
+              assert.equal(db.nativeTransaction(savepoint), ref)
+              assert.ok(savepoint.withSavepoint)
+              await savepoint.withSavepoint<Stores, void>(async (nested) => {
+                assert.equal(db.nativeTransaction(nested), ref)
+                await sqlite.execute(
+                  ref.database,
+                  ref.txID,
+                  'INSERT INTO hozon_contract_rows (id, version, value) VALUES (?, ?, ?)',
+                  ['native', 1, 'native'],
+                  'write',
+                )
+                assert.deepEqual(await (await nested.getStore('rows')).list(), ['kysely', 'native'])
+              })
+            })
+            assert.equal(db.nativeTransaction(tx), ref)
+            if (rollback) throw new Error('native rollback')
+          })
+        if (rollback) await assert.rejects(run, 'native rollback')
+        else await run()
+        const ref = captured as NativeTransactionRef | null
+        assert.ok(ref)
+        await assert.rejects(
+          () => sqlite.execute(ref.database, ref.txID, 'SELECT 1', [], 'read'),
+          'HOZON_INVALID_TRANSACTION',
+        )
+        assert.deepEqual(await root.list(), rollback ? [] : ['kysely', 'native'])
+      },
+    }),
+  ),
   {
     name: 'transaction contract: throwing in-transaction listener rolls back all writes',
     async run(ctx) {
