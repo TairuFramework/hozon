@@ -5,6 +5,8 @@ use std::fmt;
 pub enum Error {
     Closed,
     InvalidTransaction,
+    JobPanic,
+    JobEndedTransaction,
     InvalidInput(String),
     AlreadyOpen,
     AdmissionExpired {
@@ -21,6 +23,8 @@ impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Closed => write!(f, "database is closed"),
+            Self::JobPanic => write!(f, "transaction job panicked"),
+            Self::JobEndedTransaction => write!(f, "job ended the active transaction"),
             Self::InvalidTransaction => write!(f, "transaction is not active"),
             Self::InvalidInput(message) => write!(f, "invalid input: {message}"),
             Self::AlreadyOpen => write!(f, "database file already has a writer"),

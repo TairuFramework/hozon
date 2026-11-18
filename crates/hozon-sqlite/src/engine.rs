@@ -4,6 +4,7 @@ use crate::{
     Admission, AdmissionID, Error, Mode, OpenOptions, QueryResult, Result, Stats, TxID, Value,
     admission::{AdmissionWork, Holder, Pending},
     completion::{Completion, dispatch},
+    job::JobCommand,
     reader::{ReaderPool, connect, lock},
     value,
 };
@@ -23,6 +24,10 @@ pub(crate) fn next_id() -> u64 {
 }
 
 enum Command {
+    Job {
+        tx: TxID,
+        job: Box<dyn JobCommand>,
+    },
     Execute {
         tx: TxID,
         sql: String,
@@ -43,6 +48,7 @@ enum Command {
 impl Command {
     fn fail(self, error: Error) {
         match self {
+            Self::Job { job, .. } => job.fail(error),
             Self::Execute { reply, .. } => {
                 reply.complete(Err(error));
             }
@@ -230,6 +236,9 @@ impl Engine {
         } else {
             self.admit(None, None, AdmissionWork::Execute { sql, params, reply });
         }
+    }
+    pub fn job(&self, tx: TxID, job: Box<dyn JobCommand>) {
+        self.send(Command::Job { tx, job });
     }
     pub fn finish(&self, tx: TxID, commit: bool, reply: Completion<()>) {
         self.send(Command::Finish { tx, commit, reply });
@@ -516,6 +525,14 @@ fn release_if_finished(connection: &rusqlite::Connection, shared: &Shared) {
 }
 fn handle_command(connection: &rusqlite::Connection, shared: &Shared, command: Command) {
     match command {
+        Command::Job { tx, job } => {
+            if active(shared, tx) {
+                job.run(connection);
+                release_if_finished(connection, shared);
+            } else {
+                job.fail(Error::InvalidTransaction);
+            }
+        }
         Command::Execute {
             tx,
             sql,
