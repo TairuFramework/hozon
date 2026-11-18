@@ -102,6 +102,149 @@ async function within<T>(promise: Promise<T>, label: string): Promise<T> {
 
 export const transactionContractCases: Array<ConformanceCase> = [
   {
+    name: 'transaction contract: throwing in-transaction listener rolls back all writes',
+    async run(ctx) {
+      const { db, root } = await setup(ctx)
+      const events: Array<string> = []
+      await assert.rejects(
+        () =>
+          db.withTransaction<Stores, void>(async (tx) => {
+            const rows = await tx.getStore('rows')
+            tx.onCommit(() => events.push('commit'))
+            tx.onRollback(() => events.push('rollback'))
+            await rows.insert('document')
+            const listener = async () => {
+              await rows.insert('listener-reference')
+              throw new Error('listener failed')
+            }
+            await listener()
+          }),
+        'listener failed',
+      )
+      assert.deepEqual(events, ['rollback'])
+      assert.deepEqual(await root.list(), [])
+      await root.insert('writer-free')
+      assert.deepEqual(await root.list(), ['writer-free'])
+    },
+  },
+  {
+    name: 'transaction contract: explicit loader invalidation refreshes transaction reads',
+    async run(ctx) {
+      const { db, root } = await setup(ctx)
+      await root.write({ id: 'x', version: 1, value: 'before' })
+      await db.withTransaction<Stores, void>(async (tx) => {
+        const rows = await tx.getStore('rows')
+        assert.equal(await rows.loader.load('x'), 'before')
+        await rows.write({ id: 'x', version: 2, value: 'after' })
+        // compareWrite bypasses this anonymous loader, like a future native kernel.
+        assert.equal(await rows.loader.load('x'), 'before')
+        db.invalidateTransactionLoaders(tx)
+        assert.equal(await rows.loader.load('x'), 'after')
+      })
+      assert.equal((await root.read('x'))?.value, 'after')
+    },
+  },
+  {
+    name: 'transaction contract: admission timeout diagnoses caller and holder',
+    capabilities: { admissionControl: true },
+    async run(ctx) {
+      assert.ok(ctx.admissionControl)
+      const { sqlite, db, timeoutMs } = await ctx.admissionControl(ctx.adapter)
+      const holder = await within(sqlite.beginWrite(db), 'admission holder')
+      try {
+        const outcome = await within(
+          sqlite.beginWrite(db, { timeoutMs }).then(
+            (admission) => ({ admission, error: undefined }),
+            (error: unknown) => ({ admission: undefined, error }),
+          ),
+          'queued admission expiry',
+        )
+        if (outcome.admission) await sqlite.abandon(db, outcome.admission.admissionID)
+        assert.equal(outcome.admission, undefined)
+        const message =
+          outcome.error instanceof Error ? outcome.error.message : String(outcome.error)
+        assert.ok(/admission/i.test(message))
+        assert.ok(/expir|timeout|timed out/i.test(message))
+        assert.ok(/caller/i.test(message))
+        assert.ok(/holder/i.test(message))
+        // Expiring a waiter must not revoke or block the holder.
+        await sqlite.execute(db, holder.txID, 'SELECT 1', [], 'read')
+      } finally {
+        await sqlite.rollback(db, holder.txID)
+      }
+      const next = await within(sqlite.beginWrite(db), 'writer after admission expiry')
+      await sqlite.rollback(db, next.txID)
+    },
+  },
+  {
+    name: 'transaction contract: abandon granted admission rolls back and frees writer',
+    capabilities: { admissionControl: true },
+    async run(ctx) {
+      assert.ok(ctx.admissionControl)
+      const { sqlite, db } = await ctx.admissionControl(ctx.adapter)
+      await sqlite.execute(db, null, 'CREATE TABLE admission_rows (id INTEGER)', [], 'write')
+      const granted = await within(sqlite.beginWrite(db), 'granted admission')
+      try {
+        await sqlite.execute(db, granted.txID, 'INSERT INTO admission_rows VALUES (1)', [], 'write')
+      } finally {
+        await sqlite.abandon(db, granted.admissionID)
+      }
+      await assert.rejects(() => sqlite.execute(db, granted.txID, 'SELECT 1', [], 'read'), Error)
+      const next = await within(sqlite.beginWrite(db), 'writer after abandon')
+      try {
+        const result = await sqlite.execute(
+          db,
+          next.txID,
+          'SELECT * FROM admission_rows',
+          [],
+          'read',
+        )
+        assert.deepEqual(result.rows, [])
+      } finally {
+        await sqlite.rollback(db, next.txID)
+      }
+    },
+  },
+  {
+    name: 'transaction contract: admission expiry and grant are exclusive under race',
+    capabilities: { admissionControl: true },
+    async run(ctx) {
+      assert.ok(ctx.admissionControl)
+      const { sqlite, db, timeoutMs } = await ctx.admissionControl(ctx.adapter)
+      // Exercise release before, at, and after the deadline. The Rust suite
+      // additionally stresses the critical section with an injected clock.
+      for (const factor of [0, 1, 2, 0, 1, 2]) {
+        const holder = await within(sqlite.beginWrite(db), 'race holder')
+        const queued = sqlite.beginWrite(db, { timeoutMs }).then(
+          (admission) => ({ admission, error: undefined }),
+          (error: unknown) => ({ admission: undefined, error }),
+        )
+        await new Promise<void>((resolve) => setTimeout(resolve, timeoutMs * factor))
+        await sqlite.rollback(db, holder.txID)
+        const outcome = await within(queued, 'racing admission')
+        if (outcome.admission) {
+          const granted = outcome.admission
+          // Model JS giving up just after native grant.
+          await sqlite.abandon(db, granted.admissionID)
+          await assert.rejects(
+            () => sqlite.execute(db, granted.txID, 'SELECT 1', [], 'read'),
+            Error,
+          )
+        } else {
+          const message =
+            outcome.error instanceof Error ? outcome.error.message : String(outcome.error)
+          assert.ok(/admission/i.test(message))
+          assert.ok(/expir|timeout|timed out/i.test(message))
+          assert.ok(/caller/i.test(message))
+          assert.ok(/holder/i.test(message))
+        }
+        // A rejected begin that secretly won the writer would block this.
+        const next = await within(sqlite.beginWrite(db), 'writer after admission race')
+        await sqlite.rollback(db, next.txID)
+      }
+    },
+  },
+  {
     name: 'transaction contract: queued writer waits, active tx proceeds',
     async run(ctx) {
       const { db, root } = await setup(ctx)
@@ -313,13 +456,49 @@ export const transactionContractCases: Array<ConformanceCase> = [
     }),
   ),
   {
-    name: 'transaction contract: commit hook may write',
+    name: 'transaction contract: commit releases writer before hooks, hook may write',
     async run(ctx) {
-      const { db, root } = await setup(ctx)
+      const dialect = ctx.adapter.dialect
+      const createDriver = dialect.createDriver
+      let committed = false
+      let released = false
+      dialect.createDriver = function () {
+        const driver = createDriver.call(this)
+        const begin = driver.beginTransaction.bind(driver)
+        driver.beginTransaction = async (...args) => {
+          await begin(...args)
+          committed = false
+          released = false
+        }
+        const commit = driver.commitTransaction.bind(driver)
+        driver.commitTransaction = async (...args) => {
+          await commit(...args)
+          committed = true
+        }
+        const release = driver.releaseConnection.bind(driver)
+        driver.releaseConnection = async (...args) => {
+          await release(...args)
+          released = true
+        }
+        return driver
+      }
+      let fixture: Fixture
+      try {
+        fixture = await setup(ctx)
+      } finally {
+        dialect.createDriver = createDriver
+      }
+      const { db, root } = fixture
+      committed = false
+      released = false
+      let committedAtHook = false
+      let releasedAtHook = false
       let followup: Promise<void> | undefined
       await db.withTransaction<Stores, void>(async (tx) => {
         await (await tx.getStore('rows')).insert('first')
         tx.onCommit(() => {
+          committedAtHook = committed
+          releasedAtHook = released
           followup = db.withTransaction<Stores, void>(async (next) => {
             const rows = await next.getStore('rows')
             assert.deepEqual(await rows.list(), ['first'])
@@ -327,6 +506,9 @@ export const transactionContractCases: Array<ConformanceCase> = [
           })
         })
       })
+      // Assert outside the isolated hook, whose errors would be logged only.
+      assert.equal(committedAtHook, true)
+      assert.equal(releasedAtHook, true)
       assert.ok(followup)
       await within(followup, 'commit hook writer')
       assert.deepEqual(await root.list(), ['first', 'hook'])

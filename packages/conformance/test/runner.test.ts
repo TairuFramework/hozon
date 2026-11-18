@@ -2,9 +2,58 @@ import { NodeSQLiteAdapter } from '@hozon/node-sqlite'
 import { expect, test } from 'vitest'
 
 import * as assert from '../src/assert.js'
-import { runConformance, summarize } from '../src/index.js'
+import { runConformance, summarize, supportsCase } from '../src/index.js'
 
 const createAdapter = async () => new NodeSQLiteAdapter({ database: ':memory:' })
+
+test('admission capability defaults off and combines with the read capability', async () => {
+  let created = 0
+  const results = await runConformance({
+    createAdapter: async () => {
+      created++
+      return createAdapter()
+    },
+    cases: [
+      {
+        name: 'native only',
+        capabilities: { admissionControl: true },
+        run: async () => {
+          throw new Error('Skipped case must not run')
+        },
+      },
+    ],
+  })
+  expect(results).toEqual([])
+  expect(created).toBe(0)
+  const entry = {
+    name: 'both',
+    capabilities: { admissionControl: true, concurrentReaders: true },
+    run: async () => {},
+  }
+  expect(supportsCase(entry, { concurrentReaders: true })).toBe(false)
+  expect(supportsCase(entry, { admissionControl: true })).toBe(false)
+  expect(supportsCase(entry, { admissionControl: true, concurrentReaders: true })).toBe(true)
+  expect(supportsCase({ ...entry, capabilities: { admissionControl: false } })).toBe(true)
+})
+
+test('runner passes the test-only admission control factory to the case', async () => {
+  const admissionControl = async () => {
+    throw new Error('This factory must only be invoked by native cases')
+  }
+  const results = await runConformance({
+    createAdapter,
+    admissionControl,
+    cases: [
+      {
+        name: 'context',
+        run: async (ctx) => {
+          expect(ctx.admissionControl).toBe(admissionControl)
+        },
+      },
+    ],
+  })
+  expect(results).toEqual([{ name: 'context', ok: true }])
+})
 
 test('failure is reported without stopping later cases; every adapter is closed before cleanup', async () => {
   const adapters: Array<NodeSQLiteAdapter> = []

@@ -12,6 +12,7 @@ export { syncCases } from './cases/sync.js'
 export { transactionContractCases } from './cases/transaction-contract.js'
 export { transactionCases } from './cases/transactions.js'
 export type {
+  AdmissionControlTestContext,
   CaseContext,
   ConformanceCase,
   ConformanceContext,

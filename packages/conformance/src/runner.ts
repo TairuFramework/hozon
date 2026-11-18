@@ -1,4 +1,4 @@
-import type { Adapter } from '@hozon/adapter'
+import type { Adapter, NativeDBHandle, NativeSQLite } from '@hozon/adapter'
 import { HozonDB, type HozonDBParams } from '@hozon/db'
 
 import { type ConformanceCapabilities, supportsCase } from './capabilities.js'
@@ -19,10 +19,20 @@ export type ConformanceContext = {
   createAdapter: () => Promise<Adapter>
   cleanup?: () => Promise<void>
   capabilities?: ConformanceCapabilities
+  /** Test-only access to this case's native handle; adapter close owns cleanup.
+   * Use a short positive timeout (for example 10 ms), below the 1000 ms liveness bound.
+   */
+  admissionControl?: (adapter: Adapter) => Promise<AdmissionControlTestContext>
+}
+export type AdmissionControlTestContext = {
+  sqlite: NativeSQLite
+  db: NativeDBHandle
+  timeoutMs: number
 }
 export type CaseContext = {
   adapter: Adapter
   db: (params?: Partial<HozonDBParams>) => HozonDB
+  admissionControl?: ConformanceContext['admissionControl']
 }
 export type ConformanceCase = {
   name: string
@@ -67,6 +77,7 @@ export async function runConformance(
       const caseAdapter = adapter
       await entry.run({
         adapter: caseAdapter,
+        admissionControl: params.admissionControl,
         db: (options) => {
           const db = new HozonDB({ ...options, adapter: caseAdapter })
           databases.push(db)

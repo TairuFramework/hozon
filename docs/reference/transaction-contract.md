@@ -7,10 +7,17 @@ A native kernel must never open an independent transaction within that scope.
 
 ## Handles and scoped providers
 
-The native driver exposes `begin(kind: 'read' | 'write')`, returning a `txID`.
+`@hozon/adapter` exports the injected `NativeSQLite` contract and its value types.
+`open(path, { readers, busyTimeoutMs, journalMode: 'wal' })` returns an opaque string `NativeDBHandle`.
+`beginWrite(db, { timeoutMs }?)` returns `{ admissionID, txID }`, with opaque string identifiers.
+`commit(db, txID)`, `rollback(db, txID)` and `abandon(db, admissionID)` name their database explicitly.
+`execute(db, txID | null, sql, params, mode)` returns rows as arrays, column names,
+and bigint `changes` and `lastInsertRowID`. Values are null, number, bigint, string or `Uint8Array`.
+`mode` is `read` or `write`; a null `txID` routes to an outside reader or an admitted autocommit write.
+`close(db)` releases the handle.
 Every TypeScript statement and native kernel names its `txID` and runs on that transaction's connection.
 TypeScript statements use the `@hozon/native` Kysely driver.
-`savepoint`, `releaseSavepoint`, `rollbackTo`, `commit` and `rollback` all take a `txID`.
+Savepoints, release and rollback-to are SQL statements executed with that same `txID`.
 These handles describe the native driver contract, rather than new methods on today's adapters.
 
 Hozon keeps these semantics in TypeScript:
@@ -29,7 +36,7 @@ It does not make independent root writers safe.
 
 The native driver has one write connection and two separate queues:
 
-- The FIFO admission queue holds `begin('write')` requests until the active writer finishes.
+- The FIFO admission queue holds `beginWrite` requests until the active writer finishes.
   Autocommit writes without a `txID` use this same queue as single-statement transactions.
 - The active-command queue runs statements, kernels, savepoints, commit and rollback for the active `txID`.
   A pending admission never blocks active commands. Transaction A can finish while transaction B waits.
@@ -57,6 +64,14 @@ The portable runner filters incompatible cases before creating adapters. Its res
 The Vitest suite reports incompatible cases as skipped.
 This flag belongs to conformance configuration and does not modify production adapters.
 
+`admissionControl: true` additionally enables native timeout, abandonment and expiry/grant race cases.
+It defaults to false; node-sqlite skips these cases. All required capabilities must match.
+Native suites supply the test-only `ConformanceContext.admissionControl(adapter)` factory,
+returning `{ sqlite, db, timeoutMs }` for that case's adapter-owned native handle.
+The adapter must close the handle during runner cleanup. Set a short positive `timeoutMs`
+(for example 10 ms, below the suite's 1000 ms liveness bound); cases pass it to queued `beginWrite` calls.
+This injection does not change the production admission default.
+
 ## Root reentry, admission timeout and abandonment
 
 Calling root `db.withTransaction` from within an existing transaction is a caller bug.
@@ -73,7 +88,7 @@ The driver rolls back the granted transaction and frees the writer. A JavaScript
 
 In development and test builds, `begin` records the caller stack and grant records the holder stack.
 The default admission timeout is 10 seconds of monotonic time excluding suspension.
-The clocks are `CLOCK_UPTIME_RAW` on iOS and `uptimeMillis` on Android.
+The clocks are `CLOCK_UPTIME_RAW` on Apple and `CLOCK_MONOTONIC` on Linux and Android.
 Expiry fails the admission with a diagnostic naming both stacks.
 
 Release builds never expire admissions or automatically break ownership.
@@ -100,11 +115,21 @@ Savepoint rollback retains the dispatch barriers and clears the whole registry, 
 
 Phase 1 runs no native write kernels. Writes still use Kysely store code, preserving today's loader behaviour.
 For phase 3a, phase 1 adds `invalidateTransactionLoaders(tx)` with a dispatch barrier followed by `clearAll`.
+Call it on the owning `HozonDB` with an active transaction provider (including a savepoint or key-lock provider).
+It dispatches pending batches synchronously before clearing the transaction registry;
+pending results still settle, but cannot restore stale remembered values.
+Root, foreign, settled transaction and released savepoint providers are rejected.
 The TypeScript wrapper calls it after every native write kernel, before any listener or later TypeScript read.
 Selective invalidation remains deferred until profiling justifies named loaders and a mapping from store keys to loaders.
 
 ## Conformance coverage
 
 `transactionContractCases` covers writer admission progress, nested rollback, savepoint loader coherence, key locks, connection-bound writes and concurrent branch atomicity.
-It also covers commit-hook writes and capability-selected outside reads.
+It also covers a throwing in-transaction listener (including its own writes), explicit loader invalidation,
+commit completion before hooks and a follow-up hook writer, and capability-selected outside reads.
+Native admission cases verify timeout diagnostics naming caller and holder, continued holder progress,
+rollback and writer release after abandonment, rejection of an abandoned `txID`, and exclusive expiry/grant
+while releasing a holder before, at and after the short admission deadline. Each race outcome must leave
+the writer available; an expired request must not secretly retain a granted transaction.
+The Rust suite separately stresses the critical section with an injected clock.
 The node-sqlite transaction-contract suite runs these cases against a real in-memory SQLite adapter.

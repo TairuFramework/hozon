@@ -153,6 +153,7 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
   #logger: Logger
   #migrated: Map<string, Promise<void>> = new Map()
   #loaders = new LoaderRegistry({ remember: false })
+  #transactionInvalidators = new WeakMap<StoreProvider, () => void>()
   #storeAPIs: Map<string, unknown> = new Map()
   #stores: Map<string, StoredDefinition<Ext>> = new Map()
 
@@ -290,6 +291,14 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
     return await this.#withTransaction(fn)
   }
 
+  /** Dispatch pending loads, then discard cached values after a native write. */
+  invalidateTransactionLoaders(tx: StoreProvider): void {
+    this.#assertOpen()
+    const invalidate = this.#transactionInvalidators.get(tx)
+    if (!invalidate) throw new Error('Expected an active transaction provider from this database')
+    invalidate()
+  }
+
   async #withTransaction<Stores extends Record<string, unknown>, R>(
     fn: (tx: StoreProvider<Stores>) => Promise<R>,
     beforeHooks?: () => void,
@@ -309,6 +318,7 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
     const rollbackHooks: Array<() => void> = []
 
     const registry = new LoaderRegistry({ remember: true })
+    let active = true
     let result: R
     let savepointID = 0
     try {
@@ -467,6 +477,12 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
             syncParent,
             syncSavepoint,
           )
+          this.#transactionInvalidators.set(provider, () => {
+            if (!active) throw new Error('The transaction has already settled')
+            assertActive()
+            registry.dispatchAll()
+            registry.clearAll()
+          })
           return provider
         }
 
@@ -480,6 +496,7 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
         return transactionContext == null ? await run() : await transactionContext.run(run)
       })
     } catch (err) {
+      active = false
       registry.close()
       // Kysely issues ROLLBACK and rejects `execute()` when the callback
       // throws, so the DB is already reverted here. Run the rollback hooks to
@@ -489,6 +506,8 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
       // engine's `MutateGraphWriteRollback` sentinel) still observe it.
       this.#runHooks(rollbackHooks, 'rollback')
       throw err
+    } finally {
+      active = false
     }
 
     registry.close()
