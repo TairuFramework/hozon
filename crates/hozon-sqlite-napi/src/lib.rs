@@ -2,6 +2,7 @@
 use hozon_sqlite::{Mode, OpenOptions, Registry, Value};
 use napi::bindgen_prelude::{Function, JsObjectValue, Object, ToNapiValue, TypeName, Uint8Array};
 use napi::{Env, Error, JsDeferred, JsValue, Result, Unknown, ValueType};
+#[cfg(feature = "addon")]
 use napi_derive::napi;
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
@@ -40,14 +41,14 @@ fn engine_error(error: hozon_sqlite::Error) -> Error {
     };
     Error::from_reason(format!("{prefix}: {error}"))
 }
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct NativeOpenOptions {
     pub readers: f64,
     pub busy_timeout_ms: f64,
     pub journal_mode: String,
     pub expire_admissions: Option<bool>,
 }
-#[napi(object)]
+#[cfg_attr(feature = "addon", napi(object))]
 pub struct BeginOptions {
     pub timeout_ms: Option<f64>,
 }
@@ -283,7 +284,7 @@ impl ToNapiValue for Resolved {
     }
 }
 
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 pub fn open(env: Env, path: String, options: NativeOpenOptions) -> Result<Object<'static>> {
     if options.journal_mode != "wal" {
         return Err(invalid("journalMode must be wal"));
@@ -309,15 +310,15 @@ pub fn open(env: Env, path: String, options: NativeOpenOptions) -> Result<Object
     )
 }
 /// Reports the actual expiry policy of an open database, including explicit overrides.
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 pub fn admission_expiry(db: String) -> Result<bool> {
     registry().admission_expiry(id(&db)?).map_err(engine_error)
 }
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 pub fn close(env: Env, db: String) -> Result<Object<'static>> {
     submit(env, Command::Close(id(&db)?))
 }
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 pub fn begin_write(env: Env, db: String, options: Option<BeginOptions>) -> Result<Object<'static>> {
     let timeout = options.and_then(|o| o.timeout_ms);
     // Capture at the JS boundary, before the worker starts waiting.
@@ -327,19 +328,19 @@ pub fn begin_write(env: Env, db: String, options: Option<BeginOptions>) -> Resul
         .get_named_property::<Option<String>>("stack")?;
     submit(env, Command::Begin(db, timeout, label))
 }
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 pub fn abandon(env: Env, db: String, admission_id: String) -> Result<Object<'static>> {
     submit(env, Command::Abandon(id(&db)?, id(&admission_id)?))
 }
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 pub fn commit(env: Env, db: String, tx_id: String) -> Result<Object<'static>> {
     submit(env, Command::Commit(id(&db)?, id(&tx_id)?))
 }
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 pub fn rollback(env: Env, db: String, tx_id: String) -> Result<Object<'static>> {
     submit(env, Command::Rollback(id(&db)?, id(&tx_id)?))
 }
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 pub fn execute(
     env: Env,
     db: String,
@@ -404,7 +405,7 @@ pub fn execute(
     )
 }
 
-#[napi]
+#[cfg_attr(feature = "addon", napi)]
 pub fn sqlite_version() -> String {
     hozon_sqlite::sqlite_version().to_owned()
 }
