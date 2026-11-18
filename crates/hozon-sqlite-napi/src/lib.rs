@@ -78,6 +78,9 @@ impl TypeName for Cell {
         ValueType::Unknown
     }
 }
+/// # Safety
+/// `env` must be a live N-API environment on its JavaScript thread, with an
+/// active handle scope that outlives the returned value.
 unsafe fn bigint(env: napi::sys::napi_env, text: String) -> Result<napi::sys::napi_value> {
     let env = Env::from_raw(env);
     let constructor: Function<String, Unknown> = env.get_global()?.get_named_property("BigInt")?;
@@ -128,7 +131,10 @@ fn completion<T: Send + 'static>(
 fn submit(env: Env, command: Command) -> Result<Object<'static>> {
     let (deferred, promise) = env.create_deferred::<Resolved, Resolver>()?;
     // The JS handle is returned immediately in this callback's handle scope.
-    let promise = Object::from_raw(env.raw(), promise.raw());
+    // SAFETY: this aliases the live promise in the current JS handle scope;
+    // it is returned immediately, never retained or used on an engine thread.
+    let mut promise = Object::from_raw(env.raw(), promise.raw());
+    let mut admission_id = None;
     let failure = deferred.clone();
     if catch_unwind(AssertUnwindSafe(|| {
         let r = registry();
@@ -137,12 +143,14 @@ fn submit(env: Env, command: Command) -> Result<Object<'static>> {
                 r.open_async(path, options, completion(deferred, Output::Handle))
             }
             Command::Close(db) => r.close_async(db, completion(deferred, |_| Output::Unit)),
-            Command::Begin(db, timeout, label) => r.begin_write_labeled_async(
-                db,
-                timeout,
-                label,
-                completion(deferred, Output::Admission),
-            ),
+            Command::Begin(db, timeout, label) => {
+                admission_id = Some(r.begin_write_pending_labeled_async(
+                    db,
+                    timeout,
+                    label,
+                    completion(deferred, Output::Admission),
+                ));
+            }
             Command::Abandon(db, admission) => {
                 r.abandon_async(db, admission, completion(deferred, |_| Output::Unit))
             }
@@ -168,6 +176,9 @@ fn submit(env: Env, command: Command) -> Result<Object<'static>> {
             "HOZON_PANIC: engine submission panicked",
         ));
     }
+    if let Some(id) = admission_id {
+        promise.set("admissionID", id.to_string())?;
+    }
     Ok(promise)
 }
 pub struct Resolved(Output);
@@ -185,17 +196,19 @@ impl ToNapiValue for Resolved {
         value: Self,
     ) -> Result<napi::sys::napi_value> {
         let env = Env::from_raw(raw_env);
-        let mut object = Object::new(&env)?;
+        let mut object;
         match value.0 {
             Output::Handle(id) => {
                 return unsafe { String::to_napi_value(env.raw(), id.to_string()) };
             }
             Output::Unit => return unsafe { <()>::to_napi_value(env.raw(), ()) },
             Output::Admission(admission) => {
+                object = Object::new(&env)?;
                 object.set("admissionID", admission.admission_id.to_string())?;
                 object.set("txID", admission.tx_id.to_string())?;
             }
             Output::Query(result) => {
+                object = Object::new(&env)?;
                 object.set("columns", result.columns)?;
                 object.set(
                     "rows",

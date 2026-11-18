@@ -1,4 +1,5 @@
-import { defineVitestSuite } from '../../conformance/src/vitest.js'
+import { defineVitestSuite } from '@hozon/conformance/vitest'
+
 import { NativeAdapter } from '../src/index.js'
 import { loadBinding } from './binding.js'
 

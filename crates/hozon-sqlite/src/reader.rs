@@ -47,6 +47,7 @@ pub(crate) struct ReaderPool {
     shared: Arc<Shared>,
     workers: Mutex<Vec<JoinHandle<()>>>,
     interrupts: Vec<rusqlite::InterruptHandle>,
+    thread_ids: Vec<thread::ThreadId>,
 }
 impl ReaderPool {
     pub fn new(
@@ -66,6 +67,7 @@ impl ReaderPool {
             shared,
             workers: Mutex::new(Vec::new()),
             interrupts: Vec::new(),
+            thread_ids: Vec::new(),
         };
         for _ in 0..options.readers {
             let connection = connect(path, options)?;
@@ -86,9 +88,14 @@ impl ReaderPool {
                         on_failure();
                     }
                 })?;
+            pool.thread_ids.push(worker.thread().id());
             lock(&pool.workers).push(worker);
         }
         Ok(pool)
+    }
+    pub fn owns_current_thread(&self) -> bool {
+        let current = thread::current().id();
+        self.thread_ids.contains(&current)
     }
     pub fn execute(&self, sql: String, params: Vec<Value>, reply: Completion<QueryResult>) {
         let mut state = lock(&self.shared.state);

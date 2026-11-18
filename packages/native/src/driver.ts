@@ -20,7 +20,7 @@ export type NativeDialectParams = {
   sqlite: NativeSQLite
   database: Promise<NativeDBHandle>
   destroy: () => Promise<void>
-  /** Optional JS wait bound. A native grant arriving after expiry is abandoned. */
+  /** Optional JS wait bound. Pending and late native grants are abandoned. */
   admissionTimeoutMs?: number
 }
 
@@ -65,15 +65,20 @@ export class NativeDriver implements Driver {
     const timeoutMs = this.#params.admissionTimeoutMs
     let expired = false
     let timer: ReturnType<typeof setTimeout> | undefined
-    const admission = this.#params.sqlite
-      .beginWrite(await this.#params.database, timeoutMs === undefined ? undefined : { timeoutMs })
-      .then(async (grant) => {
-        if (expired) {
-          await this.#params.sqlite.abandon(await this.#params.database, grant.admissionID)
-          throw new Error('Native admission wait expired after grant')
-        }
-        return grant
-      })
+    const database = await this.#params.database
+    // The napi binding exposes the ID on the promise before admission completes.
+    // Plain NativeSQLite implementations retain the abandon-on-late-grant fallback.
+    const pending = this.#params.sqlite.beginWrite(
+      database,
+      timeoutMs === undefined ? undefined : { timeoutMs },
+    )
+    const admission = pending.then(async (grant) => {
+      if (expired) {
+        await this.#params.sqlite.abandon(await this.#params.database, grant.admissionID)
+        throw new Error('Native admission wait expired after grant')
+      }
+      return grant
+    })
     try {
       const grant =
         timeoutMs === undefined
@@ -83,11 +88,17 @@ export class NativeDriver implements Driver {
               new Promise<never>((_resolve, reject) => {
                 timer = setTimeout(() => {
                   expired = true
+                  if ('admissionID' in pending && typeof pending.admissionID === 'string') {
+                    // Abandon rejects the native wait as well; Promise.race already
+                    // observes that rejection. Cleanup failure must not replace expiry.
+                    void this.#params.sqlite.abandon(database, pending.admissionID).catch(() => {})
+                  }
                   reject(new Error('Native admission wait expired'))
                 }, timeoutMs)
               }),
             ])
       native.txID = grant.txID
+      native.commitFailure = undefined
     } finally {
       if (timer !== undefined) clearTimeout(timer)
     }
@@ -95,14 +106,23 @@ export class NativeDriver implements Driver {
   async commitTransaction(connection: DatabaseConnection): Promise<void> {
     const native = connection as NativeConnection
     if (native.txID === null) throw new Error('No active native transaction')
-    await this.#params.sqlite.commit(native.database, native.txID)
-    native.txID = null
+    try {
+      await this.#params.sqlite.commit(native.database, native.txID)
+      native.txID = null
+    } catch (error) {
+      native.commitFailure = { error }
+      throw error
+    }
   }
   async rollbackTransaction(connection: DatabaseConnection): Promise<void> {
     const native = connection as NativeConnection
     if (native.txID === null) throw new Error('No active native transaction')
-    await this.#params.sqlite.rollback(native.database, native.txID)
-    native.txID = null
+    try {
+      await this.#params.sqlite.rollback(native.database, native.txID)
+      native.txID = null
+    } catch (error) {
+      throw native.commitFailure ? native.commitFailure.error : error
+    }
   }
   async releaseConnection(connection: DatabaseConnection): Promise<void> {
     const native = connection as NativeConnection
@@ -162,6 +182,7 @@ export function queryMode(compiled: CompiledQuery): 'read' | 'write' {
 
 class NativeConnection implements DatabaseConnection {
   txID: TxID | null = null
+  commitFailure: { error: unknown } | undefined
   #sqlite: NativeSQLite
   #database: NativeDBHandle
   constructor(sqlite: NativeSQLite, database: NativeDBHandle) {

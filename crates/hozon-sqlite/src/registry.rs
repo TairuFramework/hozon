@@ -1,3 +1,6 @@
+//! Registry lifecycle operations share one process-wide control thread. A slow
+//! open or close causes head-of-line blocking for lifecycle work on other databases;
+//! their active writer and reader queues continue independently.
 use crate::{
     Admission, AdmissionID, Callback, DBID, Error, Mode, OpenOptions, QueryResult, Result, Stats,
     TxID, Value,
@@ -182,9 +185,25 @@ impl Registry {
         label: Option<String>,
         callback: Callback<Admission>,
     ) {
-        self.submit(db, callback, |engine, reply| {
-            engine.begin(timeout, label, reply)
-        });
+        self.begin_write_pending_labeled_async(db, timeout, label, callback);
+    }
+    /// Submit admission and return its ID immediately, so a host can abandon it
+    /// before the grant callback arrives. The callback still completes exactly once.
+    pub fn begin_write_pending_labeled_async(
+        &self,
+        db: DBID,
+        timeout: Option<Duration>,
+        label: Option<String>,
+        callback: Callback<Admission>,
+    ) -> AdmissionID {
+        let reply = Completion::new(callback);
+        match self.engine(db) {
+            Ok(engine) => engine.begin(timeout, label, reply),
+            Err(error) => {
+                reply.fail_async(error);
+                next_id()
+            }
+        }
     }
     pub fn abandon(&self, db: DBID, admission_id: AdmissionID) -> Result<()> {
         wait(|cb| self.abandon_async(db, admission_id, cb))

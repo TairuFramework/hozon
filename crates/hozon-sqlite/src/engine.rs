@@ -1,3 +1,5 @@
+//! Each database owns a writer and reader pool. Lifecycle open/close uses one
+//! process-wide control thread, so slow lifecycle work can delay other databases.
 use crate::{
     Admission, AdmissionID, Error, Mode, OpenOptions, QueryResult, Result, Stats, TxID, Value,
     admission::{AdmissionWork, Holder, Pending},
@@ -61,6 +63,8 @@ struct Shared {
     closed: AtomicBool,
     failed: AtomicBool,
     pending: AtomicUsize,
+    #[cfg(test)]
+    after_sqlite_finish: Mutex<Option<crate::completion::Job>>,
     warnings: AtomicU64,
     state: Mutex<State>,
     ready: Condvar,
@@ -92,6 +96,8 @@ impl Engine {
             closed: AtomicBool::new(false),
             failed: AtomicBool::new(false),
             pending: AtomicUsize::new(0),
+            #[cfg(test)]
+            after_sqlite_finish: Mutex::new(None),
             warnings: AtomicU64::new(0),
             state: Mutex::new(State {
                 holder: None,
@@ -146,10 +152,16 @@ impl Engine {
         timeout: Option<Duration>,
         label: Option<String>,
         reply: Completion<Admission>,
-    ) {
-        self.admit(timeout, label, AdmissionWork::Begin(reply));
+    ) -> AdmissionID {
+        self.admit(timeout, label, AdmissionWork::Begin(reply))
     }
-    fn admit(&self, timeout: Option<Duration>, label: Option<String>, reply: AdmissionWork) {
+    fn admit(
+        &self,
+        timeout: Option<Duration>,
+        label: Option<String>,
+        reply: AdmissionWork,
+    ) -> AdmissionID {
+        let id = next_id();
         // A custom clock may panic. Keep the completion outside the state lock until
         // all caller-side validation has finished, so its unwind guard can settle it.
         let started = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -158,17 +170,17 @@ impl Engine {
             Ok(now) => now,
             Err(_) => {
                 reply.fail_async(Error::WorkerStopped);
-                return;
+                return id;
             }
         };
         let mut state = lock(&self.shared.state);
         if self.shared.closed.load(Ordering::Acquire) {
             drop(state);
             reply.fail_async(terminal_error(&self.shared));
-            return;
+            return id;
         }
         state.pending.push_back(Pending {
-            id: next_id(),
+            id,
             started,
             timeout: timeout.unwrap_or(Duration::from_secs(10)),
             label,
@@ -177,6 +189,7 @@ impl Engine {
         });
         self.shared.pending.fetch_add(1, Ordering::Release);
         self.shared.ready.notify_one();
+        id
     }
     fn send(&self, command: Command) {
         let mut state = lock(&self.shared.state);
@@ -261,7 +274,7 @@ impl Drop for Engine {
         let own_worker = lock(&self.worker)
             .as_ref()
             .is_some_and(|handle| handle.thread().id() == thread::current().id());
-        if own_worker || thread::current().name() == Some("hozon-sqlite-reader") {
+        if own_worker || self.readers.owns_current_thread() {
             let handle = lock(&self.worker).take();
             let shared = self.shared.clone();
             let readers = self.readers.clone();
@@ -435,8 +448,10 @@ fn run(
                         if !connection.is_autocommit() {
                             let _ = connection.execute_batch("ROLLBACK");
                         }
+                        #[cfg(test)]
+                        after_sqlite_finish(&shared);
                         release_if_finished(&connection, &shared);
-                        if shared.closed.load(Ordering::Acquire) {
+                        if result.is_err() && shared.closed.load(Ordering::Acquire) {
                             result = Err(terminal_error(&shared));
                         }
                         reply.complete(result);
@@ -525,12 +540,16 @@ fn handle_command(connection: &rusqlite::Connection, shared: &Shared, command: C
             } else {
                 Err(Error::InvalidTransaction)
             };
+            #[cfg(test)]
+            after_sqlite_finish(shared);
             release_if_finished(connection, shared);
-            reply.complete(if shared.closed.load(Ordering::Acquire) {
-                Err(terminal_error(shared))
-            } else {
-                result
-            });
+            reply.complete(
+                if result.is_err() && shared.closed.load(Ordering::Acquire) {
+                    Err(terminal_error(shared))
+                } else {
+                    result
+                },
+            );
         }
         Command::Abandon { id, reply } => {
             let mut state = lock(&shared.state);
@@ -650,5 +669,162 @@ mod tests {
         let result = checkpoint(&connection);
         assert!(matches!(result, Ok((0, _, _))), "{result:?}");
         connection.close().unwrap();
+    }
+}
+
+#[cfg(test)]
+fn after_sqlite_finish(shared: &Shared) {
+    let hook = lock(&shared.after_sqlite_finish).take();
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(test)]
+mod finish_race_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    fn close_racing_write(explicit: bool) {
+        let temporary = TemporaryDatabase::new().unwrap();
+        let path = temporary.0.to_str().unwrap();
+        for completed in [false, true] {
+            let engine = Arc::new(Engine::open(path, false, OpenOptions::default()).unwrap());
+            let setup = connect(path, &OpenOptions::default()).unwrap();
+            setup
+                .execute_batch("CREATE TABLE IF NOT EXISTS writes (id); DELETE FROM writes")
+                .unwrap();
+            drop(setup);
+            let admission = if explicit {
+                let (send, receive) = mpsc::channel();
+                engine.begin(
+                    None,
+                    None,
+                    Completion::new(Box::new(move |v| {
+                        send.send(v).unwrap();
+                    })),
+                );
+                let admission = receive
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap()
+                    .unwrap();
+                let (send, receive) = mpsc::channel();
+                engine.execute(
+                    Some(admission.tx_id),
+                    "INSERT INTO writes VALUES (1)".into(),
+                    vec![],
+                    Mode::Write,
+                    Completion::new(Box::new(move |v| {
+                        send.send(v).unwrap();
+                    })),
+                );
+                receive
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap()
+                    .unwrap();
+                Some(admission)
+            } else {
+                None
+            };
+            let (arrived, arrival) = mpsc::channel();
+            let (resume, resumed) = mpsc::channel();
+            // Pause after SQLite COMMIT and before the result reaches its callback.
+            // The real close runs concurrently and marks the engine closed here.
+            if completed {
+                *lock(&engine.shared.after_sqlite_finish) = Some(Box::new(move || {
+                    arrived.send(()).unwrap();
+                    resumed.recv_timeout(Duration::from_secs(3)).unwrap();
+                }));
+            } else {
+                engine.close().unwrap();
+            }
+            let (send, receive) = mpsc::channel();
+            if let Some(admission) = admission {
+                engine.finish(
+                    admission.tx_id,
+                    true,
+                    Completion::new(Box::new(move |v| {
+                        send.send(v).unwrap();
+                    })),
+                );
+            } else {
+                engine.execute(
+                    None,
+                    "INSERT INTO writes VALUES (1)".into(),
+                    vec![],
+                    Mode::Write,
+                    Completion::new(Box::new(move |v| {
+                        send.send(v.map(|_| ())).unwrap();
+                    })),
+                );
+            }
+            if completed {
+                arrival.recv_timeout(Duration::from_secs(3)).unwrap();
+                let closing = engine.clone();
+                let close = thread::spawn(move || closing.close());
+                let deadline = std::time::Instant::now() + Duration::from_secs(3);
+                while !engine.shared.closed.load(Ordering::Acquire) {
+                    assert!(std::time::Instant::now() < deadline);
+                    thread::yield_now();
+                }
+                resume.send(()).unwrap();
+                close.join().unwrap().unwrap();
+            }
+            let outcome = receive.recv_timeout(Duration::from_secs(3)).unwrap();
+            let reopened = connect(path, &OpenOptions::default()).unwrap();
+            let count: i64 = reopened
+                .query_row("SELECT count(*) FROM writes", [], |row| row.get(0))
+                .unwrap();
+            if count == 1 {
+                assert!(outcome.is_ok(), "durable commit reported {outcome:?}");
+            } else {
+                assert!(
+                    matches!(outcome, Err(Error::Closed)),
+                    "rolled back: {outcome:?}"
+                );
+            }
+            assert_eq!(count, i64::from(completed));
+        }
+    }
+    #[test]
+    fn close_racing_commit_reports_durable_outcome() {
+        close_racing_write(true);
+    }
+    #[test]
+    fn close_racing_autocommit_reports_durable_outcome() {
+        close_racing_write(false);
+    }
+}
+
+#[cfg(test)]
+mod drop_tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn unrelated_thread_with_reader_name_closes_synchronously() {
+        let engine = Engine::open("", true, OpenOptions::default()).unwrap();
+        let path = engine.temporary.as_ref().unwrap().0.clone();
+        let (started, start) = mpsc::channel();
+        let (resume, resumed) = mpsc::channel();
+        dispatch(Box::new(move || {
+            started.send(()).unwrap();
+            let _ = resumed.recv_timeout(Duration::from_secs(3));
+        }));
+        start.recv_timeout(Duration::from_secs(3)).unwrap();
+        let removed = thread::Builder::new()
+            .name("hozon-sqlite-reader".into())
+            .spawn(move || {
+                drop(engine);
+                !path.exists()
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        resume.send(()).unwrap();
+        assert!(
+            removed,
+            "unrelated named thread deferred this engine's close"
+        );
     }
 }

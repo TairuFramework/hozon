@@ -60,7 +60,7 @@ export const nativeContractCases: Array<ConformanceCase> = [
       await sqlite.close(db)
       const outcome = await pending
       assert.ok(outcome instanceof Error)
-      assert.ok(/closed|stopped/i.test(outcome.message))
+      assert.ok(/closed/i.test(outcome.message))
       await assert.rejects(() => sqlite.execute(db, holder.txID, 'SELECT 1', [], 'read'), 'closed')
       await sqlite.close(db)
     },

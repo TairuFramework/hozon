@@ -53,9 +53,6 @@ test('real driver preserves types and raw write metadata including RETURNING', a
   }
 })
 test('a rejected JS wait abandons a late native grant', async () => {
-  const adapter = new NativeAdapter({ sqlite, database: ':memory:', admissionTimeoutMs: 20 })
-  const db = new Kysely({ dialect: adapter.dialect })
-  const holder = await sqlite.beginWrite(await adapter.database)
   // Delay delivery after the engine grants, simulating a cancelled JS continuation.
   const original = sqlite.beginWrite
   const delayed = {
@@ -74,8 +71,6 @@ test('a rejected JS wait abandons a late native grant', async () => {
     const next = await sqlite.beginWrite(await other.database, { timeoutMs: 40 })
     await sqlite.rollback(await other.database, next.txID)
   } finally {
-    await sqlite.rollback(await adapter.database, holder.txID)
-    await db.destroy()
     await otherDB.destroy()
   }
 })
@@ -111,6 +106,72 @@ test('raw classification ignores write words in reads and detects CTE writes and
     )
     await sql`PRAGMA user_version(7)`.execute(db)
     expect((await sql`PRAGMA user_version`.execute(db)).rows).toEqual([{ user_version: 7 }])
+  } finally {
+    await db.destroy()
+  }
+})
+
+test('JS expiry abandons the pending admission before the holder releases', async () => {
+  const abandoned: Array<string> = []
+  let pendingOutcome: Promise<unknown> | undefined
+  const cancellable = {
+    ...sqlite,
+    // Keep engine expiry longer than JS expiry, and preserve the pending ID.
+    beginWrite: (db: string) => {
+      const pending = sqlite.beginWrite(db, { timeoutMs: 1000 })
+      pendingOutcome = pending.then(
+        () => 'unexpected grant',
+        (error: unknown) => error,
+      )
+      return pending
+    },
+    abandon: async (db: string, admissionID: string) => {
+      abandoned.push(admissionID)
+      await sqlite.abandon(db, admissionID)
+    },
+  }
+  const adapter = new NativeAdapter({
+    sqlite: cancellable,
+    database: ':memory:',
+    admissionTimeoutMs: 20,
+  })
+  const driver = adapter.dialect.createDriver()
+  const db = await adapter.database
+  const holder = await sqlite.beginWrite(db)
+  const connection = await driver.acquireConnection()
+  try {
+    await expect(driver.beginTransaction(connection, {})).rejects.toThrow('admission wait expired')
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(abandoned).toHaveLength(1)
+    await expect(pendingOutcome).resolves.toMatchObject({
+      message: expect.stringContaining('abandoned'),
+    })
+    await expect(sqlite.execute(db, holder.txID, 'SELECT 1', [], 'read')).resolves.toMatchObject({
+      rows: [[1]],
+    })
+  } finally {
+    await sqlite.rollback(db, holder.txID)
+    await driver.releaseConnection(connection)
+    await driver.destroy()
+  }
+})
+
+test('failed cleanup preserves the original commit error', async () => {
+  const commitError = new Error('original commit failure')
+  const rollbackError = new Error('later rollback failure')
+  const failing = {
+    ...sqlite,
+    commit: async () => {
+      throw commitError
+    },
+    rollback: async () => {
+      throw rollbackError
+    },
+  }
+  const adapter = new NativeAdapter({ sqlite: failing, database: ':memory:' })
+  const db = new Kysely({ dialect: adapter.dialect })
+  try {
+    await expect(db.transaction().execute(async () => {})).rejects.toBe(commitError)
   } finally {
     await db.destroy()
   }

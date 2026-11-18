@@ -20,17 +20,17 @@ fn result<T: Send + 'static>(submit: impl FnOnce(Callback<T>)) -> hozon_sqlite::
 fn callbacks_cover_operations_and_commit_can_submit_begin() {
     let registry = Arc::new(Registry::new());
     let caller = std::thread::current().id();
-    let db = result(|cb| {
-        registry.open_async(
-            ":memory:",
-            OpenOptions::default(),
-            Box::new(move |value| {
-                assert_ne!(caller, std::thread::current().id());
-                cb(value);
-            }),
-        )
-    })
-    .unwrap();
+    let (send, receive) = mpsc::channel();
+    registry.open_async(
+        ":memory:",
+        OpenOptions::default(),
+        Box::new(move |value| {
+            send.send((std::thread::current().id(), value)).unwrap();
+        }),
+    );
+    let (thread, opened) = receive.recv_timeout(Duration::from_secs(3)).unwrap();
+    assert_ne!(caller, thread);
+    let db = opened.unwrap();
     result(|cb| {
         registry.execute_async(
             db,
@@ -61,18 +61,23 @@ fn callbacks_cover_operations_and_commit_can_submit_begin() {
             .len(),
         0
     );
+    let (send, receive) = mpsc::channel();
     let next = result(|cb| {
         let r = registry.clone();
         registry.commit_async(
             db,
             holder.tx_id,
             Box::new(move |committed| {
-                committed.unwrap();
+                send.send(committed).unwrap();
                 r.begin_write_async(db, None, cb);
             }),
         );
     })
     .unwrap();
+    receive
+        .recv_timeout(Duration::from_secs(3))
+        .unwrap()
+        .unwrap();
     result(|cb| registry.abandon_async(db, next.admission_id, cb)).unwrap();
     let next = result(|cb| registry.begin_write_async(db, None, cb)).unwrap();
     result(|cb| registry.rollback_async(db, next.tx_id, cb)).unwrap();
@@ -159,7 +164,7 @@ fn close_fails_every_pending_callback_once_and_callbacks_can_reenter() {
             db,
             None,
             Box::new(move |value| {
-                assert!(matches!(value, Err(Error::Closed)));
+                let first = value;
                 // This takes the engine state lock and would deadlock under shutdown's lock.
                 r.execute_async(
                     db,
@@ -168,9 +173,8 @@ fn close_fails_every_pending_callback_once_and_callbacks_can_reenter() {
                     &[],
                     Mode::Read,
                     Box::new(move |value| {
-                        assert!(matches!(value, Err(Error::Closed)));
                         count.fetch_add(1, Ordering::SeqCst);
-                        send.send(()).unwrap();
+                        send.send((value, first)).unwrap();
                     }),
                 );
             }),
@@ -178,7 +182,9 @@ fn close_fails_every_pending_callback_once_and_callbacks_can_reenter() {
     }
     result(|cb| registry.close_async(db, cb)).unwrap();
     for _ in 0..32 {
-        receive.recv_timeout(Duration::from_secs(3)).unwrap();
+        let (second, first) = receive.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(matches!(first, Err(Error::Closed)), "{first:?}");
+        assert!(matches!(second, Err(Error::Closed)), "{second:?}");
     }
     registry.close(db).unwrap();
     assert_eq!(count.load(Ordering::SeqCst), 32);
@@ -249,10 +255,8 @@ fn queued_reads_return_immediately_and_close_settles_every_reader_once() {
         let count = count.clone();
         Box::new(
             move |value: hozon_sqlite::Result<hozon_sqlite::QueryResult>| {
-                assert_ne!(caller, std::thread::current().id());
-                assert!(matches!(value, Err(Error::Closed)), "{value:?}");
                 count.fetch_add(1, Ordering::SeqCst);
-                send.send(()).unwrap();
+                send.send((std::thread::current().id(), value)).unwrap();
             },
         ) as Callback<hozon_sqlite::QueryResult>
     };
@@ -270,7 +274,9 @@ fn queued_reads_return_immediately_and_close_settles_every_reader_once() {
         .unwrap();
     result(|cb| registry.close_async(db, cb)).unwrap();
     for _ in 0..17 {
-        receive.recv_timeout(Duration::from_secs(3)).unwrap();
+        let (thread, value) = receive.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert_ne!(caller, thread);
+        assert!(matches!(value, Err(Error::Closed)), "{value:?}");
     }
     assert_eq!(count.load(Ordering::SeqCst), 17);
 }
@@ -307,9 +313,8 @@ fn writer_panic_also_fails_running_and_queued_reader_callbacks() {
             &[],
             Mode::Read,
             Box::new(move |value| {
-                assert!(matches!(value, Err(Error::WorkerStopped)), "{value:?}");
                 count.fetch_add(1, Ordering::SeqCst);
-                send.send(()).unwrap();
+                send.send(value).unwrap();
             }),
         );
     }
@@ -319,7 +324,8 @@ fn writer_panic_also_fails_running_and_queued_reader_callbacks() {
         Err(Error::WorkerStopped)
     ));
     for _ in 0..17 {
-        receive.recv_timeout(Duration::from_secs(3)).unwrap();
+        let value = receive.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(matches!(value, Err(Error::WorkerStopped)), "{value:?}");
     }
     assert_eq!(count.load(Ordering::SeqCst), 17);
     let _ = registry.close(db);
@@ -329,31 +335,31 @@ fn writer_panic_also_fails_running_and_queued_reader_callbacks() {
 fn invalid_open_and_unknown_handle_callbacks_run_off_the_caller_thread() {
     let registry = Registry::new();
     let caller = std::thread::current().id();
-    assert!(matches!(
-        result(|cb| registry.open_async(
-            "",
-            OpenOptions::default(),
-            Box::new(move |value| {
-                assert_ne!(caller, std::thread::current().id());
-                cb(value);
-            })
-        )),
-        Err(Error::InvalidInput(_))
-    ));
-    assert!(matches!(
-        result(|cb| registry.execute_async(
-            999999999,
-            None,
-            "SELECT 1",
-            &[],
-            Mode::Read,
-            Box::new(move |value| {
-                assert_ne!(caller, std::thread::current().id());
-                cb(value);
-            })
-        )),
-        Err(Error::Closed)
-    ));
+    let (send, receive) = mpsc::channel();
+    registry.open_async(
+        "",
+        OpenOptions::default(),
+        Box::new(move |value| {
+            send.send((std::thread::current().id(), value)).unwrap();
+        }),
+    );
+    let (thread, value) = receive.recv_timeout(Duration::from_secs(3)).unwrap();
+    assert_ne!(caller, thread);
+    assert!(matches!(value, Err(Error::InvalidInput(_))), "{value:?}");
+    let (send, receive) = mpsc::channel();
+    registry.execute_async(
+        999999999,
+        None,
+        "SELECT 1",
+        &[],
+        Mode::Read,
+        Box::new(move |value| {
+            send.send((std::thread::current().id(), value)).unwrap();
+        }),
+    );
+    let (thread, value) = receive.recv_timeout(Duration::from_secs(3)).unwrap();
+    assert_ne!(caller, thread);
+    assert!(matches!(value, Err(Error::Closed)), "{value:?}");
 }
 
 #[test]
@@ -409,14 +415,13 @@ fn last_registry_reference_can_be_released_inside_writer_and_reader_callbacks() 
 
 fn closed_counter<T: Send + 'static>(
     count: &Arc<AtomicUsize>,
-    send: &mpsc::Sender<()>,
+    send: &mpsc::Sender<hozon_sqlite::Result<()>>,
 ) -> Callback<T> {
     let count = count.clone();
     let send = send.clone();
     Box::new(move |value| {
-        assert!(matches!(value, Err(Error::Closed)));
         count.fetch_add(1, Ordering::SeqCst);
-        send.send(()).unwrap();
+        send.send(value.map(|_| ())).unwrap();
     })
 }
 
@@ -466,9 +471,10 @@ fn close_settles_all_writer_command_kinds_once_while_begin_is_busy() {
         }),
     );
     for _ in 0..6 {
-        receive
+        let value = receive
             .recv_timeout(Duration::from_secs(3))
             .expect("close stranded a writer callback");
+        assert!(matches!(value, Err(Error::Closed)), "{value:?}");
     }
     external.execute_batch("ROLLBACK").unwrap();
     closed_receive
