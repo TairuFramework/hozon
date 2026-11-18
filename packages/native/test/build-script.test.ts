@@ -1,13 +1,13 @@
 import { spawnSync } from 'node:child_process'
 import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, test } from 'vitest'
 
-test('binary copy resolves the shared target independently of cwd and honours its override', async () => {
+test('binary copy resolves the repo target independently of cwd and honours its override', async () => {
   const original = fileURLToPath(new URL('../../../scripts/build-sqlite-napi.ts', import.meta.url))
-  const worktreeTarget = fileURLToPath(new URL('../../../../../target/', import.meta.url))
-  const fixture = await mkdtemp(resolve(worktreeTarget, 'napi-copy-'))
+  const fixture = await mkdtemp(resolve(tmpdir(), 'napi-copy-'))
   try {
     const scripts = resolve(fixture, 'stack/hozon/scripts')
     await mkdir(scripts, { recursive: true })
@@ -20,11 +20,11 @@ test('binary copy resolves the shared target independently of cwd and honours it
         ? 'hozon_sqlite_napi.dll'
         : `libhozon_sqlite_napi.${process.platform === 'darwin' ? 'dylib' : 'so'}`
     for (const configured of [undefined, resolve(fixture, 'custom-target')]) {
-      const target = configured ?? resolve(fixture, 'target')
+      const target = configured ?? resolve(fixture, 'stack/hozon/target')
       await mkdir(resolve(target, 'debug'), { recursive: true })
       await writeFile(resolve(target, 'debug', filename), target)
       const result = spawnSync(process.execPath, [script, '--copy-only'], {
-        cwd: fixture,
+        cwd: tmpdir(),
         env: configured === undefined ? env : { ...env, CARGO_TARGET_DIR: configured },
         encoding: 'utf8',
       })

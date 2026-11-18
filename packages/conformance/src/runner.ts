@@ -26,6 +26,7 @@ export type ConformanceContext = {
   admissionControl?: (adapter: Adapter) => Promise<AdmissionControlTestContext>
 }
 export type AdmissionControlTestContext = {
+  /** beginWrite returns a synchronous pending ID; await its granted promise for the txID. */
   sqlite: NativeSQLite
   db: NativeDBHandle
   timeoutMs: number

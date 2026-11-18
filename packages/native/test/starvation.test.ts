@@ -17,8 +17,8 @@ test.each([1, 4])('queued admissions cannot exhaust libuv with %i worker(s)', as
     const sqlite = require(process.argv[1]);
     (async () => {
       const db = await sqlite.open(':memory:', { readers: 4, busyTimeoutMs: 5000, journalMode: 'wal' });
-      const holder = await sqlite.beginWrite(db);
-      const waiters = Array.from({ length: 16 }, () => sqlite.beginWrite(db, { timeoutMs: 500 }).catch(() => null));
+      const holder = await sqlite.beginWrite(db).granted;
+      const waiters = Array.from({ length: 16 }, () => sqlite.beginWrite(db, { timeoutMs: 500 }).granted.catch(() => null));
       await new Promise(resolve => setTimeout(resolve, 50));
       const start = performance.now();
       await sqlite.execute(db, holder.txID, 'SELECT 1', [], 'read');

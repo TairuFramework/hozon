@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 const repoRoot = fileURLToPath(new URL('../', import.meta.url))
 const release = process.argv.includes('--release')
 const copyOnly = process.argv.includes('--copy-only')
-const targetDir = resolve(process.env.CARGO_TARGET_DIR ?? resolve(repoRoot, '../../target'))
+const targetDir = resolve(process.env.CARGO_TARGET_DIR ?? resolve(repoRoot, 'target'))
 if (!copyOnly) {
   const result = spawnSync(
     'cargo',

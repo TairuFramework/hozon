@@ -12,7 +12,7 @@ export const nativeContractCases: Array<ConformanceCase> = [
       const { sqlite, db } = await ctx.admissionControl(ctx.adapter)
       await sqlite.execute(db, null, 'CREATE TABLE visibility (value INTEGER)', [], 'write')
       await sqlite.execute(db, null, 'INSERT INTO visibility VALUES (1)', [], 'write')
-      const holder = await sqlite.beginWrite(db)
+      const holder = await sqlite.beginWrite(db).granted
       try {
         await sqlite.execute(db, holder.txID, 'INSERT INTO visibility VALUES (2)', [], 'write')
         assert.deepEqual(
@@ -50,9 +50,9 @@ export const nativeContractCases: Array<ConformanceCase> = [
       assert.ok(ctx.admissionControl)
       const { sqlite, db } = await ctx.admissionControl(ctx.adapter)
       await sqlite.execute(db, null, 'CREATE TABLE shutdown (value INTEGER)', [], 'write')
-      const holder = await sqlite.beginWrite(db)
+      const holder = await sqlite.beginWrite(db).granted
       await sqlite.execute(db, holder.txID, 'INSERT INTO shutdown VALUES (1)', [], 'write')
-      const pending = sqlite.beginWrite(db).then(
+      const pending = sqlite.beginWrite(db).granted.then(
         () => 'unexpected grant',
         (error: unknown) => error,
       )

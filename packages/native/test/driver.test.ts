@@ -57,10 +57,15 @@ test('a rejected JS wait abandons a late native grant', async () => {
   const original = sqlite.beginWrite
   const delayed = {
     ...sqlite,
-    beginWrite: async (...args: Parameters<typeof original>) => {
-      const admission = await original(...args)
-      await new Promise((resolve) => setTimeout(resolve, 60))
-      return admission
+    beginWrite: (...args: Parameters<typeof original>) => {
+      const pending = original(...args)
+      return {
+        admissionID: pending.admissionID,
+        granted: pending.granted.then(async (admission) => {
+          await new Promise((resolve) => setTimeout(resolve, 60))
+          return admission
+        }),
+      }
     },
   }
   const other = new NativeAdapter({ sqlite: delayed, database: ':memory:', admissionTimeoutMs: 20 })
@@ -68,7 +73,7 @@ test('a rejected JS wait abandons a late native grant', async () => {
   try {
     await expect(otherDB.transaction().execute(async () => {})).rejects.toThrow('admission')
     await new Promise((resolve) => setTimeout(resolve, 100))
-    const next = await sqlite.beginWrite(await other.database, { timeoutMs: 40 })
+    const next = await sqlite.beginWrite(await other.database, { timeoutMs: 40 }).granted
     await sqlite.rollback(await other.database, next.txID)
   } finally {
     await otherDB.destroy()
@@ -119,7 +124,7 @@ test('JS expiry abandons the pending admission before the holder releases', asyn
     // Keep engine expiry longer than JS expiry, and preserve the pending ID.
     beginWrite: (db: string) => {
       const pending = sqlite.beginWrite(db, { timeoutMs: 1000 })
-      pendingOutcome = pending.then(
+      pendingOutcome = pending.granted.then(
         () => 'unexpected grant',
         (error: unknown) => error,
       )
@@ -137,7 +142,7 @@ test('JS expiry abandons the pending admission before the holder releases', asyn
   })
   const driver = adapter.dialect.createDriver()
   const db = await adapter.database
-  const holder = await sqlite.beginWrite(db)
+  const holder = await sqlite.beginWrite(db).granted
   const connection = await driver.acquireConnection()
   try {
     await expect(driver.beginTransaction(connection, {})).rejects.toThrow('admission wait expired')

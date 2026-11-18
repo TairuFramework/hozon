@@ -9,7 +9,12 @@ A native kernel must never open an independent transaction within that scope.
 
 `@hozon/adapter` exports the injected `NativeSQLite` contract and its value types.
 `open(path, { readers, busyTimeoutMs, journalMode: 'wal' })` returns an opaque string `NativeDBHandle`.
-`beginWrite(db, { timeoutMs }?)` returns `{ admissionID, txID }`, with opaque string identifiers.
+`beginWrite(db, { timeoutMs }?)` synchronously returns a `NativePendingAdmission`:
+`{ admissionID, granted: Promise<NativeAdmission> }`, with opaque string identifiers.
+The ID is assigned at submission; `abandon(db, admissionID)` accepts it while pending or granted,
+so a JS admission timeout cancels immediately without waiting for the grant.
+`granted` resolves with `{ admissionID, txID }` or rejects on expiry, abandon or database close.
+The settled admission retains `admissionID` to keep existing grant-based cleanup unchanged.
 `commit(db, txID)`, `rollback(db, txID)` and `abandon(db, admissionID)` name their database explicitly.
 `execute(db, txID | null, sql, params, mode)` returns rows as arrays, column names,
 and bigint `changes` and `lastInsertRowID`. Values are null, number, bigint, string or `Uint8Array`.

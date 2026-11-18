@@ -150,9 +150,9 @@ export const transactionContractCases: Array<ConformanceCase> = [
     async run(ctx) {
       assert.ok(ctx.admissionControl)
       const { sqlite, db, timeoutMs } = await ctx.admissionControl(ctx.adapter)
-      const holder = await within(sqlite.beginWrite(db), 'admission holder')
+      const holder = await within(sqlite.beginWrite(db).granted, 'admission holder')
       try {
-        const queued = sqlite.beginWrite(db, { timeoutMs }).then(
+        const queued = sqlite.beginWrite(db, { timeoutMs }).granted.then(
           (admission) => ({ admission, error: undefined }),
           (error: unknown) => ({ admission: undefined, error }),
         )
@@ -175,7 +175,7 @@ export const transactionContractCases: Array<ConformanceCase> = [
       } finally {
         await sqlite.rollback(db, holder.txID)
       }
-      const next = await within(sqlite.beginWrite(db), 'writer after admission expiry')
+      const next = await within(sqlite.beginWrite(db).granted, 'writer after admission expiry')
       await sqlite.rollback(db, next.txID)
     },
   },
@@ -186,14 +186,14 @@ export const transactionContractCases: Array<ConformanceCase> = [
       assert.ok(ctx.admissionControl)
       const { sqlite, db } = await ctx.admissionControl(ctx.adapter)
       await sqlite.execute(db, null, 'CREATE TABLE admission_rows (id INTEGER)', [], 'write')
-      const granted = await within(sqlite.beginWrite(db), 'granted admission')
+      const granted = await within(sqlite.beginWrite(db).granted, 'granted admission')
       try {
         await sqlite.execute(db, granted.txID, 'INSERT INTO admission_rows VALUES (1)', [], 'write')
       } finally {
         await sqlite.abandon(db, granted.admissionID)
       }
       await assert.rejects(() => sqlite.execute(db, granted.txID, 'SELECT 1', [], 'read'), Error)
-      const next = await within(sqlite.beginWrite(db), 'writer after abandon')
+      const next = await within(sqlite.beginWrite(db).granted, 'writer after abandon')
       try {
         const result = await sqlite.execute(
           db,
@@ -217,8 +217,8 @@ export const transactionContractCases: Array<ConformanceCase> = [
       // Exercise release before, at, and after the deadline. The Rust suite
       // additionally stresses the critical section with an injected clock.
       for (const factor of [0, 1, 2, 0, 1, 2]) {
-        const holder = await within(sqlite.beginWrite(db), 'race holder')
-        const queued = sqlite.beginWrite(db, { timeoutMs }).then(
+        const holder = await within(sqlite.beginWrite(db).granted, 'race holder')
+        const queued = sqlite.beginWrite(db, { timeoutMs }).granted.then(
           (admission) => ({ admission, error: undefined }),
           (error: unknown) => ({ admission: undefined, error }),
         )
@@ -242,7 +242,7 @@ export const transactionContractCases: Array<ConformanceCase> = [
           assert.ok(/holder/i.test(message))
         }
         // A rejected begin that secretly won the writer would block this.
-        const next = await within(sqlite.beginWrite(db), 'writer after admission race')
+        const next = await within(sqlite.beginWrite(db).granted, 'writer after admission race')
         await sqlite.rollback(db, next.txID)
       }
     },

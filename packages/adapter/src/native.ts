@@ -13,6 +13,15 @@ export type NativeResult = {
 
 export type NativeAdmission = { admissionID: string; txID: TxID }
 
+export type NativePendingAdmission = {
+  /** Assigned synchronously at submission; abandon accepts it while pending or granted.
+   * A JS admission timeout uses this ID to abandon without waiting for a grant.
+   */
+  readonly admissionID: string
+  /** Settles on grant (with the txID), expiry, abandon, or database close. */
+  readonly granted: Promise<NativeAdmission>
+}
+
 export type NativeOpenOptions = {
   readers: number
   busyTimeoutMs: number
@@ -22,7 +31,7 @@ export type NativeOpenOptions = {
 export type NativeSQLite = {
   open(path: string, options: NativeOpenOptions): Promise<NativeDBHandle>
   close(db: NativeDBHandle): Promise<void>
-  beginWrite(db: NativeDBHandle, options?: { timeoutMs?: number }): Promise<NativeAdmission>
+  beginWrite(db: NativeDBHandle, options?: { timeoutMs?: number }): NativePendingAdmission
   abandon(db: NativeDBHandle, admissionID: string): Promise<void>
   commit(db: NativeDBHandle, txID: TxID): Promise<void>
   rollback(db: NativeDBHandle, txID: TxID): Promise<void>

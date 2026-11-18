@@ -133,7 +133,7 @@ fn submit(env: Env, command: Command) -> Result<Object<'static>> {
     // The JS handle is returned immediately in this callback's handle scope.
     // SAFETY: this aliases the live promise in the current JS handle scope;
     // it is returned immediately, never retained or used on an engine thread.
-    let mut promise = Object::from_raw(env.raw(), promise.raw());
+    let promise = Object::from_raw(env.raw(), promise.raw());
     let mut admission_id = None;
     let failure = deferred.clone();
     if catch_unwind(AssertUnwindSafe(|| {
@@ -177,7 +177,10 @@ fn submit(env: Env, command: Command) -> Result<Object<'static>> {
         ));
     }
     if let Some(id) = admission_id {
-        promise.set("admissionID", id.to_string())?;
+        let mut pending = Object::new(&env)?;
+        pending.set("admissionID", id.to_string())?;
+        pending.set("granted", promise)?;
+        return Ok(pending);
     }
     Ok(promise)
 }

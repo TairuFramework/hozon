@@ -66,13 +66,11 @@ export class NativeDriver implements Driver {
     let expired = false
     let timer: ReturnType<typeof setTimeout> | undefined
     const database = await this.#params.database
-    // The napi binding exposes the ID on the promise before admission completes.
-    // Plain NativeSQLite implementations retain the abandon-on-late-grant fallback.
     const pending = this.#params.sqlite.beginWrite(
       database,
       timeoutMs === undefined ? undefined : { timeoutMs },
     )
-    const admission = pending.then(async (grant) => {
+    const admission = pending.granted.then(async (grant) => {
       if (expired) {
         await this.#params.sqlite.abandon(await this.#params.database, grant.admissionID)
         throw new Error('Native admission wait expired after grant')
@@ -88,11 +86,9 @@ export class NativeDriver implements Driver {
               new Promise<never>((_resolve, reject) => {
                 timer = setTimeout(() => {
                   expired = true
-                  if ('admissionID' in pending && typeof pending.admissionID === 'string') {
-                    // Abandon rejects the native wait as well; Promise.race already
-                    // observes that rejection. Cleanup failure must not replace expiry.
-                    void this.#params.sqlite.abandon(database, pending.admissionID).catch(() => {})
-                  }
+                  // Promise.race observes the abandoned wait's rejection.
+                  // Cleanup failure must not replace expiry.
+                  void this.#params.sqlite.abandon(database, pending.admissionID).catch(() => {})
                   reject(new Error('Native admission wait expired'))
                 }, timeoutMs)
               }),

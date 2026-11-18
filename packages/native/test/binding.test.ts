@@ -47,10 +47,10 @@ test('boundary validates handles, mode, bigint range and unsafe numbers', async 
 test('admission diagnostics include the calling and holding JS stacks', async () => {
   const db = await sqlite.open(':memory:', options)
   async function holderSite() {
-    return sqlite.beginWrite(db)
+    return sqlite.beginWrite(db).granted
   }
   async function callerSite() {
-    return sqlite.beginWrite(db, { timeoutMs: 30 })
+    return sqlite.beginWrite(db, { timeoutMs: 30 }).granted
   }
   const holder = await holderSite()
   try {
@@ -67,9 +67,9 @@ test('close rolls back active rows on disk and is idempotent', async () => {
   let db = await sqlite.open(path, options)
   try {
     await sqlite.execute(db, null, 'CREATE TABLE rows (id INTEGER)', [], 'write')
-    const tx = await sqlite.beginWrite(db)
+    const tx = await sqlite.beginWrite(db).granted
     await sqlite.execute(db, tx.txID, 'INSERT INTO rows VALUES (1)', [], 'write')
-    const pending = sqlite.beginWrite(db).then(
+    const pending = sqlite.beginWrite(db).granted.then(
       () => 'unexpected grant',
       (error: unknown) => error,
     )
@@ -113,4 +113,30 @@ test('boundary rejects fractional option values before dispatch', async () => {
     await sqlite.close(db)
   }
   await expect(attempt()).rejects.toThrow('readers')
+})
+
+test('beginWrite synchronously returns a cancellable pending admission object', async () => {
+  const db = await sqlite.open(':memory:', options)
+  try {
+    const holder = await sqlite.beginWrite(db).granted
+    const pending = sqlite.beginWrite(db, { timeoutMs: 1000 })
+    // Observe rejection even while asserting the synchronous contract.
+    const outcome = pending.granted.catch((error: unknown) => error)
+    expect(pending).not.toBeInstanceOf(Promise)
+    expect(pending.admissionID).toEqual(expect.any(String))
+    expect(pending.granted).toBeInstanceOf(Promise)
+    await sqlite.abandon(db, pending.admissionID)
+    await expect(outcome).resolves.toMatchObject({ message: expect.stringContaining('abandoned') })
+    await sqlite.execute(db, holder.txID, 'SELECT 1', [], 'read')
+    await sqlite.rollback(db, holder.txID)
+    const next = sqlite.beginWrite(db)
+    const grant = await next.granted
+    expect(grant.admissionID).toBe(next.admissionID)
+    await sqlite.abandon(db, next.admissionID)
+    await expect(sqlite.execute(db, grant.txID, 'SELECT 1', [], 'read')).rejects.toThrow(
+      'HOZON_INVALID_TRANSACTION',
+    )
+  } finally {
+    await sqlite.close(db)
+  }
 })
