@@ -44,6 +44,10 @@ impl Registry {
     pub fn new() -> Self {
         Self::default()
     }
+    /// Deliver a host-side validation failure exactly once on the control thread.
+    pub fn fail_async<T: Send + 'static>(&self, callback: Callback<T>, error: Error) {
+        Completion::new(callback).fail_async(error);
+    }
     pub fn open(&self, path: impl AsRef<Path>, options: OpenOptions) -> Result<DBID> {
         wait(|cb| self.open_async(path, options, cb))
     }
@@ -286,4 +290,40 @@ fn canonical_path(path: &Path) -> Result<PathBuf> {
         .file_name()
         .ok_or_else(|| Error::InvalidInput("database has no filename".into()))?;
     Ok(parent.join(name))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{sync::mpsc, thread};
+
+    #[test]
+    fn fail_async_delivers_original_error_once_on_control_thread() {
+        let registry = Registry::new();
+        let (send, receive) = mpsc::channel();
+        // Keep a sender alive so a duplicate check must wait for the full window.
+        let retained = send.clone();
+        registry.fail_async(
+            Box::new(move |result: Result<()>| {
+                send.send((
+                    result,
+                    thread::current().id(),
+                    thread::current().name().map(str::to_owned),
+                ))
+                .unwrap();
+            }),
+            Error::InvalidInput("bad binding input".into()),
+        );
+        let (result, id, name) = receive.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(
+            matches!(result, Err(Error::InvalidInput(message)) if message == "bad binding input")
+        );
+        assert_ne!(id, thread::current().id());
+        assert_eq!(name.as_deref(), Some("hozon-sqlite-control"));
+        assert!(matches!(
+            receive.recv_timeout(Duration::from_millis(50)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        drop(retained);
+    }
 }
