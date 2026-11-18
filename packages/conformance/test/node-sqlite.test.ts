@@ -13,6 +13,7 @@ import { defineVitestSuite } from '../src/vitest.js'
 
 defineVitestSuite({
   name: 'node-sqlite',
+  capabilities: { singleWriter: true },
   createAdapter: async () => new NodeSQLiteAdapter({ database: ':memory:' }),
 })
 
@@ -58,7 +59,7 @@ test.each(['commit', 'rollback'] as const)(
 test('default portable runner executes every case successfully', async () => {
   expect(allCases.length).toBeGreaterThan(0)
   expect(new Set(allCases.map((entry) => entry.name)).size).toBe(allCases.length)
-  const capabilities = { concurrentReaders: false }
+  const capabilities = { singleWriter: true, concurrentReaders: false }
   const supportedCases = allCases.filter((entry) => supportsCase(entry, capabilities))
   const results = await runConformance({
     capabilities,

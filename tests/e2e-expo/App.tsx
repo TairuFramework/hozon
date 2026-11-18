@@ -26,6 +26,7 @@ async function runConformancePhase(encryptionKey?: Uint8Array): Promise<Array<Co
   let count = 0
   let current: string | undefined
   const results = await runConformance({
+    capabilities: { singleWriter: true },
     async createAdapter() {
       current = `${prefix}case-${count++}.db`
       // A previous run may have been interrupted before cleanup.

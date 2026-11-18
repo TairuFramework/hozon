@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Adapter } from '@hozon/adapter'
+import type { ConformanceCapabilities } from '@hozon/conformance'
 import { NodeSQLiteAdapter, type SQLitePragmas } from '@hozon/node-sqlite'
 import { PostgresAdapter, type PostgresAdapterParams } from '@hozon/postgres'
 import postgres from 'postgres'
@@ -19,6 +20,7 @@ export type OpenOptions = {
 
 export type Backend = {
   name: BackendName
+  capabilities: ConformanceCapabilities
   /** Creates a fresh, empty database and opens an adapter on it. */
   createAdapter(options?: OpenOptions): Promise<Adapter>
   /** Opens another adapter on the database created last. */
@@ -96,6 +98,7 @@ function createNodeSQLiteBackend(): Backend {
   }
   return {
     name: 'node-sqlite',
+    capabilities: { singleWriter: true, concurrentReaders: false },
     async createAdapter(options) {
       const directory = await mkdtemp(join(tmpdir(), 'hozon-integration-'))
       directories.push(directory)
@@ -138,6 +141,7 @@ function createPostgresBackend(serverURL: string): Backend {
   }
   return {
     name: 'postgres',
+    capabilities: { concurrentReaders: true },
     async createAdapter(options) {
       const name = `hozon_test_${randomUUID().replaceAll('-', '')}`
       await getAdmin().unsafe(`CREATE DATABASE "${name}"`)

@@ -249,6 +249,7 @@ export const transactionContractCases: Array<ConformanceCase> = [
   },
   {
     name: 'transaction contract: queued writer waits, active tx proceeds',
+    capabilities: { singleWriter: true },
     async run(ctx) {
       const { db, root } = await setup(ctx)
       const entered = Promise.withResolvers<void>()
@@ -284,6 +285,7 @@ export const transactionContractCases: Array<ConformanceCase> = [
   },
   {
     name: 'transaction contract: autocommit queues separately and survives rollback',
+    capabilities: { singleWriter: true },
     async run(ctx) {
       const { db, root } = await setup(ctx)
       const entered = Promise.withResolvers<void>()

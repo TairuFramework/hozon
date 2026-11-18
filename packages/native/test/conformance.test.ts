@@ -13,7 +13,12 @@ const sqlite = {
 defineVitestSuite({
   name: 'Rust SQLite',
   createAdapter: async () => new NativeAdapter({ sqlite, database: ':memory:' }),
-  capabilities: { concurrentReaders: true, admissionControl: true, admissionExpiry: true },
+  capabilities: {
+    singleWriter: true,
+    concurrentReaders: true,
+    admissionControl: true,
+    admissionExpiry: true,
+  },
   admissionControl: async (adapter) => {
     const db = await (adapter as NativeAdapter).database
     if (!binding.admissionExpiry(db))

@@ -18,6 +18,7 @@ async function runConformancePhase(): Promise<Array<ConformanceResult>> {
   let count = 0
   let current: string | undefined
   return await runConformance({
+    capabilities: { singleWriter: true },
     async createAdapter() {
       current = `case-${count++}.sqlite3`
       return new SQLocalAdapter({ database: current })

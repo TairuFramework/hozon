@@ -39,6 +39,7 @@ async function runConformancePhase(): Promise<Array<ConformanceResult>> {
   const directory = await mkdtemp(path.join(tmpdir(), 'hozon-e2e-conformance-'))
   try {
     return await runConformance({
+      capabilities: { singleWriter: true },
       async createAdapter() {
         return new NodeSQLiteAdapter({ database: path.join(directory, `${randomUUID()}.db`) })
       },
