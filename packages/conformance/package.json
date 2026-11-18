@@ -32,8 +32,7 @@
     "@hozon/adapter": "workspace:^",
     "@hozon/db": "workspace:^",
     "@hozon/store-log": "workspace:^",
-    "@hozon/store-telemetry": "workspace:^",
-    "@sozai/async": "catalog:"
+    "@hozon/store-telemetry": "workspace:^"
   },
   "devDependencies": {
     "@hozon/node-sqlite": "workspace:^",

@@ -1,5 +1,4 @@
-import { type BatchLoader, withKeyLocks } from '@hozon/db'
-import { mapConcurrent } from '@sozai/async'
+import { type BatchLoader, type HozonDB, type StoreProvider, withKeyLocks } from '@hozon/db'
 
 import * as assert from '../assert.js'
 import type { CaseContext, ConformanceCase } from '../runner.js'
@@ -14,8 +13,9 @@ type RowsAPI = {
   loader: BatchLoader<string, string>
 }
 type Stores = { rows: RowsAPI }
+export type Fixture = { db: HozonDB; root: RowsAPI }
 
-async function setup(ctx: CaseContext) {
+async function setup(ctx: CaseContext): Promise<Fixture> {
   const db = ctx.db()
   db.register<Tables, RowsAPI>({
     name: 'rows',
@@ -59,19 +59,44 @@ async function setup(ctx: CaseContext) {
   return { db, root: await db.getStore<RowsAPI>('rows') }
 }
 
+// Observe real BEGIN calls without replacing their behavior.
+async function setupCountingBegins(ctx: CaseContext) {
+  const dialect = ctx.adapter.dialect
+  const createDriver = dialect.createDriver
+  let begins = 0
+  dialect.createDriver = function () {
+    const driver = createDriver.call(this)
+    const begin = driver.beginTransaction.bind(driver)
+    driver.beginTransaction = async (...args) => {
+      begins++
+      await begin(...args)
+    }
+    return driver
+  }
+  let fixture: Fixture
+  try {
+    fixture = await setup(ctx)
+  } finally {
+    dialect.createDriver = createDriver
+  }
+  begins = 0
+  return { fixture, beginCount: () => begins }
+}
+
 const turn = () => new Promise<void>((resolve) => setTimeout(resolve, 20))
 
 async function within<T>(promise: Promise<T>, label: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined
+  let cancel = () => {}
   try {
     return await Promise.race([
       promise,
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(`${label} blocked for 1000 ms`)), 1000)
+        const timer = setTimeout(() => reject(new Error(`${label} blocked for 1000 ms`)), 1000)
+        cancel = () => clearTimeout(timer)
       }),
     ])
   } finally {
-    clearTimeout(timer)
+    cancel()
   }
 }
 
@@ -114,19 +139,24 @@ export const transactionContractCases: Array<ConformanceCase> = [
   {
     name: 'transaction contract: nested provider runs inline',
     async run(ctx) {
-      const { db, root } = await setup(ctx)
+      const { fixture, beginCount } = await setupCountingBegins(ctx)
+      const { db, root } = fixture
       await assert.rejects(
         () =>
-          db.withTransaction<Stores, void>(async (tx) => {
-            await tx.withTransaction<Stores, void>(async (nested) => {
-              assert.equal(nested, tx)
-              await (await nested.getStore('rows')).insert('inner')
-            })
-            assert.deepEqual(await (await tx.getStore('rows')).list(), ['inner'])
-            throw new Error('outer rollback')
-          }),
+          within(
+            db.withTransaction<Stores, void>(async (tx) => {
+              await tx.withTransaction<Stores, void>(async (nested) => {
+                assert.equal(nested, tx)
+                await (await nested.getStore('rows')).insert('inner')
+              })
+              assert.deepEqual(await (await tx.getStore('rows')).list(), ['inner'])
+              throw new Error('outer rollback')
+            }),
+            'nested provider',
+          ),
         'outer rollback',
       )
+      assert.equal(beginCount(), 1)
       assert.deepEqual(await root.list(), [])
     },
   },
@@ -162,32 +192,15 @@ export const transactionContractCases: Array<ConformanceCase> = [
     (bound): ConformanceCase => ({
       name: `transaction contract: withKeyLocks on ${bound ? 'bound provider reuses it' : 'unbound provider opens one transaction'}`,
       async run(ctx) {
-        // Count real SQL transaction boundaries, without replacing their behavior.
-        const dialect = ctx.adapter.dialect
-        const createDriver = dialect.createDriver
-        let begins = 0
-        dialect.createDriver = function () {
-          const driver = createDriver.call(this)
-          const begin = driver.beginTransaction.bind(driver)
-          driver.beginTransaction = async (...args) => {
-            begins++
-            await begin(...args)
-          }
-          return driver
-        }
-        let fixture: Awaited<ReturnType<typeof setup>>
-        try {
-          fixture = await setup(ctx)
-        } finally {
-          dialect.createDriver = createDriver
-        }
+        const { fixture, beginCount } = await setupCountingBegins(ctx)
         const { db, root } = fixture
-        begins = 0
-        const lock = async (provider: Parameters<typeof withKeyLocks>[0]) => {
+        const lock = async (provider: StoreProvider, rollback = false) => {
           await withKeyLocks(provider, 'contract_rows', [['a'], ['b']], async (locked) => {
             assert.equal(locked.isTransactionBound, true)
             if (bound) assert.equal(locked.transactionRoot, provider.transactionRoot)
-            await (await (locked.getStore('rows') as Promise<RowsAPI>)).insert('locked')
+            const scoped = locked as StoreProvider<Stores>
+            await (await scoped.getStore('rows')).insert(rollback ? 'rolled-back' : 'locked')
+            if (rollback) throw new Error('locked rollback')
           })
         }
         if (bound) {
@@ -195,7 +208,7 @@ export const transactionContractCases: Array<ConformanceCase> = [
             () =>
               db.withTransaction(async (tx) => {
                 await lock(tx)
-                assert.equal(begins, 1)
+                assert.equal(beginCount(), 1)
                 throw new Error('locked rollback')
               }),
             'locked rollback',
@@ -205,7 +218,12 @@ export const transactionContractCases: Array<ConformanceCase> = [
           await lock(db)
           assert.deepEqual(await root.list(), ['locked'])
         }
-        assert.equal(begins, 1)
+        assert.equal(beginCount(), 1)
+        if (!bound) {
+          await assert.rejects(() => lock(db, true), 'locked rollback')
+          assert.equal(beginCount(), 2)
+          assert.deepEqual(await root.list(), ['locked'])
+        }
       },
     }),
   ),
@@ -228,7 +246,7 @@ export const transactionContractCases: Array<ConformanceCase> = [
         })
       } finally {
         // On failure the callback rolls back, freeing a queued single-connection read.
-        await outside
+        if (outside) await within(outside, 'outside reader cleanup')
       }
       assert.deepEqual(await root.read('x'), updated)
     },
@@ -244,20 +262,19 @@ export const transactionContractCases: Array<ConformanceCase> = [
             const rows = await tx.getStore('rows')
             const written = Promise.withResolvers<void>()
             let count = 0
-            await mapConcurrent(
-              ids,
-              async (id) => {
+            await Promise.all(
+              ids.map(async (id) => {
                 await rows.insert(id)
                 if (++count === 10) written.resolve()
                 await written.promise
                 if (rollback && id === 'branch-9') throw new Error('branch failed')
-              },
-              { limit: 10 },
+              }),
             )
             assert.deepEqual(await rows.list(), ids)
           })
-        if (rollback) await assert.rejects(run, 'branch failed')
-        else await run()
+        if (rollback)
+          await assert.rejects(() => within(run(), 'concurrent branches'), 'branch failed')
+        else await within(run(), 'concurrent branches')
         assert.deepEqual(await root.list(), rollback ? [] : ids)
       },
     }),
@@ -298,7 +315,7 @@ export const transactionContractCases: Array<ConformanceCase> = [
           assert.deepEqual(await within(outside, 'outside reader'), ['committed'])
         })
       } finally {
-        await outside
+        if (outside) await within(outside, 'outside reader cleanup')
       }
       assert.deepEqual(await root.list(), ['committed', 'pending'])
     },
