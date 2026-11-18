@@ -176,7 +176,7 @@ export function queryMode(compiled: CompiledQuery): 'read' | 'write' {
   return 'write'
 }
 
-class NativeConnection implements DatabaseConnection {
+export class NativeConnection implements DatabaseConnection {
   txID: TxID | null = null
   commitFailure: { error: unknown } | undefined
   #sqlite: NativeSQLite

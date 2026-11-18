@@ -1,6 +1,12 @@
-import { AbstractSQLiteAdapter, type NativeDBHandle, type NativeSQLite } from '@hozon/adapter'
+import {
+  AbstractSQLiteAdapter,
+  type NativeDBHandle,
+  type NativeSQLite,
+  type NativeTransactionRef,
+} from '@hozon/adapter'
+import type { DatabaseConnection } from 'kysely'
 
-import { NativeDialect } from './driver.js'
+import { NativeConnection, NativeDialect } from './driver.js'
 
 export type { NativePendingAdmission, NativeSQLite } from '@hozon/adapter'
 
@@ -54,6 +60,11 @@ export class NativeAdapter extends AbstractSQLiteAdapter {
   }
   get dialect(): NativeDialect {
     return this.#dialect
+  }
+  nativeTransactionOf(connection: DatabaseConnection): NativeTransactionRef | null {
+    return connection instanceof NativeConnection && connection.txID !== null
+      ? { database: connection.database, txID: connection.txID }
+      : null
   }
   #close: () => Promise<void>
   close(): Promise<void> {
