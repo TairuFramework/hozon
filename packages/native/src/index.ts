@@ -2,7 +2,7 @@ import { AbstractSQLiteAdapter, type NativeDBHandle, type NativeSQLite } from '@
 
 import { NativeDialect } from './driver.js'
 
-export type { NativeSQLite } from '@hozon/adapter'
+export type { NativePendingAdmission, NativeSQLite } from '@hozon/adapter'
 
 export { NativeDialect, NativeDriver } from './driver.js'
 export { serialize } from './serialize.js'

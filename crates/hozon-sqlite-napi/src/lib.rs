@@ -128,62 +128,94 @@ fn completion<T: Send + 'static>(
         Err(error) => deferred.reject(engine_error(error)),
     })
 }
+enum Submission<T> {
+    Pending { admission_id: u64, granted: T },
+    Promise(T),
+}
+
+fn submission<T>(
+    is_begin: bool,
+    promise: T,
+    reject: impl FnOnce(&'static str),
+    dispatch: impl FnOnce(&mut Option<u64>),
+) -> Submission<T> {
+    let mut admission_id = None;
+    if catch_unwind(AssertUnwindSafe(|| dispatch(&mut admission_id))).is_err() {
+        reject("HOZON_PANIC: engine submission panicked");
+    }
+    if is_begin {
+        Submission::Pending {
+            // Submission can panic before assigning an ID. Zero is never allocated;
+            // abandoning it is a no-op, while granted carries the panic rejection.
+            admission_id: admission_id.unwrap_or(0),
+            granted: promise,
+        }
+    } else {
+        Submission::Promise(promise)
+    }
+}
+
 fn submit(env: Env, command: Command) -> Result<Object<'static>> {
     let (deferred, promise) = env.create_deferred::<Resolved, Resolver>()?;
     // The JS handle is returned immediately in this callback's handle scope.
     // SAFETY: this aliases the live promise in the current JS handle scope;
     // it is returned immediately, never retained or used on an engine thread.
     let promise = Object::from_raw(env.raw(), promise.raw());
-    let mut admission_id = None;
+    let is_begin = matches!(&command, Command::Begin(..));
     let failure = deferred.clone();
-    if catch_unwind(AssertUnwindSafe(|| {
-        let r = registry();
-        match command {
-            Command::Open(path, options) => {
-                r.open_async(path, options, completion(deferred, Output::Handle))
-            }
-            Command::Close(db) => r.close_async(db, completion(deferred, |_| Output::Unit)),
-            Command::Begin(db, timeout, label) => {
-                admission_id = Some(r.begin_write_pending_labeled_async(
+    let result = submission(
+        is_begin,
+        promise,
+        |error| failure.reject(Error::from_reason(error)),
+        |admission_id| {
+            let r = registry();
+            match command {
+                Command::Open(path, options) => {
+                    r.open_async(path, options, completion(deferred, Output::Handle))
+                }
+                Command::Close(db) => r.close_async(db, completion(deferred, |_| Output::Unit)),
+                Command::Begin(db, timeout, label) => {
+                    *admission_id = Some(r.begin_write_pending_labeled_async(
+                        db,
+                        timeout,
+                        label,
+                        completion(deferred, Output::Admission),
+                    ));
+                }
+                Command::Abandon(db, admission) => {
+                    r.abandon_async(db, admission, completion(deferred, |_| Output::Unit))
+                }
+                Command::Commit(db, tx) => {
+                    r.commit_async(db, tx, completion(deferred, |_| Output::Unit))
+                }
+                Command::Rollback(db, tx) => {
+                    r.rollback_async(db, tx, completion(deferred, |_| Output::Unit))
+                }
+                Command::Execute(db, tx, sql, params, mode) => r.execute_async(
                     db,
-                    timeout,
-                    label,
-                    completion(deferred, Output::Admission),
-                ));
+                    tx,
+                    &sql,
+                    &params,
+                    mode,
+                    completion(deferred, Output::Query),
+                ),
             }
-            Command::Abandon(db, admission) => {
-                r.abandon_async(db, admission, completion(deferred, |_| Output::Unit))
-            }
-            Command::Commit(db, tx) => {
-                r.commit_async(db, tx, completion(deferred, |_| Output::Unit))
-            }
-            Command::Rollback(db, tx) => {
-                r.rollback_async(db, tx, completion(deferred, |_| Output::Unit))
-            }
-            Command::Execute(db, tx, sql, params, mode) => r.execute_async(
-                db,
-                tx,
-                &sql,
-                &params,
-                mode,
-                completion(deferred, Output::Query),
-            ),
+        },
+    );
+    match result {
+        Submission::Pending {
+            admission_id,
+            granted,
+        } => {
+            let mut pending = Object::new(&env)?;
+            pending.set("admissionID", admission_id.to_string())?;
+            pending.set("granted", granted)?;
+            Ok(pending)
         }
-    }))
-    .is_err()
-    {
-        failure.reject(Error::from_reason(
-            "HOZON_PANIC: engine submission panicked",
-        ));
+        Submission::Promise(promise) => Ok(promise),
     }
-    if let Some(id) = admission_id {
-        let mut pending = Object::new(&env)?;
-        pending.set("admissionID", id.to_string())?;
-        pending.set("granted", promise)?;
-        return Ok(pending);
-    }
-    Ok(promise)
 }
+
 pub struct Resolved(Output);
 impl TypeName for Resolved {
     fn type_name() -> &'static str {
@@ -353,4 +385,31 @@ pub fn execute(
 #[napi]
 pub fn sqlite_version() -> String {
     hozon_sqlite::sqlite_version().to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn begin_submission_panic_rejects_granted_with_hozon_panic() {
+        let (reject, promise) = mpsc::channel::<std::result::Result<(), &'static str>>();
+        let result = submission(
+            true,
+            promise,
+            |error| reject.send(Err(error)).unwrap(),
+            |_| panic!("injected submission panic"),
+        );
+        let Submission::Pending {
+            admission_id,
+            granted,
+        } = result
+        else {
+            panic!("begin must return a pending admission even when submission panics");
+        };
+        assert_eq!(admission_id, 0);
+        let error = granted.recv().unwrap().unwrap_err();
+        assert!(error.starts_with("HOZON_PANIC:"), "{error}");
+    }
 }

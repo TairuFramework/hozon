@@ -2,6 +2,7 @@ export type {
   NativeAdmission,
   NativeDBHandle,
   NativeOpenOptions,
+  NativePendingAdmission,
   NativeResult,
   NativeSQLite,
   NativeValue,
