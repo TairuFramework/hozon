@@ -79,6 +79,9 @@ pub(crate) struct Engine {
     pub finished: AtomicBool,
 }
 impl Engine {
+    pub fn admission_expiry(&self) -> bool {
+        self.options.expire_admissions
+    }
     pub fn open(path: &str, memory: bool, options: OpenOptions) -> Result<Self> {
         let temporary = if memory {
             Some(TemporaryDatabase::new()?)

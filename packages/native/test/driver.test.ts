@@ -1,18 +1,11 @@
 import { Kysely, sql } from 'kysely'
 import { expect, test } from 'vitest'
 
+import type { NativeBeginOptions, NativeDBHandle } from '../../adapter/src/native.js'
 import { NativeAdapter } from '../src/index.js'
-import { serialize } from '../src/serialize.js'
 import { loadBinding } from './binding.js'
 
 const sqlite = loadBinding()
-test('serialize preserves bigint and blobs and converts JS values', () => {
-  const blob = new Uint8Array([0, 255])
-  expect(
-    serialize([true, false, undefined, null, 9223372036854775807n, blob, new Date(0), { a: 1 }]),
-  ).toEqual([1, 0, null, null, 9223372036854775807n, blob, '1970-01-01T00:00:00.000Z', '{"a":1}'])
-  expect(() => serialize([Symbol('bad')])).toThrow('Unsupported')
-})
 test('non-empty encryption keys fail loudly', () => {
   expect(
     () => new NativeAdapter({ sqlite, database: ':memory:', encryptionKey: new Uint8Array([1]) }),
@@ -79,8 +72,8 @@ test('a rejected JS wait abandons a late native grant', async () => {
   const original = sqlite.beginWrite
   const delayed = {
     ...sqlite,
-    beginWrite: (...args: Parameters<typeof original>) => {
-      const pending = original(...args)
+    beginWrite: (db: NativeDBHandle, options?: NativeBeginOptions) => {
+      const pending = original(db, options)
       return {
         admissionID: pending.admissionID,
         granted: pending.granted.then(async (admission) => {

@@ -146,7 +146,7 @@ export const transactionContractCases: Array<ConformanceCase> = [
   },
   {
     name: 'transaction contract: admission timeout diagnoses caller and holder',
-    capabilities: { admissionControl: true },
+    capabilities: { admissionControl: true, admissionExpiry: true },
     async run(ctx) {
       assert.ok(ctx.admissionControl)
       const { sqlite, db, timeoutMs } = await ctx.admissionControl(ctx.adapter)
@@ -210,7 +210,7 @@ export const transactionContractCases: Array<ConformanceCase> = [
   },
   {
     name: 'transaction contract: admission expiry and grant are exclusive under race',
-    capabilities: { admissionControl: true },
+    capabilities: { admissionControl: true, admissionExpiry: true },
     async run(ctx) {
       assert.ok(ctx.admissionControl)
       const { sqlite, db, timeoutMs } = await ctx.admissionControl(ctx.adapter)

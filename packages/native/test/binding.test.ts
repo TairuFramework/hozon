@@ -6,7 +6,12 @@ import { expect, test } from 'vitest'
 import { loadBinding } from './binding.js'
 
 const sqlite = loadBinding()
-const options = { readers: 4, busyTimeoutMs: 5000, journalMode: 'wal' } as const
+const options = {
+  readers: 4,
+  busyTimeoutMs: 5000,
+  journalMode: 'wal',
+  expireAdmissions: true,
+} as const
 
 test('boundary validates handles, mode, bigint range and unsafe numbers', async () => {
   const db = await sqlite.open(':memory:', options)
@@ -191,3 +196,50 @@ test('beginWrite synchronously returns a cancellable pending admission object', 
     await sqlite.close(db)
   }
 })
+
+test('invalid begin input rejects granted while preserving pending shape', async () => {
+  for (const [db, options] of [
+    ['bad', undefined],
+    ['0', { timeoutMs: -1 }],
+    ['0', { timeoutMs: 0.5 }],
+  ] as const) {
+    const pending = sqlite.beginWrite(db, options)
+    expect(typeof pending.admissionID).toBe('string')
+    await expect(pending.granted).rejects.toThrow('HOZON_INVALID_INPUT')
+  }
+})
+
+test.each([true, false])(
+  'explicit admission expiry %s overrides build default',
+  async (expireAdmissions) => {
+    const db = await sqlite.open(':memory:', {
+      readers: 2,
+      busyTimeoutMs: 100,
+      journalMode: 'wal',
+      expireAdmissions,
+    })
+    expect(sqlite.admissionExpiry(db)).toBe(expireAdmissions)
+    const holder = await sqlite.beginWrite(db).granted
+    const pending = sqlite.beginWrite(db, { timeoutMs: 20 })
+    const outcome = pending.granted.then(
+      () => 'granted',
+      (error: Error) => error.message,
+    )
+    try {
+      if (expireAdmissions) expect(await outcome).toContain('HOZON_ADMISSION_EXPIRED')
+      else {
+        expect(
+          await Promise.race([
+            outcome,
+            new Promise((resolve) => setTimeout(() => resolve('pending'), 60)),
+          ]),
+        ).toBe('pending')
+        await sqlite.abandon(db, pending.admissionID)
+        await outcome
+      }
+    } finally {
+      await sqlite.rollback(db, holder.txID)
+      await sqlite.close(db)
+    }
+  },
+)

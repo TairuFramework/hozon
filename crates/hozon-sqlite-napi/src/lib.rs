@@ -45,6 +45,7 @@ pub struct NativeOpenOptions {
     pub readers: f64,
     pub busy_timeout_ms: f64,
     pub journal_mode: String,
+    pub expire_admissions: Option<bool>,
 }
 #[napi(object)]
 pub struct BeginOptions {
@@ -54,7 +55,7 @@ pub struct BeginOptions {
 enum Command {
     Open(String, OpenOptions),
     Close(u64),
-    Begin(u64, Option<Duration>, Option<String>),
+    Begin(String, Option<f64>, Option<String>),
     Abandon(u64, u64),
     Commit(u64, u64),
     Rollback(u64, u64),
@@ -180,6 +181,19 @@ fn submit(env: Env, command: Command) -> Result<Object<'static>> {
                 }
                 Command::Close(db) => r.close_async(db, completion(deferred, |_| Output::Unit)),
                 Command::Begin(db, timeout, label) => {
+                    let validated = id(&db).and_then(|db| {
+                        timeout
+                            .map(milliseconds)
+                            .transpose()
+                            .map(|timeout| (db, timeout))
+                    });
+                    let (db, timeout) = match validated {
+                        Ok(value) => value,
+                        Err(error) => {
+                            deferred.reject(error);
+                            return;
+                        }
+                    };
                     *admission_id = Some(r.begin_write_pending_labeled_async(
                         db,
                         timeout,
@@ -288,10 +302,16 @@ pub fn open(env: Env, path: String, options: NativeOpenOptions) -> Result<Object
             OpenOptions {
                 readers: options.readers as usize,
                 busy_timeout,
+                expire_admissions: options.expire_admissions.unwrap_or(cfg!(debug_assertions)),
                 ..OpenOptions::default()
             },
         ),
     )
+}
+/// Reports the actual expiry policy of an open database, including explicit overrides.
+#[napi]
+pub fn admission_expiry(db: String) -> Result<bool> {
+    registry().admission_expiry(id(&db)?).map_err(engine_error)
 }
 #[napi]
 pub fn close(env: Env, db: String) -> Result<Object<'static>> {
@@ -299,16 +319,13 @@ pub fn close(env: Env, db: String) -> Result<Object<'static>> {
 }
 #[napi]
 pub fn begin_write(env: Env, db: String, options: Option<BeginOptions>) -> Result<Object<'static>> {
-    let timeout = options
-        .and_then(|o| o.timeout_ms)
-        .map(milliseconds)
-        .transpose()?;
+    let timeout = options.and_then(|o| o.timeout_ms);
     // Capture at the JS boundary, before the worker starts waiting.
     let error: Function<(), Object> = env.get_global()?.get_named_property("Error")?;
     let label = error
         .call(())?
         .get_named_property::<Option<String>>("stack")?;
-    submit(env, Command::Begin(id(&db)?, timeout, label))
+    submit(env, Command::Begin(db, timeout, label))
 }
 #[napi]
 pub fn abandon(env: Env, db: String, admission_id: String) -> Result<Object<'static>> {

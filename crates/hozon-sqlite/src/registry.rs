@@ -145,6 +145,30 @@ impl Registry {
     fn engine(&self, db: DBID) -> Result<Arc<Engine>> {
         lock(&self.databases).get(&db).cloned().ok_or(Error::Closed)
     }
+    /// Whether this open database expires queued admissions.
+    pub fn admission_expiry(&self, db: DBID) -> Result<bool> {
+        Ok(self.engine(db)?.admission_expiry())
+    }
+    /// Close all databases present when the control thread reaches this barrier.
+    pub fn close_all_async(&self, callback: Callback<()>) {
+        let registry = self.clone();
+        let reply = Completion::new(callback);
+        dispatch(Box::new(move || {
+            let engines: Vec<_> = lock(&registry.databases)
+                .drain()
+                .map(|(_, engine)| engine)
+                .collect();
+            let mut result = Ok(());
+            for engine in engines {
+                if let Err(error) = engine.close()
+                    && result.is_ok()
+                {
+                    result = Err(error);
+                }
+            }
+            reply.complete(result);
+        }));
+    }
     pub fn close(&self, db: DBID) -> Result<()> {
         wait(|cb| self.close_async(db, cb))
     }

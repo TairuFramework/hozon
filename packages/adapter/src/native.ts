@@ -30,12 +30,19 @@ export type NativeOpenOptions = {
   readers: number
   busyTimeoutMs: number
   journalMode: 'wal'
+  /** Diagnose queued admissions after 10 s (or the requested timeout).
+   * Defaults to true in napi debug builds and false in release builds.
+   * Mobile hosts should explicitly select their development policy.
+   */
+  expireAdmissions?: boolean
 }
+
+export type NativeBeginOptions = { timeoutMs?: number }
 
 export type NativeSQLite = {
   open(path: string, options: NativeOpenOptions): Promise<NativeDBHandle>
   close(db: NativeDBHandle): Promise<void>
-  beginWrite(db: NativeDBHandle, options?: { timeoutMs?: number }): NativePendingAdmission
+  beginWrite(db: NativeDBHandle, options?: NativeBeginOptions): NativePendingAdmission
   abandon(db: NativeDBHandle, admissionID: string): Promise<void>
   commit(db: NativeDBHandle, txID: TxID): Promise<void>
   rollback(db: NativeDBHandle, txID: TxID): Promise<void>

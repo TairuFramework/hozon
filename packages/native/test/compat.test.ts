@@ -37,7 +37,12 @@ async function stopChild(child: ChildProcess) {
   })
 }
 
-async function open(kind: Kind, path: string, defaults = false) {
+export type CompatDB = {
+  query(sql: string, parameters?: Array<unknown>): Promise<Array<Row>>
+  close(): Promise<void>
+}
+
+async function open(kind: Kind, path: string, defaults = false): Promise<CompatDB> {
   const adapter =
     kind === 'native'
       ? new NativeAdapter({ sqlite, database: path, readers: 2, busyTimeoutMs })
@@ -66,11 +71,7 @@ async function open(kind: Kind, path: string, defaults = false) {
   }
 }
 
-async function withDB<T>(
-  kind: Kind,
-  path: string,
-  run: (db: Awaited<ReturnType<typeof open>>) => Promise<T>,
-) {
+async function withDB<T>(kind: Kind, path: string, run: (db: CompatDB) => Promise<T>) {
   const db = await open(kind, path)
   try {
     return await run(db)
