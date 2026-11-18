@@ -1,6 +1,7 @@
 use crate::{
     Admission, AdmissionID, Error, Mode, OpenOptions, QueryResult, Result, Stats, TxID, Value,
-    admission::{Holder, Pending},
+    admission::{AdmissionWork, Holder, Pending},
+    completion::{Completion, dispatch},
     reader::{ReaderPool, connect, lock},
     value,
 };
@@ -9,7 +10,6 @@ use std::{
     sync::{
         Arc, Condvar, Mutex,
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-        mpsc::{self, Sender},
     },
     thread::{self, JoinHandle},
     time::Duration,
@@ -26,26 +26,26 @@ enum Command {
         sql: String,
         params: Vec<Value>,
         mode: Mode,
-        reply: Sender<Result<QueryResult>>,
+        reply: Completion<QueryResult>,
     },
     Finish {
         tx: TxID,
         commit: bool,
-        reply: Sender<Result<()>>,
+        reply: Completion<()>,
     },
     Abandon {
         id: AdmissionID,
-        reply: Sender<Result<()>>,
+        reply: Completion<()>,
     },
 }
 impl Command {
-    fn fail(self) {
+    fn fail(self, error: Error) {
         match self {
             Self::Execute { reply, .. } => {
-                let _ = reply.send(Err(Error::Closed));
+                reply.complete(Err(error));
             }
             Self::Finish { reply, .. } | Self::Abandon { reply, .. } => {
-                let _ = reply.send(Err(Error::Closed));
+                reply.complete(Err(error));
             }
         }
     }
@@ -59,6 +59,7 @@ struct State {
 }
 struct Shared {
     closed: AtomicBool,
+    failed: AtomicBool,
     pending: AtomicUsize,
     warnings: AtomicU64,
     state: Mutex<State>,
@@ -69,7 +70,7 @@ pub(crate) struct Engine {
     readers: Arc<ReaderPool>,
     worker: Mutex<Option<JoinHandle<Result<()>>>>,
     options: OpenOptions,
-    interrupt: rusqlite::InterruptHandle,
+    interrupt: Arc<rusqlite::InterruptHandle>,
     temporary: Option<TemporaryDatabase>,
     pub finished: AtomicBool,
 }
@@ -86,10 +87,10 @@ impl Engine {
                 .ok_or_else(|| Error::InvalidInput("temporary path must be UTF-8".into()))
         })?;
         let connection = connect(path, &options)?;
-        let interrupt = connection.get_interrupt_handle();
-        let readers = Arc::new(ReaderPool::new(path, &options)?);
+        let interrupt = Arc::new(connection.get_interrupt_handle());
         let shared = Arc::new(Shared {
             closed: AtomicBool::new(false),
+            failed: AtomicBool::new(false),
             pending: AtomicUsize::new(0),
             warnings: AtomicU64::new(0),
             state: Mutex::new(State {
@@ -101,12 +102,19 @@ impl Engine {
             }),
             ready: Condvar::new(),
         });
+        let failure_shared = shared.clone();
+        let readers = Arc::new(ReaderPool::new(
+            path,
+            &options,
+            Arc::new(move || shutdown(&failure_shared, true)),
+        )?);
         let worker_shared = shared.clone();
         let worker_readers = readers.clone();
         let worker_options = options.clone();
         let worker = thread::Builder::new()
             .name("hozon-sqlite-writer".into())
             .spawn(move || {
+                crate::completion::enter_engine_thread();
                 let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     run(
                         connection,
@@ -116,7 +124,10 @@ impl Engine {
                     )
                 }))
                 .unwrap_or(Err(Error::WorkerStopped));
-                shutdown(&worker_shared);
+                if result.is_err() {
+                    worker_readers.fail();
+                }
+                shutdown(&worker_shared, result.is_err());
                 worker_readers.close();
                 result
             })?;
@@ -130,84 +141,85 @@ impl Engine {
             finished: AtomicBool::new(false),
         })
     }
-    pub fn begin(&self, timeout: Option<Duration>, label: Option<String>) -> Result<Admission> {
-        let (reply, receiver) = mpsc::channel();
-        {
-            let mut state = lock(&self.shared.state);
-            if self.shared.closed.load(Ordering::Acquire) {
-                return Err(Error::Closed);
-            }
-            state.pending.push_back(Pending {
-                id: next_id(),
-                started: self.options.clock.now(),
-                timeout: timeout.unwrap_or(Duration::from_secs(10)),
-                label,
-                warned: false,
-                reply,
-            });
-            self.shared.pending.fetch_add(1, Ordering::Release);
-            self.shared.ready.notify_one();
-        }
-        receiver.recv().map_err(|_| Error::WorkerStopped)?
+    pub fn begin(
+        &self,
+        timeout: Option<Duration>,
+        label: Option<String>,
+        reply: Completion<Admission>,
+    ) {
+        self.admit(timeout, label, AdmissionWork::Begin(reply));
     }
-    fn send(&self, command: Command) -> Result<()> {
+    fn admit(&self, timeout: Option<Duration>, label: Option<String>, reply: AdmissionWork) {
+        // A custom clock may panic. Keep the completion outside the state lock until
+        // all caller-side validation has finished, so its unwind guard can settle it.
+        let started = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.options.clock.now()
+        })) {
+            Ok(now) => now,
+            Err(_) => {
+                reply.fail_async(Error::WorkerStopped);
+                return;
+            }
+        };
         let mut state = lock(&self.shared.state);
         if self.shared.closed.load(Ordering::Acquire) {
-            return Err(Error::Closed);
+            drop(state);
+            reply.fail_async(terminal_error(&self.shared));
+            return;
+        }
+        state.pending.push_back(Pending {
+            id: next_id(),
+            started,
+            timeout: timeout.unwrap_or(Duration::from_secs(10)),
+            label,
+            warned: false,
+            reply,
+        });
+        self.shared.pending.fetch_add(1, Ordering::Release);
+        self.shared.ready.notify_one();
+    }
+    fn send(&self, command: Command) {
+        let mut state = lock(&self.shared.state);
+        if self.shared.closed.load(Ordering::Acquire) {
+            drop(state);
+            let error = terminal_error(&self.shared);
+            dispatch(Box::new(move || command.fail(error)));
+            return;
         }
         state.commands.push_back(command);
         self.shared.ready.notify_one();
-        Ok(())
     }
     pub fn execute(
         &self,
         tx: Option<TxID>,
-        sql: &str,
-        params: &[Value],
+        sql: String,
+        params: Vec<Value>,
         mode: Mode,
-    ) -> Result<QueryResult> {
+        reply: Completion<QueryResult>,
+    ) {
         if let Some(tx) = tx {
-            let (reply, receiver) = mpsc::channel();
             self.send(Command::Execute {
                 tx,
-                sql: sql.into(),
-                params: params.to_vec(),
+                sql,
+                params,
                 mode,
                 reply,
-            })?;
-            receiver.recv().map_err(|_| Error::WorkerStopped)?
+            });
         } else if mode == Mode::Read {
             if self.shared.closed.load(Ordering::Acquire) {
-                return Err(Error::Closed);
+                reply.fail_async(terminal_error(&self.shared));
+            } else {
+                self.readers.execute(sql, params, reply);
             }
-            self.readers.execute(sql, params)
         } else {
-            let admission = self.begin(None, None)?;
-            let result = self.execute(Some(admission.tx_id), sql, params, mode);
-            match result {
-                Ok(result) => {
-                    if let Err(error) = self.finish(admission.tx_id, true) {
-                        let _ = self.finish(admission.tx_id, false);
-                        return Err(error);
-                    }
-                    Ok(result)
-                }
-                Err(error) => {
-                    let _ = self.finish(admission.tx_id, false);
-                    Err(error)
-                }
-            }
+            self.admit(None, None, AdmissionWork::Execute { sql, params, reply });
         }
     }
-    pub fn finish(&self, tx: TxID, commit: bool) -> Result<()> {
-        let (reply, receiver) = mpsc::channel();
-        self.send(Command::Finish { tx, commit, reply })?;
-        receiver.recv().map_err(|_| Error::WorkerStopped)?
+    pub fn finish(&self, tx: TxID, commit: bool, reply: Completion<()>) {
+        self.send(Command::Finish { tx, commit, reply });
     }
-    pub fn abandon(&self, id: AdmissionID) -> Result<()> {
-        let (reply, receiver) = mpsc::channel();
-        self.send(Command::Abandon { id, reply })?;
-        receiver.recv().map_err(|_| Error::WorkerStopped)?
+    pub fn abandon(&self, id: AdmissionID, reply: Completion<()>) {
+        self.send(Command::Abandon { id, reply });
     }
     pub fn stats(&self) -> Stats {
         Stats {
@@ -221,7 +233,7 @@ impl Engine {
         let Some(handle) = worker.take() else {
             return Ok(());
         };
-        shutdown(&self.shared);
+        shutdown(&self.shared, false);
         // Repeat interrupts to cover a statement starting just after the close signal.
         while !handle.is_finished() {
             {
@@ -246,11 +258,49 @@ impl Engine {
 }
 impl Drop for Engine {
     fn drop(&mut self) {
-        let _ = self.close();
+        let own_worker = lock(&self.worker)
+            .as_ref()
+            .is_some_and(|handle| handle.thread().id() == thread::current().id());
+        if own_worker || thread::current().name() == Some("hozon-sqlite-reader") {
+            let handle = lock(&self.worker).take();
+            let shared = self.shared.clone();
+            let readers = self.readers.clone();
+            let temporary = self.temporary.take();
+            let interrupt = self.interrupt.clone();
+            dispatch(Box::new(move || {
+                shutdown(&shared, false);
+                readers.interrupt();
+                if let Some(handle) = handle {
+                    while !handle.is_finished() {
+                        if !lock(&shared.state).stopping {
+                            interrupt.interrupt();
+                        }
+                        readers.interrupt();
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    let _ = handle.join();
+                }
+                drop(temporary);
+            }));
+        } else {
+            let _ = self.close();
+        }
+    }
+}
+fn terminal_error(shared: &Shared) -> Error {
+    if shared.failed.load(Ordering::Acquire) {
+        Error::WorkerStopped
+    } else {
+        Error::Closed
     }
 }
 
-fn expire(state: &mut State, shared: &Shared, options: &OpenOptions) {
+fn expire(
+    state: &mut State,
+    shared: &Shared,
+    options: &OpenOptions,
+) -> Vec<(AdmissionWork, Error)> {
+    let mut expired = Vec::new();
     let now = options.clock.now();
     let mut index = 0;
     while index < state.pending.len() {
@@ -262,14 +312,17 @@ fn expire(state: &mut State, shared: &Shared, options: &OpenOptions) {
         if options.expire_admissions {
             if let Some(pending) = state.pending.remove(index) {
                 shared.pending.fetch_sub(1, Ordering::Release);
-                let _ = pending.reply.send(Err(Error::AdmissionExpired {
-                    admission_id: pending.id,
-                    caller_label: pending.label,
-                    holder_label: state
-                        .holder
-                        .as_ref()
-                        .and_then(|holder| holder.label.clone()),
-                }));
+                expired.push((
+                    pending.reply,
+                    Error::AdmissionExpired {
+                        admission_id: pending.id,
+                        caller_label: pending.label,
+                        holder_label: state
+                            .holder
+                            .as_ref()
+                            .and_then(|holder| holder.label.clone()),
+                    },
+                ));
             }
         } else {
             if !pending.warned {
@@ -288,6 +341,7 @@ fn expire(state: &mut State, shared: &Shared, options: &OpenOptions) {
             index += 1;
         }
     }
+    expired
 }
 
 fn run(
@@ -307,21 +361,21 @@ fn run(
             }
             connection.flush_prepared_statement_cache();
             {
-                let checkpoint =
-                    connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
-                        Ok((
-                            row.get::<_, i64>(0)?,
-                            row.get::<_, i64>(1)?,
-                            row.get::<_, i64>(2)?,
-                        ))
-                    });
+                let checkpoint = checkpoint(&connection);
                 if !matches!(checkpoint, Ok((0, _, _))) {
                     eprintln!("hozon-sqlite: WAL checkpoint incomplete on close: {checkpoint:?}");
                 }
             }
             return connection.close().map_err(|(_, error)| error.into());
         }
-        expire(&mut state, &shared, &options);
+        let expired = expire(&mut state, &shared, &options);
+        if !expired.is_empty() {
+            drop(state);
+            for (reply, error) in expired {
+                reply.fail(error);
+            }
+            continue;
+        }
         // Admissions never occupy this command queue, so the holder can always finish.
         if let Some(command) = state.commands.pop_front() {
             drop(state);
@@ -337,13 +391,15 @@ fn run(
             let result = connection.execute_batch("BEGIN IMMEDIATE");
             let mut state = lock(&shared.state);
             // Expiry and grant are decided together after SQLite returns.
-            expire(&mut state, &shared, &options);
+            let expired = expire(&mut state, &shared, &options);
             let granting = state.granting.take();
             let pending = state
                 .pending
                 .iter()
                 .position(|pending| Some(pending.id) == granting)
                 .and_then(|index| state.pending.remove(index));
+            let mut granted = None;
+            let mut failed = None;
             if let Some(pending) = pending {
                 shared.pending.fetch_sub(1, Ordering::Release);
                 match result {
@@ -356,20 +412,41 @@ fn run(
                             admission,
                             label: pending.label,
                         });
-                        if pending.reply.send(Ok(admission)).is_ok() {
-                            continue;
-                        }
-                        state.holder = None;
+                        granted = Some((pending.reply, admission));
                     }
-                    Ok(()) => {
-                        let _ = pending.reply.send(Err(Error::Closed));
-                    }
-                    Err(error) => {
-                        let _ = pending.reply.send(Err(error.into()));
-                    }
+                    Ok(()) => failed = Some((pending.reply, terminal_error(&shared))),
+                    Err(error) => failed = Some((pending.reply, error.into())),
                 }
             }
             drop(state);
+            for (reply, error) in expired {
+                reply.fail(error);
+            }
+            if let Some((reply, admission)) = granted {
+                match reply {
+                    AdmissionWork::Begin(reply) => reply.complete(Ok(admission)),
+                    AdmissionWork::Execute { sql, params, reply } => {
+                        let mut result = value::execute(&connection, &sql, &params, Mode::Write);
+                        if result.is_ok()
+                            && let Err(error) = connection.execute_batch("COMMIT")
+                        {
+                            result = Err(error.into());
+                        }
+                        if !connection.is_autocommit() {
+                            let _ = connection.execute_batch("ROLLBACK");
+                        }
+                        release_if_finished(&connection, &shared);
+                        if shared.closed.load(Ordering::Acquire) {
+                            result = Err(terminal_error(&shared));
+                        }
+                        reply.complete(result);
+                    }
+                }
+                continue;
+            }
+            if let Some((reply, error)) = failed {
+                reply.fail(error);
+            }
             if !connection.is_autocommit() {
                 connection.execute_batch("ROLLBACK")?;
             }
@@ -434,7 +511,11 @@ fn handle_command(connection: &rusqlite::Connection, shared: &Shared, command: C
                 Err(Error::InvalidTransaction)
             };
             release_if_finished(connection, shared);
-            let _ = reply.send(result);
+            reply.complete(if shared.closed.load(Ordering::Acquire) {
+                Err(terminal_error(shared))
+            } else {
+                result
+            });
         }
         Command::Finish { tx, commit, reply } => {
             let result = if active(shared, tx) {
@@ -445,49 +526,66 @@ fn handle_command(connection: &rusqlite::Connection, shared: &Shared, command: C
                 Err(Error::InvalidTransaction)
             };
             release_if_finished(connection, shared);
-            let _ = reply.send(result);
+            reply.complete(if shared.closed.load(Ordering::Acquire) {
+                Err(terminal_error(shared))
+            } else {
+                result
+            });
         }
         Command::Abandon { id, reply } => {
             let mut state = lock(&shared.state);
-            let result = if state
+            let holder = state
                 .holder
                 .as_ref()
-                .is_some_and(|holder| holder.admission.admission_id == id)
-            {
-                let result = connection.execute_batch("ROLLBACK").map_err(Error::from);
-                if connection.is_autocommit() {
-                    state.holder = None;
-                }
-                result
+                .is_some_and(|holder| holder.admission.admission_id == id);
+            let pending = state
+                .pending
+                .iter()
+                .position(|pending| pending.id == id)
+                .and_then(|index| state.pending.remove(index));
+            if pending.is_some() {
+                shared.pending.fetch_sub(1, Ordering::Release);
+            }
+            drop(state);
+            let result = if holder {
+                connection.execute_batch("ROLLBACK").map_err(Error::from)
             } else {
-                if let Some(index) = state.pending.iter().position(|pending| pending.id == id)
-                    && let Some(pending) = state.pending.remove(index)
-                {
-                    shared.pending.fetch_sub(1, Ordering::Release);
-                    let _ = pending
-                        .reply
-                        .send(Err(Error::InvalidInput("admission abandoned".into())));
-                }
                 Ok(())
             };
+            release_if_finished(connection, shared);
             shared.ready.notify_one();
-            let _ = reply.send(result);
+            if let Some(pending) = pending {
+                pending
+                    .reply
+                    .fail(Error::InvalidInput("admission abandoned".into()));
+            }
+            reply.complete(if shared.closed.load(Ordering::Acquire) {
+                Err(terminal_error(shared))
+            } else {
+                result
+            });
         }
     }
 }
 
-fn shutdown(shared: &Shared) {
-    let mut state = lock(&shared.state);
-    shared.closed.store(true, Ordering::Release);
-    for pending in state.pending.drain(..) {
-        let _ = pending.reply.send(Err(Error::Closed));
-    }
-    shared.pending.store(0, Ordering::Release);
-    for command in state.commands.drain(..) {
-        command.fail();
-    }
-    state.holder = None;
+fn shutdown(shared: &Shared, failed: bool) {
+    let (pending, commands) = {
+        let mut state = lock(&shared.state);
+        shared.failed.fetch_or(failed, Ordering::AcqRel);
+        shared.closed.store(true, Ordering::Release);
+        let pending = state.pending.drain(..).collect::<Vec<_>>();
+        shared.pending.store(0, Ordering::Release);
+        let commands = state.commands.drain(..).collect::<Vec<_>>();
+        state.holder = None;
+        (pending, commands)
+    };
     shared.ready.notify_all();
+    for pending in pending {
+        pending.reply.fail(terminal_error(shared));
+    }
+    for command in commands {
+        command.fail(terminal_error(shared));
+    }
 }
 
 struct TemporaryDatabase(std::path::PathBuf);
@@ -525,5 +623,32 @@ impl TemporaryDatabase {
 impl Drop for TemporaryDatabase {
     fn drop(&mut self) {
         self.remove();
+    }
+}
+
+fn checkpoint(connection: &rusqlite::Connection) -> Result<(i64, i64, i64)> {
+    // Unqualified checkpoint visits temp too. On a pristine zero-byte WAL file,
+    // SQLite initializes WAL with a nested PRAGMA table_list; its temp read
+    // transaction makes the subsequent temp checkpoint return SQLITE_LOCKED.
+    // Only main owns persistent WAL data; temp has no WAL to checkpoint.
+    Ok(
+        connection.query_row("PRAGMA main.wal_checkpoint(TRUNCATE)", [], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })?,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn pristine_wal_file_checkpoints_without_a_spurious_locked_error() {
+        let temporary = TemporaryDatabase::new().unwrap();
+        let connection = connect(temporary.0.to_str().unwrap(), &OpenOptions::default()).unwrap();
+        assert!(!connection.is_busy());
+        assert!(connection.is_autocommit());
+        let result = checkpoint(&connection);
+        assert!(matches!(result, Ok((0, _, _))), "{result:?}");
+        connection.close().unwrap();
     }
 }

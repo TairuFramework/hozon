@@ -152,13 +152,16 @@ export const transactionContractCases: Array<ConformanceCase> = [
       const { sqlite, db, timeoutMs } = await ctx.admissionControl(ctx.adapter)
       const holder = await within(sqlite.beginWrite(db), 'admission holder')
       try {
-        const outcome = await within(
-          sqlite.beginWrite(db, { timeoutMs }).then(
-            (admission) => ({ admission, error: undefined }),
-            (error: unknown) => ({ admission: undefined, error }),
-          ),
-          'queued admission expiry',
+        const queued = sqlite.beginWrite(db, { timeoutMs }).then(
+          (admission) => ({ admission, error: undefined }),
+          (error: unknown) => ({ admission: undefined, error }),
         )
+        // This must run before the pending begin settles.
+        await within(
+          sqlite.execute(db, holder.txID, 'SELECT 1', [], 'read'),
+          'holder with queued admission',
+        )
+        const outcome = await within(queued, 'queued admission expiry')
         if (outcome.admission) await sqlite.abandon(db, outcome.admission.admissionID)
         assert.equal(outcome.admission, undefined)
         const message =

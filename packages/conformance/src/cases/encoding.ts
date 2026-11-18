@@ -88,8 +88,11 @@ export const encodingCases: Array<ConformanceCase> = (
           .where('value', '=', adapter.coerceFilterValue(!input))
           .execute()
         assert.equal(opposite.length, 0)
-      } else if (type === 'bigint' && adapter.kind === 'postgres') {
-        // postgres.js preserves int8 precision by returning text by default.
+      } else if (
+        type === 'bigint' &&
+        (adapter.kind === 'postgres' || typeof row.value === 'bigint')
+      ) {
+        // Drivers may preserve int8 precision as text (Postgres) or bigint (native).
         assert.equal(String(row.value), String(input))
       } else if (type === 'json') {
         assert.deepEqual(typeof row.value === 'string' ? JSON.parse(row.value) : row.value, input)

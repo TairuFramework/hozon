@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 
 mod admission;
+mod completion;
 mod engine;
 mod error;
 mod reader;
@@ -9,6 +10,7 @@ mod registry;
 mod value;
 
 pub use admission::{Admission, Clock, MonotonicClock, Stats};
+pub use completion::Callback;
 pub use error::{Error, Result};
 pub use registry::Registry;
 use std::{sync::Arc, time::Duration};

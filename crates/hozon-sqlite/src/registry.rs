@@ -1,6 +1,7 @@
 use crate::{
-    Admission, AdmissionID, DBID, Error, Mode, OpenOptions, QueryResult, Result, Stats, TxID,
-    Value,
+    Admission, AdmissionID, Callback, DBID, Error, Mode, OpenOptions, QueryResult, Result, Stats,
+    TxID, Value,
+    completion::{Completion, dispatch, wait},
     engine::{Engine, next_id},
     reader::lock,
 };
@@ -27,13 +28,36 @@ fn identity(path: &Path) -> Result<(u64, u64)> {
 /// Handles are registry-scoped; file ownership is process-wide across registries.
 #[derive(Default)]
 pub struct Registry {
-    databases: Mutex<HashMap<DBID, Arc<Engine>>>,
+    databases: Arc<Mutex<HashMap<DBID, Arc<Engine>>>>,
+}
+impl Clone for Registry {
+    fn clone(&self) -> Self {
+        Self {
+            databases: self.databases.clone(),
+        }
+    }
 }
 impl Registry {
     pub fn new() -> Self {
         Self::default()
     }
     pub fn open(&self, path: impl AsRef<Path>, options: OpenOptions) -> Result<DBID> {
+        wait(|cb| self.open_async(path, options, cb))
+    }
+    pub fn open_async(
+        &self,
+        path: impl AsRef<Path>,
+        options: OpenOptions,
+        callback: Callback<DBID>,
+    ) {
+        let registry = self.clone();
+        let path = path.as_ref().to_owned();
+        let reply = Completion::new(callback);
+        dispatch(Box::new(move || {
+            reply.complete(registry.open_inner(&path, options))
+        }));
+    }
+    fn open_inner(&self, path: impl AsRef<Path>, options: OpenOptions) -> Result<DBID> {
         // rusqlite converts this to i32 milliseconds with expect(), so validate first.
         if options.busy_timeout.as_millis() > i32::MAX as u128 {
             return Err(Error::InvalidInput(
@@ -115,15 +139,33 @@ impl Registry {
         lock(&self.databases).get(&db).cloned().ok_or(Error::Closed)
     }
     pub fn close(&self, db: DBID) -> Result<()> {
-        let engine = lock(&self.databases).get(&db).cloned();
-        if let Some(engine) = engine {
-            engine.close()?;
-            lock(&self.databases).remove(&db);
-        }
-        Ok(())
+        wait(|cb| self.close_async(db, cb))
+    }
+    pub fn close_async(&self, db: DBID, callback: Callback<()>) {
+        let registry = self.clone();
+        let reply = Completion::new(callback);
+        dispatch(Box::new(move || {
+            let engine = lock(&registry.databases).get(&db).cloned();
+            let result = if let Some(engine) = engine {
+                let result = engine.close();
+                lock(&registry.databases).remove(&db);
+                result
+            } else {
+                Ok(())
+            };
+            reply.complete(result);
+        }));
     }
     pub fn begin_write(&self, db: DBID, timeout: Option<Duration>) -> Result<Admission> {
-        self.begin_write_labeled(db, timeout, None)
+        wait(|cb| self.begin_write_async(db, timeout, cb))
+    }
+    pub fn begin_write_async(
+        &self,
+        db: DBID,
+        timeout: Option<Duration>,
+        callback: Callback<Admission>,
+    ) {
+        self.begin_write_labeled_async(db, timeout, None, callback);
     }
     pub fn begin_write_labeled(
         &self,
@@ -131,16 +173,42 @@ impl Registry {
         timeout: Option<Duration>,
         label: Option<String>,
     ) -> Result<Admission> {
-        self.engine(db)?.begin(timeout, label)
+        wait(|cb| self.begin_write_labeled_async(db, timeout, label, cb))
+    }
+    pub fn begin_write_labeled_async(
+        &self,
+        db: DBID,
+        timeout: Option<Duration>,
+        label: Option<String>,
+        callback: Callback<Admission>,
+    ) {
+        self.submit(db, callback, |engine, reply| {
+            engine.begin(timeout, label, reply)
+        });
     }
     pub fn abandon(&self, db: DBID, admission_id: AdmissionID) -> Result<()> {
-        self.engine(db)?.abandon(admission_id)
+        wait(|cb| self.abandon_async(db, admission_id, cb))
+    }
+    pub fn abandon_async(&self, db: DBID, admission_id: AdmissionID, callback: Callback<()>) {
+        self.submit(db, callback, |engine, reply| {
+            engine.abandon(admission_id, reply)
+        });
     }
     pub fn commit(&self, db: DBID, tx_id: TxID) -> Result<()> {
-        self.engine(db)?.finish(tx_id, true)
+        wait(|cb| self.commit_async(db, tx_id, cb))
+    }
+    pub fn commit_async(&self, db: DBID, tx_id: TxID, callback: Callback<()>) {
+        self.submit(db, callback, |engine, reply| {
+            engine.finish(tx_id, true, reply)
+        });
     }
     pub fn rollback(&self, db: DBID, tx_id: TxID) -> Result<()> {
-        self.engine(db)?.finish(tx_id, false)
+        wait(|cb| self.rollback_async(db, tx_id, cb))
+    }
+    pub fn rollback_async(&self, db: DBID, tx_id: TxID, callback: Callback<()>) {
+        self.submit(db, callback, |engine, reply| {
+            engine.finish(tx_id, false, reply)
+        });
     }
     pub fn execute(
         &self,
@@ -150,7 +218,32 @@ impl Registry {
         params: &[Value],
         mode: Mode,
     ) -> Result<QueryResult> {
-        self.engine(db)?.execute(tx_id, sql, params, mode)
+        wait(|cb| self.execute_async(db, tx_id, sql, params, mode, cb))
+    }
+    pub fn execute_async(
+        &self,
+        db: DBID,
+        tx_id: Option<TxID>,
+        sql: &str,
+        params: &[Value],
+        mode: Mode,
+        callback: Callback<QueryResult>,
+    ) {
+        self.submit(db, callback, |engine, reply| {
+            engine.execute(tx_id, sql.to_owned(), params.to_vec(), mode, reply)
+        });
+    }
+    fn submit<T: Send + 'static>(
+        &self,
+        db: DBID,
+        callback: Callback<T>,
+        submit: impl FnOnce(Arc<Engine>, Completion<T>),
+    ) {
+        let reply = Completion::new(callback);
+        match self.engine(db) {
+            Ok(engine) => submit(engine, reply),
+            Err(error) => reply.fail_async(error),
+        }
     }
     pub fn stats(&self, db: DBID) -> Result<Stats> {
         Ok(self.engine(db)?.stats())

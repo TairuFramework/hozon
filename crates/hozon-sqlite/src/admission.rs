@@ -1,8 +1,5 @@
-use crate::{AdmissionID, Result, TxID};
-use std::{
-    sync::mpsc::Sender,
-    time::{Duration, Instant},
-};
+use crate::{AdmissionID, QueryResult, TxID, Value, completion::Completion};
+use std::time::{Duration, Instant};
 
 /// Suspend-excluding elapsed time, injectable without replacing SQLite or threads.
 pub trait Clock: Send + Sync {
@@ -40,9 +37,29 @@ pub(crate) struct Pending {
     pub timeout: Duration,
     pub label: Option<String>,
     pub warned: bool,
-    pub reply: Sender<Result<Admission>>,
+    pub reply: AdmissionWork,
 }
 pub(crate) struct Holder {
     pub admission: Admission,
     pub label: Option<String>,
+}
+
+pub(crate) enum AdmissionWork {
+    Begin(Completion<Admission>),
+    Execute {
+        sql: String,
+        params: Vec<Value>,
+        reply: Completion<QueryResult>,
+    },
+}
+impl AdmissionWork {
+    pub fn fail(self, error: crate::Error) {
+        match self {
+            Self::Begin(reply) => reply.complete(Err(error)),
+            Self::Execute { reply, .. } => reply.complete(Err(error)),
+        }
+    }
+    pub fn fail_async(self, error: crate::Error) {
+        crate::completion::dispatch(Box::new(move || self.fail(error)));
+    }
 }

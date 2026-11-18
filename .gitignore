@@ -8,3 +8,6 @@ node_modules
 lib
 .pnpm
 target
+
+# Locally built Node SQLite binding
+/packages/native/native/
