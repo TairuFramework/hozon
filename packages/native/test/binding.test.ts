@@ -35,10 +35,61 @@ test('boundary validates handles, mode, bigint range and unsafe numbers', async 
           'read',
         )
       ).rows,
-    ).toEqual([[-9223372036854775808n, 2147483648n, 1.25]])
+    ).toEqual([[-9223372036854775808n, 2147483648, 1.25]])
     await expect(
       sqlite.execute(db, null, 'SELECT * FROM missing_table', [], 'read'),
     ).rejects.toThrow('HOZON_SQLITE')
+  } finally {
+    await sqlite.close(db)
+  }
+})
+
+test('integer cells use numbers exactly through both safe boundaries and bigint beyond', async () => {
+  const db = await sqlite.open(':memory:', options)
+  try {
+    await sqlite.execute(db, null, 'CREATE TABLE integers (value INTEGER)', [], 'write')
+    const cases: Array<[number | bigint, number | bigint]> = [
+      [2147483648, 2147483648],
+      [2200000000000, 2200000000000],
+      [9007199254740991, 9007199254740991],
+      [-9007199254740991, -9007199254740991],
+      [2147483648n, 2147483648],
+      [2200000000000n, 2200000000000],
+      [9007199254740991n, 9007199254740991],
+      [-9007199254740991n, -9007199254740991],
+      [9007199254740992n, 9007199254740992n],
+      [-9007199254740992n, -9007199254740992n],
+      [9223372036854775807n, 9223372036854775807n],
+      [-9223372036854775808n, -9223372036854775808n],
+    ]
+    for (const [input, expected] of cases) {
+      const inserted = await sqlite.execute(
+        db,
+        null,
+        'INSERT INTO integers VALUES (?) RETURNING value',
+        [input],
+        'write',
+      )
+      expect(inserted.rows).toEqual([[expected]])
+      expect(inserted.changes).toBe(1n)
+      expect(typeof inserted.lastInsertRowID).toBe('bigint')
+      expect(
+        (await sqlite.execute(db, null, 'SELECT value FROM integers', [], 'read')).rows,
+      ).toEqual([[expected]])
+      await sqlite.execute(db, null, 'DELETE FROM integers', [], 'write')
+    }
+    // Metadata stays bigint even when the insert ID is a safe integer above i32.
+    await sqlite.execute(db, null, 'CREATE TABLE ids (id INTEGER PRIMARY KEY)', [], 'write')
+    const result = await sqlite.execute(
+      db,
+      null,
+      'INSERT INTO ids VALUES (?) RETURNING id',
+      [2200000000000n],
+      'write',
+    )
+    expect(result.rows).toEqual([[2200000000000]])
+    expect(result.changes).toBe(1n)
+    expect(result.lastInsertRowID).toBe(2200000000000n)
   } finally {
     await sqlite.close(db)
   }

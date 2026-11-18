@@ -97,7 +97,12 @@ impl ToNapiValue for Cell {
         unsafe {
             match value.0 {
                 Value::Null => Option::<String>::to_napi_value(env, None),
-                Value::Integer(v) if i32::try_from(v).is_ok() => i32::to_napi_value(env, v as i32),
+                // Every integer in this range is represented exactly by a JS number.
+                Value::Integer(v)
+                    if (-9_007_199_254_740_991..=9_007_199_254_740_991).contains(&v) =>
+                {
+                    f64::to_napi_value(env, v as f64)
+                }
                 Value::Integer(v) => bigint(env, v.to_string()),
                 Value::Real(v) => f64::to_napi_value(env, v),
                 Value::Text(v) => String::to_napi_value(env, v),

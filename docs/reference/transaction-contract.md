@@ -18,6 +18,10 @@ The settled admission retains `admissionID` to keep existing grant-based cleanup
 `commit(db, txID)`, `rollback(db, txID)` and `abandon(db, admissionID)` name their database explicitly.
 `execute(db, txID | null, sql, params, mode)` returns rows as arrays, column names,
 and bigint `changes` and `lastInsertRowID`. Values are null, number, bigint, string or `Uint8Array`.
+Integer cells return as JS `number` when their absolute value is at most
+`Number.MAX_SAFE_INTEGER` (2^53 - 1), and as `bigint` beyond that, through signed i64.
+Bigint parameters bind exactly even within the safe range. Write metadata (`changes`
+and `lastInsertRowID`) always stays `bigint`. This convention applies to both napi and Nitro.
 `mode` is `read` or `write`; a null `txID` routes to an outside reader or an admitted autocommit write.
 `close(db)` releases the handle.
 Every TypeScript statement and native kernel names its `txID` and runs on that transaction's connection.

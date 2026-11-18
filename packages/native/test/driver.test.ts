@@ -46,12 +46,34 @@ test('real driver preserves types and raw write metadata including RETURNING', a
     expect((await sql`UPDATE fidelity SET big = ${2147483648n}`.execute(db)).numAffectedRows).toBe(
       1n,
     )
-    expect((await sql`SELECT big FROM fidelity`.execute(db)).rows).toEqual([{ big: 2147483648n }])
+    expect((await sql`SELECT big FROM fidelity`.execute(db)).rows).toEqual([{ big: 2147483648 }])
     expect((await sql`DELETE FROM fidelity`.execute(db)).numAffectedRows).toBe(1n)
   } finally {
     await db.destroy()
   }
 })
+test('driver returns safe integer cells as numbers and unsafe i64 cells as bigint', async () => {
+  const adapter = new NativeAdapter({ sqlite, database: ':memory:' })
+  const db = new Kysely({ dialect: adapter.dialect })
+  try {
+    const cases: Array<[bigint, number | bigint]> = [
+      [2147483648n, 2147483648],
+      [2200000000000n, 2200000000000],
+      [9007199254740991n, 9007199254740991],
+      [-9007199254740991n, -9007199254740991],
+      [9007199254740992n, 9007199254740992n],
+      [-9007199254740992n, -9007199254740992n],
+      [9223372036854775807n, 9223372036854775807n],
+      [-9223372036854775808n, -9223372036854775808n],
+    ]
+    for (const [input, expected] of cases) {
+      expect((await sql`SELECT ${input} AS value`.execute(db)).rows).toEqual([{ value: expected }])
+    }
+  } finally {
+    await db.destroy()
+  }
+})
+
 test('a rejected JS wait abandons a late native grant', async () => {
   // Delay delivery after the engine grants, simulating a cancelled JS continuation.
   const original = sqlite.beginWrite

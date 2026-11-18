@@ -88,11 +88,8 @@ export const encodingCases: Array<ConformanceCase> = (
           .where('value', '=', adapter.coerceFilterValue(!input))
           .execute()
         assert.equal(opposite.length, 0)
-      } else if (
-        type === 'bigint' &&
-        (adapter.kind === 'postgres' || typeof row.value === 'bigint')
-      ) {
-        // Drivers may preserve int8 precision as text (Postgres) or bigint (native).
+      } else if (type === 'bigint' && adapter.kind === 'postgres') {
+        // Postgres returns int8 as text; SQLite returns this safe integer as a number.
         assert.equal(String(row.value), String(input))
       } else if (type === 'json') {
         assert.deepEqual(typeof row.value === 'string' ? JSON.parse(row.value) : row.value, input)

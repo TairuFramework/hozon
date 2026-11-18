@@ -97,8 +97,23 @@ export const nativeContractCases: Array<ConformanceCase> = [
           )
         assert.equal(update.numAffectedRows, 1n)
         assert.deepEqual((await sql`SELECT large, flag FROM native_fidelity`.execute(query)).rows, [
-          { large: 2147483648n, flag: 0 },
+          { large: 2147483648, flag: 0 },
         ])
+        const integers: Array<[bigint, number | bigint]> = [
+          [2200000000000n, 2200000000000],
+          [9007199254740991n, 9007199254740991],
+          [-9007199254740991n, -9007199254740991],
+          [9007199254740992n, 9007199254740992n],
+          [-9007199254740992n, -9007199254740992n],
+          [9223372036854775807n, 9223372036854775807n],
+          [-9223372036854775808n, -9223372036854775808n],
+        ]
+        for (const [input, expected] of integers) {
+          await sql`UPDATE native_fidelity SET large = ${input}`.execute(query)
+          assert.deepEqual((await sql`SELECT large FROM native_fidelity`.execute(query)).rows, [
+            { large: expected },
+          ])
+        }
         assert.equal(
           (await sql`DELETE FROM native_fidelity RETURNING id`.execute(query)).numAffectedRows,
           1n,
