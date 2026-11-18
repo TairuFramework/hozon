@@ -27,7 +27,7 @@ jobs:
       - name: Check Rust warnings
         run: pnpm exec cargo clippy --workspace --all-targets --locked --offline -- -D warnings
       - name: Build Node-API binding
-        run: node scripts/build-sqlite-napi.ts
+        run: pnpm exec node scripts/build-sqlite-napi.ts
       - name: Build native adapter and conformance dependencies
         run: pnpm --filter @hozon/native... build
       - name: Test Node-API binding and native adapter
