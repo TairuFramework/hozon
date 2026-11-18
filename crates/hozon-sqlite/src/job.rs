@@ -89,10 +89,12 @@ fn reject_transaction_control(mut sql: &str) -> Result<()> {
     Ok(())
 }
 
+/// Work executed on the writer thread. Jobs must not call blocking registry APIs;
+/// use the borrowed connection or submit follow-up work through callback APIs.
 pub type TxJob<T> = Box<dyn FnOnce(&TxConnection<'_>) -> Result<T> + Send + 'static>;
 
 pub(crate) trait JobCommand: Send {
-    fn run(self: Box<Self>, connection: &Connection);
+    fn run(self: Box<Self>, connection: &Connection, terminal: &dyn Fn() -> Option<Error>);
     fn fail(self: Box<Self>, error: Error);
 }
 pub(crate) struct Job<T: Send + 'static> {
@@ -102,13 +104,19 @@ pub(crate) struct Job<T: Send + 'static> {
     pub reply: Completion<T>,
 }
 impl<T: Send + 'static> JobCommand for Job<T> {
-    fn run(self: Box<Self>, connection: &Connection) {
+    fn run(self: Box<Self>, connection: &Connection, terminal: &dyn Fn() -> Option<Error>) {
+        if connection.is_autocommit() {
+            self.fail(Error::InvalidTransaction);
+            return;
+        }
         let Self { db, tx, job, reply } = *self;
         let result = catch_unwind(AssertUnwindSafe(|| {
             job(&TxConnection { connection, db, tx })
         }))
         .unwrap_or(Err(Error::JobPanic));
-        reply.complete(if connection.is_autocommit() {
+        reply.complete(if let Some(error) = terminal() {
+            Err(error)
+        } else if connection.is_autocommit() {
             Err(Error::JobEndedTransaction)
         } else {
             result
@@ -116,5 +124,40 @@ impl<T: Send + 'static> JobCommand for Job<T> {
     }
     fn fail(self: Box<Self>, error: Error) {
         self.reply.complete(Err(error));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+
+    #[test]
+    fn autocommit_connection_rejects_job_without_running_it() {
+        let connection = Connection::open_in_memory().unwrap();
+        let ran = Arc::new(AtomicBool::new(false));
+        let invoked = ran.clone();
+        let (send, receive) = mpsc::channel();
+        Box::new(Job {
+            db: 1,
+            tx: 2,
+            job: Box::new(move |_| {
+                invoked.store(true, Ordering::SeqCst);
+                Ok(())
+            }),
+            reply: Completion::new(Box::new(move |result| send.send(result).unwrap())),
+        })
+        .run(&connection, &|| None);
+        assert!(matches!(
+            receive
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap(),
+            Err(Error::InvalidTransaction)
+        ));
+        assert!(!ran.load(Ordering::SeqCst));
     }
 }

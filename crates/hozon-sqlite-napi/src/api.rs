@@ -63,7 +63,7 @@ enum Command {
     Rollback(u64, u64),
     Execute(u64, Option<u64>, String, Vec<Value>, Mode),
 }
-pub enum Output {
+pub(crate) enum Output {
     Handle(u64),
     Admission(hozon_sqlite::Admission),
     Query(hozon_sqlite::QueryResult),
