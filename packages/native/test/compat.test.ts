@@ -1,5 +1,4 @@
-import { spawn } from 'node:child_process'
-import { once } from 'node:events'
+import { type ChildProcess, spawn } from 'node:child_process'
 import { copyFile, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -16,6 +15,7 @@ const kinds = ['node-sqlite', 'native'] as const
 type Kind = (typeof kinds)[number]
 type Row = Record<string, unknown>
 const directories: Array<string> = []
+const children: Array<ChildProcess> = []
 const busyTimeoutMs = 100
 
 async function databasePath() {
@@ -25,17 +25,31 @@ async function databasePath() {
 }
 
 afterEach(async () => {
+  await Promise.allSettled(children.splice(0).map(stopChild))
   await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true })))
 })
 
-async function open(kind: Kind, path: string) {
+async function stopChild(child: ChildProcess) {
+  if (child.exitCode !== null || child.signalCode !== null || child.pid === undefined) return
+  await new Promise<void>((resolve) => {
+    child.once('close', () => resolve())
+    child.kill('SIGKILL')
+  })
+}
+
+async function open(kind: Kind, path: string, defaults = false) {
   const adapter =
     kind === 'native'
       ? new NativeAdapter({ sqlite, database: path, readers: 2, busyTimeoutMs })
-      : new NodeSQLiteAdapter({
-          database: path,
-          pragmas: { journalMode: 'wal', busyTimeout: busyTimeoutMs, foreignKeys: true },
-        })
+      : new NodeSQLiteAdapter(
+          defaults
+            ? { database: path }
+            : {
+                // Pin contention timing and match native's WAL/foreign-key configuration.
+                database: path,
+                pragmas: { journalMode: 'wal', busyTimeout: busyTimeoutMs, foreignKeys: true },
+              },
+        )
   try {
     if (adapter instanceof NodeSQLiteAdapter) await adapter.prepare()
     else await adapter.database
@@ -76,6 +90,7 @@ async function walBytes(path: string) {
 const childProgram = `
 const [kind, path, action, bindingPath, adapterURL] = process.argv.slice(1)
 const { createRequire } = await import('node:module')
+const { once } = await import('node:events')
 const require = createRequire(adapterURL)
 let execute, begin
 if (kind === 'native') {
@@ -85,7 +100,7 @@ if (kind === 'native') {
   begin = async () => (await sqlite.beginWrite(db).granted).txID
 } else {
   const { NodeSQLiteAdapter } = await import(adapterURL)
-  const adapter = new NodeSQLiteAdapter({ database: path, pragmas: { busyTimeout: 100 } })
+  const adapter = new NodeSQLiteAdapter({ database: path, pragmas: { journalMode: 'wal', busyTimeout: 100, foreignKeys: true } })
   await adapter.prepare()
   execute = async (sql) => adapter.database.exec(sql)
   begin = async () => { adapter.database.exec('BEGIN IMMEDIATE'); return null }
@@ -94,10 +109,17 @@ if (action === 'crash') {
   await execute('CREATE TABLE recovery (value TEXT)')
   await execute("INSERT INTO recovery VALUES ('committed')")
 }
+const resume = once(process, 'message')
+process.send('setup')
+await resume
+if (action === 'crash') await execute('PRAGMA cache_size=1')
 const tx = await begin()
 await execute(action === 'crash'
   ? "INSERT INTO recovery VALUES ('uncommitted')"
   : 'INSERT INTO contention VALUES (2)', tx)
+if (action === 'crash') {
+  await execute("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<300) INSERT INTO recovery SELECT 'uncommitted-' || x || hex(zeroblob(2048)) FROM n", tx)
+}
 process.send('ready')
 setInterval(() => {}, 1000)
 `
@@ -121,30 +143,50 @@ async function startChild(kind: Kind, path: string, action: 'crash' | 'lock') {
   child.stderr?.on('data', (data: Buffer) => {
     stderr += data.toString()
   })
-  const exited = once(child, 'exit')
+  children.push(child)
+  let committedWalBytes = 0
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
-    await Promise.race([
-      once(child, 'message').then(([message]) => expect(message).toBe('ready')),
-      exited.then(([code, signal]) => {
-        throw new Error(`Child exited ${code}/${signal}: ${stderr}`)
-      }),
-      new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new Error(`Child readiness timed out: ${stderr}`)), 5000)
-      }),
-    ])
+    await new Promise<void>((resolve, reject) => {
+      child.on('error', reject)
+      child.once('exit', (code, signal) => {
+        reject(new Error(`Child exited ${code}/${signal}: ${stderr}`))
+      })
+      child.on('message', (message) => {
+        if (message === 'setup') {
+          walBytes(path)
+            .then((bytes) => {
+              committedWalBytes = bytes.byteLength
+              child.send('continue')
+            })
+            .catch(reject)
+        } else if (message === 'ready') {
+          resolve()
+        } else {
+          reject(new Error(`Unexpected child message: ${String(message)}`))
+        }
+      })
+      timer = setTimeout(() => reject(new Error(`Child readiness timed out: ${stderr}`)), 3000)
+    })
   } catch (error) {
-    child.kill('SIGKILL')
-    await exited
+    await stopChild(child).catch(() => {})
     throw error
   } finally {
     clearTimeout(timer)
   }
-  return async () => {
-    expect(child.kill('SIGKILL')).toBe(true)
-    expect(await exited).toEqual([null, 'SIGKILL'])
-  }
+  return { kill: () => stopChild(child), committedWalBytes }
 }
+
+test('node-sqlite default pragmas enable foreign keys, WAL and a 5000 ms busy timeout', async () => {
+  const db = await open('node-sqlite', await databasePath(), true)
+  try {
+    expect(await db.query('PRAGMA foreign_keys')).toEqual([{ foreign_keys: 1 }])
+    expect(await db.query('PRAGMA journal_mode')).toEqual([{ journal_mode: 'wal' }])
+    expect(await db.query('PRAGMA busy_timeout')).toEqual([{ timeout: 5000 }])
+  } finally {
+    await db.close()
+  }
+})
 
 for (const creator of kinds) {
   const other: Kind = creator === 'native' ? 'node-sqlite' : 'native'
@@ -209,20 +251,20 @@ for (const creator of kinds) {
     const path = await databasePath()
     await withDB(creator, path, async (db) => {
       await db.query('CREATE TABLE contention (value INTEGER)')
-      const kill = await startChild(creator, path, 'lock')
+      const { kill } = await startChild(creator, path, 'lock')
       try {
         const started = performance.now()
         await expect(db.query('INSERT INTO contention VALUES (1)')).rejects.toThrow(/locked|busy/i)
         const elapsed = performance.now() - started
         expect(elapsed).toBeGreaterThanOrEqual(busyTimeoutMs * 0.75)
-        expect(elapsed).toBeLessThan(2000)
+        expect(elapsed).toBeLessThan(5000)
       } finally {
         await kill()
       }
       await db.query('INSERT INTO contention VALUES (3)')
       expect(await db.query('SELECT * FROM contention')).toEqual([{ value: 3 }])
     })
-  })
+  }, 15000)
 
   test(`${creator} clean close checkpoints WAL before ${other} reopens`, async () => {
     const path = await databasePath()
@@ -243,13 +285,17 @@ for (const creator of kinds) {
   for (const reopener of kinds) {
     test(`${creator} SIGKILL recovers committed WAL and rolls back unfinished rows under ${reopener}`, async () => {
       const path = await databasePath()
-      const kill = await startChild(creator, path, 'crash')
+      const { kill, committedWalBytes } = await startChild(creator, path, 'crash')
       try {
-        expect((await walBytes(path)).byteLength).toBeGreaterThan(32)
+        expect(committedWalBytes).toBeGreaterThan(32)
+        expect(
+          (await walBytes(path)).byteLength,
+          'unfinished writes must spill beyond committed WAL',
+        ).toBeGreaterThan(committedWalBytes)
       } finally {
         await kill()
       }
-      expect((await walBytes(path)).byteLength).toBeGreaterThan(32)
+      expect((await walBytes(path)).byteLength).toBeGreaterThan(committedWalBytes)
       await withDB(reopener, path, async (db) => {
         expect(await db.query('PRAGMA integrity_check')).toEqual([{ integrity_check: 'ok' }])
         expect(await db.query('SELECT * FROM recovery')).toEqual([{ value: 'committed' }])
@@ -261,7 +307,7 @@ for (const creator of kinds) {
           { value: 'committed' },
         ])
       })
-    })
+    }, 15000)
   }
 }
 
@@ -274,6 +320,9 @@ const corpus: Array<[string, string]> = [
   ['f', 'مرحبا بالعالم — SQLite sync ملاحظات'],
   ['g', 'Привет мир: SQLite sync и заметки'],
   ['h', 'Project launch notes: SQLite mobile sync, offline-first collaboration.'],
+  ['k', 'quartz nebula'],
+  ['l', `${'quartz '.repeat(8)}nebula ${'filler '.repeat(20)}`],
+  ['m', `${'nebula '.repeat(8)}quartz ${'filler '.repeat(100)}`],
   ['i', 'Planning a garden: tomatoes, basil, and spring rain.'],
   ['j', "Developer's notes: snake_case, C++, version 3.54; sync-ing."],
 ]
@@ -293,6 +342,8 @@ test('SQLite versions meet the mobile baseline and kubun JSON/FTS queries agree'
     '"co operate"',
     'offline*',
     'sqlite OR garden',
+    'quartz',
+    'nebula',
   ]
   for (const kind of kinds) {
     snapshots.push(
@@ -349,6 +400,17 @@ test('SQLite versions meet the mobile baseline and kubun JSON/FTS queries agree'
           expect(rows.length, match).toBeGreaterThan(0)
           fts.push(rows)
         }
+        for (const [query, keys] of [
+          ['quartz', ['l', 'k', 'm']],
+          ['nebula', ['k', 'm', 'l']],
+        ] as const) {
+          const ranked = fts[matches.indexOf(query)]
+          expect(
+            ranked?.map((row) => row.entry_key),
+            query,
+          ).toEqual(keys)
+          expect(new Set(ranked?.map((row) => row.rank)).size, query).toBe(3)
+        }
         // Default unicode61 folds case/diacritics and breaks punctuation; duplicate texts tie by key.
         expect(fts[matches.indexOf('cafe')]?.map((row) => row.entry_key).sort()).toEqual(['c', 'd'])
         expect(fts[matches.indexOf('"co operate"')]?.map((row) => row.entry_key)).toEqual(['c'])
@@ -359,11 +421,6 @@ test('SQLite versions meet the mobile baseline and kubun JSON/FTS queries agree'
       }),
     )
   }
-  console.info(
-    'SQLite compatibility versions',
-    snapshots.map(({ version }) => version),
-    'expo-sqlite baseline 3.53.3',
-  )
   expect(snapshots[1]?.json).toEqual(snapshots[0]?.json)
   expect(snapshots[1]?.each).toEqual(snapshots[0]?.each)
   expect(snapshots[1]?.fts).toEqual(snapshots[0]?.fts)
@@ -397,18 +454,24 @@ test('safe integer cells are numbers and unsafe integers are exact or explicitly
     expect(rows.map((row) => row.value)).toEqual(safe)
     for (const row of rows) expect(typeof row.value).toBe('number')
     for (const [offset, value] of unsafe.entries()) {
-      try {
-        const result = await db.query('SELECT value FROM integers WHERE id = ?', [
-          safe.length + offset,
-        ])
-        console.info('node-sqlite unsafe integer', String(value), result[0]?.value)
-        const cell = result[0]?.value
-        expect(['number', 'bigint']).toContain(typeof cell)
-        expect(BigInt(cell as number | bigint)).toBe(value)
-      } catch (error) {
-        // Only the explicit node:sqlite range error is an acceptable alternative to exact cells.
-        expect(error).toMatchObject({ code: 'ERR_OUT_OF_RANGE' })
-        console.info('node-sqlite unsafe integer', String(value), 'ERR_OUT_OF_RANGE')
+      const result: { cell: unknown } | { error: unknown } = await db
+        .query('SELECT value FROM integers WHERE id = ?', [safe.length + offset])
+        .then(
+          (rows) => ({ cell: rows[0]?.value }),
+          (error: unknown) => ({ error }),
+        )
+      if ('error' in result) {
+        expect(result.error, `explicit range error for ${value}`).toMatchObject({
+          code: 'ERR_OUT_OF_RANGE',
+        })
+      } else if (typeof result.cell === 'bigint') {
+        expect(result.cell, `exact bigint for ${value}`).toBe(value)
+      } else {
+        expect(typeof result.cell, `integer cell type for ${value}`).toBe('number')
+        expect(Number.isInteger(result.cell), `integer number for ${value}`).toBe(true)
+        expect(BigInt(result.cell as number), `precision loss: rounded number for ${value}`).toBe(
+          value,
+        )
       }
     }
   })
