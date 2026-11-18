@@ -35,6 +35,7 @@
   "devDependencies": {
     "@hozon/conformance": "workspace:^",
     "@hozon/db": "workspace:^",
+    "@hozon/node-sqlite": "workspace:^",
     "@types/node": "catalog:",
     "del-cli": "catalog:",
     "vitest": "catalog:"
