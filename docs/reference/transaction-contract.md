@@ -85,7 +85,7 @@ These admission rules specify native driver behaviour. Conformance liveness boun
 
 Commit releases the writer as soon as SQLite commits, before JavaScript commit hooks or events run.
 Hozon's synchronous, isolated commit hooks then run as today.
-The engine subsequently emits scope changes, followed by mutation events.
+The engine subsequently emits scope changes, then lifecycle events, then mutation events.
 Listeners and commit hooks can start new root writes because the writer is already free.
 
 In-transaction hooks remain in TypeScript. Kernels return control between steps so TypeScript can call those hooks.

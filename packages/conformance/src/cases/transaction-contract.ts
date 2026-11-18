@@ -137,6 +137,39 @@ export const transactionContractCases: Array<ConformanceCase> = [
     },
   },
   {
+    name: 'transaction contract: autocommit queues separately and survives rollback',
+    async run(ctx) {
+      const { db, root } = await setup(ctx)
+      const entered = Promise.withResolvers<void>()
+      const proceed = Promise.withResolvers<void>()
+      const events: Array<string> = []
+      const a = db.withTransaction<Stores, void>(async (tx) => {
+        await (await tx.getStore('rows')).insert('rolled-back')
+        entered.resolve()
+        await proceed.promise
+        events.push('a rollback')
+        throw new Error('outer rollback')
+      })
+      const rollback = assert.rejects(() => within(a, 'transaction A'), 'outer rollback')
+      await within(entered.promise, 'transaction A entry')
+      const write = root.insert('autocommit').then(() => {
+        events.push('autocommit finished')
+      })
+      const settled = Promise.allSettled([rollback, write])
+      try {
+        await turn()
+        assert.deepEqual(events, [])
+      } finally {
+        proceed.resolve()
+      }
+      for (const outcome of await within(settled, 'autocommit after rollback')) {
+        if (outcome.status === 'rejected') throw outcome.reason
+      }
+      assert.deepEqual(events, ['a rollback', 'autocommit finished'])
+      assert.deepEqual(await within(root.list(), 'committed rows'), ['autocommit'])
+    },
+  },
+  {
     name: 'transaction contract: nested provider runs inline',
     async run(ctx) {
       const { fixture, beginCount } = await setupCountingBegins(ctx)
