@@ -1,6 +1,5 @@
 import { createRequire } from 'node:module'
-
-import type { NativeSQLite } from '../../adapter/src/native.js'
+import type { NativeSQLite } from '@hozon/adapter'
 
 const require = createRequire(import.meta.url)
 // Per-database capability reflects the selected open policy, including release overrides.

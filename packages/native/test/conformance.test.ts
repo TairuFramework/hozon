@@ -1,5 +1,6 @@
-import type { NativeOpenOptions } from '../../adapter/src/native.js'
-import { defineVitestSuite } from '../../conformance/src/vitest.js'
+import type { NativeOpenOptions } from '@hozon/adapter'
+import { defineVitestSuite } from '@hozon/conformance/vitest'
+
 import { NativeAdapter } from '../src/index.js'
 import { loadBinding } from './binding.js'
 

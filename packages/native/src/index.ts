@@ -14,6 +14,8 @@ export type NativeAdapterParams = {
   readers?: number
   busyTimeoutMs?: number
   admissionTimeoutMs?: number
+  /** Override the native build default for admission expiry on this database. */
+  expireAdmissions?: boolean
 }
 
 /** Owns one Rust engine handle. The native implementation is supplied by the host. */
@@ -35,6 +37,7 @@ export class NativeAdapter extends AbstractSQLiteAdapter {
       readers: params.readers ?? 4,
       busyTimeoutMs: params.busyTimeoutMs ?? 5000,
       journalMode: 'wal',
+      expireAdmissions: params.expireAdmissions,
     })
     // Opening is eager: preserve rejection for callers without an unhandled rejection.
     void this.#database.catch(() => {})

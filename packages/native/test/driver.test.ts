@@ -1,7 +1,7 @@
+import type { NativeSQLite } from '@hozon/adapter'
 import { Kysely, sql } from 'kysely'
 import { expect, test } from 'vitest'
 
-import type { NativeBeginOptions, NativeDBHandle } from '../../adapter/src/native.js'
 import { NativeAdapter } from '../src/index.js'
 import { loadBinding } from './binding.js'
 
@@ -70,9 +70,9 @@ test('driver returns safe integer cells as numbers and unsafe i64 cells as bigin
 test('a rejected JS wait abandons a late native grant', async () => {
   // Delay delivery after the engine grants, simulating a cancelled JS continuation.
   const original = sqlite.beginWrite
-  const delayed = {
+  const delayed: NativeSQLite = {
     ...sqlite,
-    beginWrite: (db: NativeDBHandle, options?: NativeBeginOptions) => {
+    beginWrite: (db, options) => {
       const pending = original(db, options)
       return {
         admissionID: pending.admissionID,
@@ -196,3 +196,15 @@ test('failed cleanup preserves the original commit error', async () => {
     await db.destroy()
   }
 })
+
+test.each([true, false])(
+  'adapter forwards explicit admission expiry %s',
+  async (expireAdmissions) => {
+    const adapter = new NativeAdapter({ sqlite, database: ':memory:', expireAdmissions })
+    try {
+      expect(sqlite.admissionExpiry(await adapter.database)).toBe(expireAdmissions)
+    } finally {
+      await adapter.close()
+    }
+  },
+)
