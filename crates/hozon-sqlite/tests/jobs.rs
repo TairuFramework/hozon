@@ -301,13 +301,44 @@ fn close_fails_queued_job_exactly_once() {
         Err(Error::Closed)
     ));
     resume.send(()).unwrap();
-    finish.recv_timeout(WAIT).unwrap().unwrap();
+    assert!(matches!(
+        finish.recv_timeout(WAIT).unwrap(),
+        Err(Error::Closed)
+    ));
     close.recv_timeout(WAIT).unwrap().unwrap();
     assert!(matches!(
         receive.recv_timeout(Duration::from_millis(50)),
         Err(mpsc::RecvTimeoutError::Timeout)
     ));
     drop(retained);
+}
+
+#[test]
+fn close_interrupts_running_job_with_terminal_error() {
+    let (registry, db, tx) = setup();
+    let (entered, entry) = mpsc::channel();
+    let (finished, finish) = mpsc::channel();
+    registry.run_in_transaction_async(
+        db,
+        tx,
+        Box::new(move |conn| {
+            entered.send(()).unwrap();
+            conn.query_row(
+                "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<1000000000) SELECT sum(x) FROM n",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+        }),
+        Box::new(move |result| finished.send(result).unwrap()),
+    );
+    entry.recv_timeout(WAIT).unwrap();
+    let (closed, close) = mpsc::channel();
+    registry.close_async(db, Box::new(move |result| closed.send(result).unwrap()));
+    assert!(matches!(
+        finish.recv_timeout(WAIT).unwrap(),
+        Err(Error::Closed)
+    ));
+    close.recv_timeout(WAIT).unwrap().unwrap();
 }
 
 #[cfg(feature = "test-util")]
@@ -321,5 +352,53 @@ fn blocking_test_utility_runs_jobs() {
         0
     );
     registry.rollback(db, tx).unwrap();
+    registry.close(db).unwrap();
+}
+
+#[test]
+fn job_rejects_blocking_execute_without_submitting_it() {
+    let (registry, db, tx) = setup();
+    let nested = registry.clone();
+    let result = job(
+        &registry,
+        db,
+        tx,
+        Box::new(move |_| {
+            nested.execute(
+                db,
+                Some(tx),
+                "INSERT INTO items VALUES (1)",
+                &[],
+                Mode::Write,
+            )
+        }),
+    );
+    assert!(matches!(result, Err(Error::InvalidInput(_))));
+    assert_eq!(job(&registry, db, tx, Box::new(count)).unwrap(), 0);
+    registry.commit(db, tx).unwrap();
+    registry.close(db).unwrap();
+}
+
+#[test]
+fn job_queued_after_holder_abandon_is_invalid() {
+    let registry = Registry::new();
+    let db = registry.open(":memory:", OpenOptions::default()).unwrap();
+    let admission = registry.begin_write(db, None).unwrap();
+    let (send, receive) = mpsc::channel();
+    registry.abandon_async(
+        db,
+        admission.admission_id,
+        Box::new(move |r| send.send(r).unwrap()),
+    );
+    let result: Result<()> = job(
+        &registry,
+        db,
+        admission.tx_id,
+        Box::new(|_| panic!("abandoned job must not run")),
+    );
+    assert!(matches!(result, Err(Error::InvalidTransaction)));
+    receive.recv_timeout(WAIT).unwrap().unwrap();
+    let next = registry.begin_write(db, None).unwrap();
+    registry.rollback(db, next.tx_id).unwrap();
     registry.close(db).unwrap();
 }

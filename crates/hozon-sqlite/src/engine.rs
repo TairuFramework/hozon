@@ -527,7 +527,12 @@ fn handle_command(connection: &rusqlite::Connection, shared: &Shared, command: C
     match command {
         Command::Job { tx, job } => {
             if active(shared, tx) {
-                job.run(connection);
+                job.run(connection, &|| {
+                    shared
+                        .closed
+                        .load(Ordering::Acquire)
+                        .then(|| terminal_error(shared))
+                });
                 release_if_finished(connection, shared);
             } else {
                 job.fail(Error::InvalidTransaction);

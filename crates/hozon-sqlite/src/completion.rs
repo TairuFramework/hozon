@@ -70,6 +70,9 @@ impl<T: Send + 'static> Drop for Completion<T> {
 }
 
 pub(crate) fn wait<T: Send + 'static>(submit: impl FnOnce(Callback<T>)) -> Result<T> {
+    if ENGINE_THREAD.get() {
+        return Err(Error::InvalidInput("blocking call on engine thread".into()));
+    }
     let (send, receive) = mpsc::channel();
     submit(Box::new(move |value| {
         let _ = send.send(value);
