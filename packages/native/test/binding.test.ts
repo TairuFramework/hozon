@@ -13,6 +13,39 @@ const options = {
   expireAdmissions: true,
 } as const
 
+test('cached writer selects refresh columns after schema changes', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'hozon-schema-cache-'))
+  const db = await sqlite.open(join(directory, 'test.db'), options)
+  try {
+    for (const transaction of [false, true]) {
+      const tx = transaction ? (await sqlite.beginWrite(db).granted).txID : null
+      const query = (sql: string) => sqlite.execute(db, tx, sql, [], 'write')
+      await query('CREATE TABLE items (id INTEGER)')
+      await query('INSERT INTO items VALUES (1), (2)')
+      const select = 'SELECT * FROM items ORDER BY id'
+      for (let run = 0; run < 2; run++) {
+        expect(await query(select)).toMatchObject({ columns: ['id'], rows: [[1], [2]] })
+      }
+      await query("ALTER TABLE items ADD COLUMN label TEXT NOT NULL DEFAULT 'default'")
+      for (let run = 0; run < 3; run++) {
+        expect(await query(select)).toMatchObject({
+          columns: ['id', 'label'],
+          rows: [[1, 'default'], [2, 'default']],
+        })
+      }
+      await query('ALTER TABLE items DROP COLUMN label')
+      for (let run = 0; run < 3; run++) {
+        expect(await query(select)).toMatchObject({ columns: ['id'], rows: [[1], [2]] })
+      }
+      await query('DROP TABLE items')
+      if (tx !== null) await sqlite.commit(db, tx)
+    }
+  } finally {
+    await sqlite.close(db)
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('boundary validates handles, mode, bigint range and unsafe numbers', async () => {
   const db = await sqlite.open(':memory:', options)
   try {

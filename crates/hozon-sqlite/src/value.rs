@@ -52,22 +52,25 @@ pub(crate) fn execute(
         return Err(Error::InvalidInput("write statement in read mode".into()));
     }
     let readonly = statement.readonly();
-    let columns = statement
-        .column_names()
-        .map(String::from)
-        .collect::<Vec<_>>();
     let before = connection.total_changes();
     let mut rows = Vec::new();
     {
         let mut cursor = statement.query(params_from_iter(params))?;
         while let Some(row) = cursor.next()? {
-            let mut values = Vec::with_capacity(columns.len());
-            for index in 0..columns.len() {
+            // SQLite may reprepare a cached statement on its first step.
+            let column_count = row.as_ref().column_count();
+            let mut values = Vec::with_capacity(column_count);
+            for index in 0..column_count {
                 values.push(row.get(index)?);
             }
             rows.push(values);
         }
     }
+    // SQLITE_DONE also refreshes metadata when the query returns no rows.
+    let columns = statement
+        .column_names()
+        .map(String::from)
+        .collect::<Vec<_>>();
     Ok(QueryResult {
         rows,
         columns,
