@@ -27,7 +27,14 @@ and `lastInsertRowID`) always stays `bigint`. This convention applies to both na
 Every TypeScript statement and native kernel names its `txID` and runs on that transaction's connection.
 TypeScript statements use the `@hozon/native` Kysely driver.
 Savepoints, release and rollback-to are SQL statements executed with that same `txID`.
-These handles describe the native driver contract, rather than new methods on today's adapters.
+`@hozon/adapter` exports `NativeTransactionRef = { database: NativeDBHandle; txID: TxID }`.
+The optional adapter hook `nativeTransactionOf(connection)` resolves the native ref from a Kysely connection.
+`NativeAdapter` implements it using the connection's active `txID`.
+`HozonDB` captures that ref once when the transaction begins, through Kysely's connection executor.
+Call `db.nativeTransaction(tx)` with the scoped provider to retrieve it synchronously.
+Every nested savepoint and derived provider shares the same ref object.
+Non-native adapters, root providers and providers unknown to that database return `null`.
+A captured ref does not extend transaction lifetime. Native calls reject settled refs with `HOZON_INVALID_TRANSACTION` after commit or rollback.
 
 Hozon keeps these semantics in TypeScript:
 
@@ -72,6 +79,10 @@ Cases declare their required flag value through `ConformanceCase.capabilities`.
 The portable runner filters incompatible cases before creating adapters. Its results and summary count only executed cases.
 The Vitest suite reports incompatible cases as skipped.
 This flag belongs to conformance configuration and does not modify production adapters.
+
+`nativeTransactions: true` enables transaction-ref cases. Native suites inject the raw `NativeSQLite` implementation through `ConformanceContext.nativeSQLite`.
+These cases mix Kysely and raw native writes, check nested savepoint identity, and reject refs after commit or rollback.
+The flag defaults to false. Non-native suites verify that transaction and savepoint providers return `null`.
 
 `admissionControl: true` additionally enables native timeout, abandonment and expiry/grant race cases.
 It defaults to false; node-sqlite skips these cases. All required capabilities must match.

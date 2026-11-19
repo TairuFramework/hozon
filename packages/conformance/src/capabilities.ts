@@ -10,6 +10,7 @@ export type ConformanceCapabilities = {
   admissionControl?: boolean
   /** The open database actively expires queued admissions, regardless of build profile. */
   admissionExpiry?: boolean
+  nativeTransactions?: boolean
 }
 
 export function supportsCase(
@@ -17,7 +18,13 @@ export function supportsCase(
   capabilities: ConformanceCapabilities = {},
 ): boolean {
   return (
-    ['singleWriter', 'concurrentReaders', 'admissionControl', 'admissionExpiry'] as const
+    [
+      'singleWriter',
+      'concurrentReaders',
+      'admissionControl',
+      'admissionExpiry',
+      'nativeTransactions',
+    ] as const
   ).every((capability) => {
     const required = entry.capabilities?.[capability]
     return required === undefined || required === (capabilities[capability] ?? false)

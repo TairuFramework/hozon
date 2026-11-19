@@ -1,4 +1,14 @@
-import type { ColumnDataType, ColumnType, Dialect, Expression, Kysely, RawBuilder } from 'kysely'
+import type {
+  ColumnDataType,
+  ColumnType,
+  DatabaseConnection,
+  Dialect,
+  Expression,
+  Kysely,
+  RawBuilder,
+} from 'kysely'
+
+import type { NativeTransactionRef } from './native.js'
 
 export type OrderDirection = 'asc' | 'desc'
 export type ArrayPresenceMode = 'null' | 'nonNull' | 'empty' | 'nonEmpty' | 'nullOrEmpty'
@@ -89,4 +99,5 @@ export type AbstractAdapter<T extends AdapterTypes = AdapterTypes> = {
 
 export type Adapter<T extends AdapterTypes = AdapterTypes> = AbstractAdapter<T> & {
   dialect: Dialect
+  nativeTransactionOf?(connection: DatabaseConnection): NativeTransactionRef | null
 }

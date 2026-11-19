@@ -13,7 +13,7 @@ import { defineVitestSuite } from '../src/vitest.js'
 
 defineVitestSuite({
   name: 'node-sqlite',
-  capabilities: { singleWriter: true },
+  capabilities: { singleWriter: true, nativeTransactions: false },
   createAdapter: async () => new NodeSQLiteAdapter({ database: ':memory:' }),
 })
 

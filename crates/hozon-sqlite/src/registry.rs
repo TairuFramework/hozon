@@ -6,6 +6,7 @@ use crate::{
     TxID, Value,
     completion::{Completion, dispatch, wait},
     engine::{Engine, next_id},
+    job::{Job, TxJob},
     reader::lock,
 };
 use std::{
@@ -279,6 +280,28 @@ impl Registry {
         self.submit(db, callback, |engine, reply| {
             engine.execute(tx_id, sql.to_owned(), params.to_vec(), mode, reply)
         });
+    }
+    /// Queue Rust work in FIFO order with the active transaction's statements.
+    pub fn run_in_transaction_async<T: Send + 'static>(
+        &self,
+        db: DBID,
+        tx: TxID,
+        job: TxJob<T>,
+        callback: Callback<T>,
+    ) {
+        self.submit(db, callback, |engine, reply| {
+            engine.job(tx, Box::new(Job { db, tx, job, reply }));
+        });
+    }
+    /// Blocking convenience for Rust integration tests; never use at a host boundary.
+    #[cfg(feature = "test-util")]
+    pub fn run_in_transaction<T: Send + 'static>(
+        &self,
+        db: DBID,
+        tx: TxID,
+        job: TxJob<T>,
+    ) -> Result<T> {
+        wait(|callback| self.run_in_transaction_async(db, tx, job, callback))
     }
     fn submit<T: Send + 'static>(
         &self,

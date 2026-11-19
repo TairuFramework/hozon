@@ -1,6 +1,6 @@
 use crate::{Error, Result};
 pub use rusqlite::types::Value;
-use rusqlite::{Connection, params_from_iter};
+use rusqlite::{Connection, limits::Limit, params_from_iter};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -21,10 +21,11 @@ pub(crate) fn execute(
     params: &[Value],
     mode: Mode,
 ) -> Result<QueryResult> {
-    if params.len() > 500 {
-        return Err(Error::InvalidInput(
-            "at most 500 parameters are allowed".into(),
-        ));
+    let limit = connection.limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER)? as usize;
+    if params.len() > limit {
+        return Err(Error::InvalidInput(format!(
+            "at most {limit} parameters are allowed"
+        )));
     }
     let mut prefix = sql;
     let first = keyword(&mut prefix);
@@ -103,4 +104,67 @@ fn keyword<'a>(sql: &mut &'a str) -> &'a str {
     let word = &sql[..end];
     *sql = &sql[end..];
     word
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_binds(connection: &Connection, count: usize) {
+        let placeholders = vec!["(?)"; count].join(",");
+        let result = execute(
+            connection,
+            &format!("SELECT sum(column1) FROM (VALUES {placeholders})"),
+            &vec![Value::Integer(1); count],
+            Mode::Read,
+        )
+        .unwrap();
+        assert_eq!(result.rows, vec![vec![Value::Integer(count as i64)]]);
+    }
+
+    #[test]
+    fn binds_more_than_500_parameters() {
+        let connection = Connection::open_in_memory().unwrap();
+        for count in [501, 2000] {
+            assert_binds(&connection, count);
+        }
+    }
+
+    #[test]
+    fn enforces_connection_parameter_limit() {
+        let connection = Connection::open_in_memory().unwrap();
+        let limit = connection
+            .limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER)
+            .unwrap();
+        eprintln!("SQLite connection variable limit: {limit}");
+        assert_exceeds_limit(&connection, limit as usize);
+        assert_binds(&connection, limit as usize);
+    }
+
+    #[test]
+    fn honours_lowered_connection_parameter_limit() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .set_limit(Limit::SQLITE_LIMIT_VARIABLE_NUMBER, 700)
+            .unwrap();
+        assert_exceeds_limit(&connection, 700);
+        assert_binds(&connection, 700);
+    }
+
+    fn assert_exceeds_limit(connection: &Connection, limit: usize) {
+        let error = execute(
+            connection,
+            "SELECT 1",
+            &vec![Value::Null; limit + 1],
+            Mode::Read,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&error, Error::InvalidInput(message) if message == &format!("at most {limit} parameters are allowed"))
+        );
+        assert_eq!(
+            error.to_string(),
+            format!("invalid input: at most {limit} parameters are allowed")
+        );
+    }
 }
