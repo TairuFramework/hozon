@@ -6,3 +6,8 @@ node_modules
 .pnpm-store/
 .pnpm-cache/
 lib
+.pnpm
+target
+
+# Locally built Node SQLite binding
+/packages/native/native/

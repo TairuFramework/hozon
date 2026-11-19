@@ -1,27 +1,46 @@
-import type { Adapter } from '@hozon/adapter'
+import type { Adapter, NativeDBHandle, NativeSQLite } from '@hozon/adapter'
 import { HozonDB, type HozonDBParams } from '@hozon/db'
 
+import { type ConformanceCapabilities, supportsCase } from './capabilities.js'
 import { atomicityCases } from './cases/atomicity.js'
 import { encodingCases } from './cases/encoding.js'
 import { lifecycleCases } from './cases/lifecycle.js'
 import { migrationCases } from './cases/migrations.js'
+import { nativeContractCases } from './cases/native-contract.js'
 import { scopeCases } from './cases/scopes.js'
 import { seamCases } from './cases/seams.js'
 import { searchCases } from './cases/search.js'
 import { storeLogCases } from './cases/store-log.js'
 import { storeTelemetryCases } from './cases/store-telemetry.js'
 import { syncCases } from './cases/sync.js'
+import { transactionContractCases } from './cases/transaction-contract.js'
 import { transactionCases } from './cases/transactions.js'
 
 export type ConformanceContext = {
   createAdapter: () => Promise<Adapter>
   cleanup?: () => Promise<void>
+  capabilities?: ConformanceCapabilities
+  /** Test-only access to this case's native handle; adapter close owns cleanup.
+   * Use a short positive timeout (for example 10 ms), below the 1000 ms liveness bound.
+   */
+  admissionControl?: (adapter: Adapter) => Promise<AdmissionControlTestContext>
+}
+export type AdmissionControlTestContext = {
+  /** beginWrite returns a synchronous pending ID; await its granted promise for the txID. */
+  sqlite: NativeSQLite
+  db: NativeDBHandle
+  timeoutMs: number
 }
 export type CaseContext = {
   adapter: Adapter
   db: (params?: Partial<HozonDBParams>) => HozonDB
+  admissionControl?: ConformanceContext['admissionControl']
 }
-export type ConformanceCase = { name: string; run(ctx: CaseContext): Promise<void> }
+export type ConformanceCase = {
+  name: string
+  capabilities?: ConformanceCapabilities
+  run(ctx: CaseContext): Promise<void>
+}
 export type ConformanceResult = { name: string; ok: boolean; error?: string }
 
 export const allCases: Array<ConformanceCase> = [
@@ -32,6 +51,8 @@ export const allCases: Array<ConformanceCase> = [
   ...seamCases,
   ...migrationCases,
   ...transactionCases,
+  ...transactionContractCases,
+  ...nativeContractCases,
   ...storeLogCases,
   ...storeTelemetryCases,
   ...atomicityCases,
@@ -43,6 +64,7 @@ export async function runConformance(
 ): Promise<Array<ConformanceResult>> {
   const results: Array<ConformanceResult> = []
   for (const entry of params.cases ?? allCases) {
+    if (!supportsCase(entry, params.capabilities)) continue
     const errors: Array<string> = []
     const databases: Array<HozonDB> = []
     let adapter: Adapter | undefined
@@ -58,6 +80,7 @@ export async function runConformance(
       const caseAdapter = adapter
       await entry.run({
         adapter: caseAdapter,
+        admissionControl: params.admissionControl,
         db: (options) => {
           const db = new HozonDB({ ...options, adapter: caseAdapter })
           databases.push(db)

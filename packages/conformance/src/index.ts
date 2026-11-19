@@ -1,4 +1,5 @@
 export * as assert from './assert.js'
+export { type ConformanceCapabilities, supportsCase } from './capabilities.js'
 export { atomicityCases } from './cases/atomicity.js'
 export { encodingCases } from './cases/encoding.js'
 export { lifecycleCases } from './cases/lifecycle.js'
@@ -8,8 +9,10 @@ export { searchCases } from './cases/search.js'
 export { storeLogCases } from './cases/store-log.js'
 export { storeTelemetryCases } from './cases/store-telemetry.js'
 export { syncCases } from './cases/sync.js'
+export { transactionContractCases } from './cases/transaction-contract.js'
 export { transactionCases } from './cases/transactions.js'
 export type {
+  AdmissionControlTestContext,
   CaseContext,
   ConformanceCase,
   ConformanceContext,

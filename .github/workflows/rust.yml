@@ -1,0 +1,34 @@
+name: Rust checks
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: pnpm
+      - name: Install dependencies and pinned Rust toolchain
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Check Rust formatting
+        run: pnpm exec cargo fmt --all --check
+      # Covers transaction scheduling, callback delivery and SQLite type fidelity.
+      - name: Test crates
+        run: pnpm exec cargo test --workspace --locked --offline
+      - name: Check Rust warnings
+        run: pnpm exec cargo clippy --workspace --all-targets --locked --offline -- -D warnings
+      - name: Build Node-API binding
+        run: pnpm exec node scripts/build-sqlite-napi.ts
+      - name: Build native adapter and conformance dependencies
+        run: pnpm --filter @hozon/native... build
+      - name: Test Node-API binding and native adapter
+        run: pnpm --filter @hozon/native run test:native

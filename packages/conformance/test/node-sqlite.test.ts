@@ -2,11 +2,18 @@ import { HozonDB, type StoreProvider } from '@hozon/db'
 import { NodeSQLiteAdapter } from '@hozon/node-sqlite'
 import { expect, test, vi } from 'vitest'
 
-import { allCases, runConformance, summarize, transactionCases } from '../src/index.js'
+import {
+  allCases,
+  runConformance,
+  summarize,
+  supportsCase,
+  transactionCases,
+} from '../src/index.js'
 import { defineVitestSuite } from '../src/vitest.js'
 
 defineVitestSuite({
   name: 'node-sqlite',
+  capabilities: { singleWriter: true },
   createAdapter: async () => new NodeSQLiteAdapter({ database: ':memory:' }),
 })
 
@@ -52,13 +59,16 @@ test.each(['commit', 'rollback'] as const)(
 test('default portable runner executes every case successfully', async () => {
   expect(allCases.length).toBeGreaterThan(0)
   expect(new Set(allCases.map((entry) => entry.name)).size).toBe(allCases.length)
+  const capabilities = { singleWriter: true, concurrentReaders: false }
+  const supportedCases = allCases.filter((entry) => supportsCase(entry, capabilities))
   const results = await runConformance({
+    capabilities,
     createAdapter: async () => new NodeSQLiteAdapter({ database: ':memory:' }),
   })
   expect(results.filter((entry) => !entry.ok)).toEqual([])
-  expect(results.map((entry) => entry.name)).toEqual(allCases.map((entry) => entry.name))
+  expect(results.map((entry) => entry.name)).toEqual(supportedCases.map((entry) => entry.name))
   expect(summarize(results).line('Conformance')).toBe(
-    `Conformance: OK ${allCases.length}/${allCases.length}`,
+    `Conformance: OK ${supportedCases.length}/${supportedCases.length}`,
   )
 })
 
