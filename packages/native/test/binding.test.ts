@@ -30,7 +30,10 @@ test('cached writer selects refresh columns after schema changes', async () => {
       for (let run = 0; run < 3; run++) {
         expect(await query(select)).toMatchObject({
           columns: ['id', 'label'],
-          rows: [[1, 'default'], [2, 'default']],
+          rows: [
+            [1, 'default'],
+            [2, 'default'],
+          ],
         })
       }
       await query('ALTER TABLE items DROP COLUMN label')
