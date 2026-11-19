@@ -271,7 +271,8 @@ Plain queries through a retained API's captured Kysely execute in the still-open
 ## Chunking
 
 `chunk(items: Iterable<T>, size = IN_LIST_CHUNK, options?: { unique?: boolean })` returns arrays of at most `size` values.
-`IN_LIST_CHUNK` is the exported default, `500`, matching the statement parameter limit.
+`IN_LIST_CHUNK` is the exported helper chunking default, `500`.
+The hozon-sqlite driver accepts up to SQLite's per-connection variable limit; exceeding it throws `HOZON_INVALID_INPUT` with the limit value.
 The size must be a positive integer. Invalid sizes throw `RangeError`.
 Input iteration order is preserved. With `unique: true`, Set equality removes duplicates while preserving first-occurrence order.
 Sparse array holes become `undefined`, following iterable semantics.
@@ -304,7 +305,7 @@ Pending reads dispatch before savepoint creation, release, rollback, and transac
 Batch reads call `assertBatchSize(size, max, options?.batchLimit)` before querying.
 They return a `Map` containing every requested key, with `null` for missing records.
 `BatchReadOptions` permits a lower `batchLimit`. Exceeding the limit throws `BatchLimitError`.
-Invalid limits throw `RangeError`. No statement binds more than 500 parameters.
+Invalid limits throw `RangeError`. Helpers chunk statements to at most 500 bound parameters by default.
 `iterateBatches(keys, load, { batchSize, signal? })` deduplicates keys and loads sequential chunks.
 It yields `{ keys, results }` for each chunk and checks cancellation before each chunk.
 
