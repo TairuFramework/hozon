@@ -1,6 +1,6 @@
 {
   "name": "@hozon/db",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Database registry, migrations and transactions for Hozon",
   "repository": {
     "type": "git",

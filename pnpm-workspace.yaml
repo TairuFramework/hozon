@@ -34,7 +34,7 @@ catalog:
   '@opentelemetry/context-async-hooks': ^3.1.1
   '@opentelemetry/core': ^3.1.1
   '@opentelemetry/sdk-trace': ^3.1.1
-  '@playwright/test': 1.65.0
+  '@playwright/test': 1.65.1
   '@sozai/async': ^0.4.3
   '@sozai/codec': ^0.4.4
   '@sozai/json': ^0.3.0
@@ -47,11 +47,11 @@ catalog:
   '@types/react-dom': ~19.3.0
   '@vitejs/plugin-react': ^6.3.0
   del-cli: ^8.0.1
-  electron: ^45.3.0
-  expo: ^58.0.23
-  expo-sqlite: ~58.0.15
+  electron: ^45.3.4
+  expo: ^58.0.26
+  expo-sqlite: ~58.0.18
   expo-status-bar: ^58.0.5
-  kysely: ^0.29.8
+  kysely: ^0.29.9
   kysely-postgres-js: ^5.1.0
   postgres: ^4.1.1
   react: 19.3.0
@@ -62,7 +62,7 @@ catalog:
   testcontainers: ^12.1.0
   typescript: ^6.0.3
   vite: ^8.3.8
-  vitest: 5.1.0
+  vitest: 5.1.1
   '@kigu/dev': ^0.3.5
 
 catalogMode: prefer

@@ -14,6 +14,10 @@
   dir: packages/adapter
   intents:
     - node-sqlite-transaction-context
+"@hozon/adapter@0.3.1":
+  dir: packages/adapter
+  intents:
+    - native-sqlite-contract
 "@hozon/blob-backend@0.1.0":
   dir: packages/blob-backend
   intents:
@@ -84,6 +88,10 @@
   intents:
     - array-predicates-skip-scalars
     - reject-conflicting-store-registration
+"@hozon/conformance@0.3.2":
+  dir: packages/conformance
+  intents:
+    - native-sqlite-contract
 "@hozon/db@0.1.0":
   dir: packages/db
   intents:
@@ -113,6 +121,10 @@
   dir: packages/db
   intents:
     - db-transaction-scope
+"@hozon/db@0.5.2":
+  dir: packages/db
+  intents:
+    - native-sqlite-contract
 "@hozon/expo@0.1.0":
   dir: packages/expo
   intents:
@@ -129,6 +141,10 @@
   dir: packages/logtape
   intents:
     - reject-conflicting-store-registration
+"@hozon/native@0.1.0":
+  dir: packages/native
+  intents:
+    - native-sqlite-contract
 "@hozon/node-sqlite@0.1.0":
   dir: packages/node-sqlite
   intents:
