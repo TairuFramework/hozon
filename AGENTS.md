@@ -10,7 +10,7 @@ hozon provides database adapters, stores, and telemetry integrations for the Tai
 ## Guardrails
 
 Use pnpm only. Never call `.transaction()` inside store methods; use `withStoreTransaction`.
-No statement may bind more than 500 parameters.
+Keep helper chunking defaults at 500 bound parameters. The hozon-sqlite driver uses SQLite's per-connection variable limit.
 
 <!-- BEGIN:turborepo-agent-rules -->
 

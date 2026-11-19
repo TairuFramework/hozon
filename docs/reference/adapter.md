@@ -76,7 +76,7 @@ abstract class AbstractPostgresAdapter<T extends AdapterTypes = PostgresTypes>
 }
 ```
 
-`containsPredicate` accepts a SQL `LIKE` pattern, such as `%needle%`. Array inclusion predicates bind one parameter per value. Hozon's own statements stay within the 500-parameter limit, but callers must chunk large value lists passed to these predicates.
+`containsPredicate` accepts a SQL `LIKE` pattern, such as `%needle%`. Array inclusion predicates bind one parameter per value. Hozon's helpers chunk statements to at most 500 bound parameters by default, but callers must chunk large value lists passed to these predicates to fit their driver's limit.
 
 Array inclusion semantics are identical on every backend and covered by the shared conformance suite:
 

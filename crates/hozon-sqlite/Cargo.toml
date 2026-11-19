@@ -9,5 +9,5 @@ publish.workspace = true
 test-util = []
 
 [dependencies]
-rusqlite.workspace = true
+rusqlite = { workspace = true, features = ["limits"] }
 serde_json.workspace = true
