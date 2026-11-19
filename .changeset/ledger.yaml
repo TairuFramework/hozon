@@ -161,6 +161,10 @@
   dir: packages/native
   intents:
     - native-transactions
+"@hozon/native@0.1.2":
+  dir: packages/native
+  intents:
+    - sqlite-reprepare-columns
 "@hozon/node-sqlite@0.1.0":
   dir: packages/node-sqlite
   intents:
