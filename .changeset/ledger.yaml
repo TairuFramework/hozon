@@ -18,6 +18,10 @@
   dir: packages/adapter
   intents:
     - native-sqlite-contract
+"@hozon/adapter@0.3.2":
+  dir: packages/adapter
+  intents:
+    - native-transactions
 "@hozon/blob-backend@0.1.0":
   dir: packages/blob-backend
   intents:
@@ -92,6 +96,10 @@
   dir: packages/conformance
   intents:
     - native-sqlite-contract
+"@hozon/conformance@0.3.3":
+  dir: packages/conformance
+  intents:
+    - native-transactions
 "@hozon/db@0.1.0":
   dir: packages/db
   intents:
@@ -125,6 +133,10 @@
   dir: packages/db
   intents:
     - native-sqlite-contract
+"@hozon/db@0.5.3":
+  dir: packages/db
+  intents:
+    - native-transactions
 "@hozon/expo@0.1.0":
   dir: packages/expo
   intents:
@@ -145,6 +157,10 @@
   dir: packages/native
   intents:
     - native-sqlite-contract
+"@hozon/native@0.1.1":
+  dir: packages/native
+  intents:
+    - native-transactions
 "@hozon/node-sqlite@0.1.0":
   dir: packages/node-sqlite
   intents:

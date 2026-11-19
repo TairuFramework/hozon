@@ -1,6 +1,6 @@
 {
   "name": "@hozon/native",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Hozon adapter for the native hozon-sqlite engine",
   "repository": {
     "type": "git",

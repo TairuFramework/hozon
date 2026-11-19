@@ -1,5 +1,11 @@
 # @hozon/native
 
+## 0.1.1
+
+### Patch Changes
+
+- Expose a native write transaction to Rust callers. `Adapter.nativeTransactionOf` and `HozonDB.nativeTransaction` return the native database handle and txID of the active write transaction (shared by its savepoints), and `@hozon/native` implements them. Conformance gains a `nativeTransactions` capability with cases for shared writes and rejection after commit or rollback. The Rust engine now binds up to SQLite's per-connection variable limit instead of 500 parameters.
+
 ## 0.1.0
 
 ### Minor Changes
