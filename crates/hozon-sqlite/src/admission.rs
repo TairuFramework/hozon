@@ -31,7 +31,16 @@ pub struct Stats {
     pub admission_warnings: u64,
 }
 
+/// High priority leads, with one queued low grant after eight consecutive high grants.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WritePriority {
+    #[default]
+    High,
+    Low,
+}
+
 pub(crate) struct Pending {
+    pub priority: WritePriority,
     pub id: AdmissionID,
     pub started: Duration,
     pub timeout: Duration,

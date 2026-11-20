@@ -1,5 +1,6 @@
 // Adapted from https://github.com/mphill/kysely-expo/blob/main/src/driver.ts
 // Copyright (c) 2023 mphill, MIT License. See ../THIRD_PARTY_NOTICES.md for the full notice.
+import type { WritePriority } from '@hozon/adapter'
 import type { SQLiteDatabase } from 'expo-sqlite'
 import {
   type CompiledQuery,
@@ -23,6 +24,15 @@ export type ExpoDialectParams = {
   database: SQLiteDatabase
   /** Called when Kysely destroys the driver; closes the handle. */
   destroy: () => Promise<void>
+  priority?: WritePriority
+  mutex?: ConnectionMutex
+}
+
+class ExpoDialectAdapter extends SqliteAdapter {
+  // The mutex owns admission. Kysely must not hide waiting requests in another queue.
+  override get supportsMultipleConnections(): boolean {
+    return true
+  }
 }
 
 /** Kysely dialect over an expo-sqlite database handle. */
@@ -42,7 +52,7 @@ export class ExpoDialect implements Dialect {
   }
 
   createAdapter(): DialectAdapter {
-    return new SqliteAdapter()
+    return new ExpoDialectAdapter()
   }
 
   createIntrospector(db: Kysely<unknown>): DatabaseIntrospector {
@@ -52,11 +62,14 @@ export class ExpoDialect implements Dialect {
 
 /** Kysely driver serialising every query through the single expo-sqlite connection. */
 export class ExpoDriver implements Driver {
-  #connectionMutex = new ConnectionMutex()
+  #connectionMutex: ConnectionMutex
+  #priority: WritePriority
   #connection: ExpoConnection
   #destroy: () => Promise<void>
 
   constructor(params: ExpoDialectParams) {
+    this.#connectionMutex = params.mutex ?? new ConnectionMutex()
+    this.#priority = params.priority ?? 'high'
     this.#connection = new ExpoConnection(params.database)
     this.#destroy = params.destroy
   }
@@ -64,7 +77,7 @@ export class ExpoDriver implements Driver {
   async init(): Promise<void> {}
 
   async acquireConnection(): Promise<DatabaseConnection> {
-    await this.#connectionMutex.lock()
+    await this.#connectionMutex.lock(this.#priority)
     return this.#connection
   }
 
@@ -132,23 +145,33 @@ class ExpoConnection implements DatabaseConnection {
   }
 }
 
-class ConnectionMutex {
-  #promise?: Promise<void>
-  #resolve?: () => void
+/** FIFO per priority. After eight high grants, a waiting low gets one turn. */
+export class ConnectionMutex {
+  #held = false
+  #highGrants = 0
+  #high: Array<() => void> = []
+  #low: Array<() => void> = []
 
-  async lock(): Promise<void> {
-    while (this.#promise) {
-      await this.#promise
+  async lock(priority: WritePriority = 'high'): Promise<void> {
+    if (!this.#held) {
+      this.#held = true
+      this.#highGrants = priority === 'high' ? 1 : 0
+      return
     }
-    this.#promise = new Promise((resolve) => {
-      this.#resolve = resolve
+    await new Promise<void>((resolve) => {
+      ;(priority === 'high' ? this.#high : this.#low).push(resolve)
     })
   }
 
   unlock(): void {
-    const resolve = this.#resolve
-    this.#promise = undefined
-    this.#resolve = undefined
-    resolve?.()
+    const low = this.#low.length > 0 && (this.#high.length === 0 || this.#highGrants >= 8)
+    const next = (low ? this.#low : this.#high).shift()
+    if (next) {
+      this.#highGrants = low ? 0 : this.#highGrants + 1
+      next()
+    } else {
+      this.#held = false
+      this.#highGrants = 0
+    }
   }
 }

@@ -31,6 +31,7 @@ export type {
   StoreContext,
   StoreDefinition,
   StoreProvider,
+  TransactionOptions,
 } from './db.js'
 export { HozonDB } from './db.js'
 export {

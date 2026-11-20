@@ -10,7 +10,7 @@ mod reader;
 mod registry;
 mod value;
 
-pub use admission::{Admission, Clock, MonotonicClock, Stats};
+pub use admission::{Admission, Clock, MonotonicClock, Stats, WritePriority};
 pub use completion::Callback;
 pub use error::{Error, Result};
 pub use job::{TxConnection, TxJob};

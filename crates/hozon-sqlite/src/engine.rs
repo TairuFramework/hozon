@@ -2,6 +2,7 @@
 //! process-wide control thread, so slow lifecycle work can delay other databases.
 use crate::{
     Admission, AdmissionID, Error, Mode, OpenOptions, QueryResult, Result, Stats, TxID, Value,
+    WritePriority,
     admission::{AdmissionWork, Holder, Pending},
     completion::{Completion, dispatch},
     job::JobCommand,
@@ -61,6 +62,7 @@ impl Command {
 struct State {
     holder: Option<Holder>,
     pending: VecDeque<Pending>,
+    high_grants: usize,
     commands: VecDeque<Command>,
     granting: Option<AdmissionID>,
     stopping: bool,
@@ -111,6 +113,7 @@ impl Engine {
             state: Mutex::new(State {
                 holder: None,
                 pending: VecDeque::new(),
+                high_grants: 0,
                 commands: VecDeque::new(),
                 granting: None,
                 stopping: false,
@@ -160,14 +163,16 @@ impl Engine {
         &self,
         timeout: Option<Duration>,
         label: Option<String>,
+        priority: WritePriority,
         reply: Completion<Admission>,
     ) -> AdmissionID {
-        self.admit(timeout, label, AdmissionWork::Begin(reply))
+        self.admit(timeout, label, priority, AdmissionWork::Begin(reply))
     }
     fn admit(
         &self,
         timeout: Option<Duration>,
         label: Option<String>,
+        priority: WritePriority,
         reply: AdmissionWork,
     ) -> AdmissionID {
         let id = next_id();
@@ -188,7 +193,11 @@ impl Engine {
             reply.fail_async(terminal_error(&self.shared));
             return id;
         }
+        if state.holder.is_none() && state.pending.is_empty() {
+            state.high_grants = 0;
+        }
         state.pending.push_back(Pending {
+            priority,
             id,
             started,
             timeout: timeout.unwrap_or(Duration::from_secs(10)),
@@ -234,7 +243,12 @@ impl Engine {
                 self.readers.execute(sql, params, reply);
             }
         } else {
-            self.admit(None, None, AdmissionWork::Execute { sql, params, reply });
+            self.admit(
+                None,
+                None,
+                WritePriority::High,
+                AdmissionWork::Execute { sql, params, reply },
+            );
         }
     }
     pub fn job(&self, tx: TxID, job: Box<dyn JobCommand>) {
@@ -407,10 +421,23 @@ fn run(
             handle_command(&connection, &shared, command);
             continue;
         }
+        let high = state
+            .pending
+            .iter()
+            .position(|p| p.priority == WritePriority::High);
+        let low = state
+            .pending
+            .iter()
+            .position(|p| p.priority == WritePriority::Low);
+        let next = if state.high_grants >= 8 {
+            low.or(high)
+        } else {
+            high.or(low)
+        };
         if state.holder.is_none()
-            && let Some(pending) = state.pending.front()
+            && let Some(index) = next
         {
-            let id = pending.id;
+            let id = state.pending[index].id;
             state.granting = Some(id);
             drop(state);
             let result = connection.execute_batch("BEGIN IMMEDIATE");
@@ -429,6 +456,11 @@ fn run(
                 shared.pending.fetch_sub(1, Ordering::Release);
                 match result {
                     Ok(()) if !shared.closed.load(Ordering::Acquire) => {
+                        state.high_grants = if pending.priority == WritePriority::Low {
+                            0
+                        } else {
+                            state.high_grants.saturating_add(1)
+                        };
                         let admission = Admission {
                             admission_id: pending.id,
                             tx_id: next_id(),
@@ -725,6 +757,7 @@ mod finish_race_tests {
                 engine.begin(
                     None,
                     None,
+                    WritePriority::High,
                     Completion::new(Box::new(move |v| {
                         send.send(v).unwrap();
                     })),

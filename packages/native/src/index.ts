@@ -3,6 +3,7 @@ import {
   type NativeDBHandle,
   type NativeSQLite,
   type NativeTransactionRef,
+  type WritePriority,
 } from '@hozon/adapter'
 import type { DatabaseConnection } from 'kysely'
 
@@ -27,10 +28,12 @@ export type NativeAdapterParams = {
 /** Owns one Rust engine handle. The native implementation is supplied by the host. */
 export class NativeAdapter extends AbstractSQLiteAdapter {
   #database: Promise<NativeDBHandle>
+  #params: NativeAdapterParams
   #dialect: NativeDialect
   #closing?: Promise<void>
   constructor(params: NativeAdapterParams) {
     super()
+    this.#params = params
     if (params.encryptionKey?.length) throw new Error('SQLCipher encryption is disabled')
     if (
       params.admissionTimeoutMs !== undefined &&
@@ -60,6 +63,15 @@ export class NativeAdapter extends AbstractSQLiteAdapter {
   }
   get dialect(): NativeDialect {
     return this.#dialect
+  }
+  transactionDialect(priority: WritePriority): NativeDialect {
+    return new NativeDialect({
+      sqlite: this.#params.sqlite,
+      database: this.#database,
+      destroy: async () => {},
+      admissionTimeoutMs: this.#params.admissionTimeoutMs,
+      priority,
+    })
   }
   nativeTransactionOf(connection: DatabaseConnection): NativeTransactionRef | null {
     return connection instanceof NativeConnection && connection.txID !== null

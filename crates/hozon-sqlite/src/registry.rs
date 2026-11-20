@@ -3,7 +3,7 @@
 //! their active writer and reader queues continue independently.
 use crate::{
     Admission, AdmissionID, Callback, DBID, Error, Mode, OpenOptions, QueryResult, Result, Stats,
-    TxID, Value,
+    TxID, Value, WritePriority,
     completion::{Completion, dispatch, wait},
     engine::{Engine, next_id},
     job::{Job, TxJob},
@@ -225,9 +225,20 @@ impl Registry {
         label: Option<String>,
         callback: Callback<Admission>,
     ) -> AdmissionID {
+        self.begin_write_with_priority_async(db, timeout, label, WritePriority::High, callback)
+    }
+    /// Submit a prioritised admission. Existing begin methods default to high priority.
+    pub fn begin_write_with_priority_async(
+        &self,
+        db: DBID,
+        timeout: Option<Duration>,
+        label: Option<String>,
+        priority: WritePriority,
+        callback: Callback<Admission>,
+    ) -> AdmissionID {
         let reply = Completion::new(callback);
         match self.engine(db) {
-            Ok(engine) => engine.begin(timeout, label, reply),
+            Ok(engine) => engine.begin(timeout, label, priority, reply),
             Err(error) => {
                 reply.fail_async(error);
                 next_id()
