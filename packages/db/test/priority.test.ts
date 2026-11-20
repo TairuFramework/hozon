@@ -1,32 +1,73 @@
-import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
-import type { SQLiteDatabase } from 'expo-sqlite'
+import { DatabaseSync } from 'node:sqlite'
+import { AbstractSQLiteAdapter, type WritePriority } from '@hozon/adapter'
+import {
+  type DatabaseConnection,
+  type Dialect,
+  SqliteAdapter,
+  SqliteIntrospector,
+  SqliteQueryCompiler,
+} from 'kysely'
 import { expect, test } from 'vitest'
 
-import { AbstractSQLiteAdapter } from '../../adapter/src/index.js'
-import type { WritePriority } from '../../adapter/src/types.js'
-import { ConnectionMutex, ExpoDialect } from '../../expo/src/driver.js'
 import { HozonDB } from '../src/db.js'
 
-// Exercise the Expo connection protocol against real SQLite without a device.
+class PriorityDialectAdapter extends SqliteAdapter {
+  override get supportsMultipleConnections(): boolean {
+    return true
+  }
+}
+
+// Only model priority admission here; driver fairness and FIFO belong in Expo's tests.
 class MemoryAdapter extends AbstractSQLiteAdapter {
   #database = new DatabaseSync(':memory:')
-  #mutex = new ConnectionMutex()
+  #held = false
+  #waiting: Record<WritePriority, Array<() => void>> = { high: [], low: [] }
+  #connection: DatabaseConnection = {
+    async executeQuery() {
+      throw new Error('This transaction-only test does not execute queries')
+    },
+    streamQuery() {
+      throw new Error('This transaction-only test does not stream queries')
+    },
+  }
   #closed = false
 
-  get dialect(): ExpoDialect {
+  get dialect(): Dialect {
     return this.transactionDialect('high')
   }
 
-  transactionDialect(priority: WritePriority): ExpoDialect {
-    const database = {
-      getAllAsync: async (query: string, values: Array<SQLInputValue>) =>
-        this.#database.prepare(query).all(...values),
-      runAsync: async (query: string, values: Array<SQLInputValue>) => {
-        const result = this.#database.prepare(query).run(...values)
-        return { changes: Number(result.changes), lastInsertRowId: Number(result.lastInsertRowid) }
-      },
-    } as unknown as SQLiteDatabase
-    return new ExpoDialect({ database, priority, mutex: this.#mutex, destroy: async () => {} })
+  transactionDialect(priority: WritePriority): Dialect {
+    return {
+      createAdapter: () => new PriorityDialectAdapter(),
+      createQueryCompiler: () => new SqliteQueryCompiler(),
+      createIntrospector: (db) => new SqliteIntrospector(db),
+      createDriver: () => ({
+        init: async () => {},
+        acquireConnection: async () => {
+          if (this.#held) {
+            await new Promise<void>((resolve) => this.#waiting[priority].push(resolve))
+          } else {
+            this.#held = true
+          }
+          return this.#connection
+        },
+        beginTransaction: async () => {
+          this.#database.exec('BEGIN')
+        },
+        commitTransaction: async () => {
+          this.#database.exec('COMMIT')
+        },
+        rollbackTransaction: async () => {
+          this.#database.exec('ROLLBACK')
+        },
+        releaseConnection: async () => {
+          const next = this.#waiting.high.shift() ?? this.#waiting.low.shift()
+          if (next) next()
+          else this.#held = false
+        },
+        destroy: async () => {},
+      }),
+    }
   }
 
   async close(): Promise<void> {
