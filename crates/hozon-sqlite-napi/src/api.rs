@@ -52,12 +52,18 @@ pub struct NativeOpenOptions {
 #[napi(object)]
 pub struct BeginOptions {
     pub timeout_ms: Option<f64>,
+    pub priority: Option<String>,
 }
 
 enum Command {
     Open(String, OpenOptions),
     Close(u64),
-    Begin(String, Option<f64>, Option<String>),
+    Begin(
+        String,
+        Option<f64>,
+        Option<String>,
+        hozon_sqlite::WritePriority,
+    ),
     Abandon(u64, u64),
     Commit(u64, u64),
     Rollback(u64, u64),
@@ -182,7 +188,7 @@ fn submit(env: Env, command: Command) -> Result<Object<'static>> {
                     r.open_async(path, options, completion(deferred, Output::Handle))
                 }
                 Command::Close(db) => r.close_async(db, completion(deferred, |_| Output::Unit)),
-                Command::Begin(db, timeout, label) => {
+                Command::Begin(db, timeout, label, priority) => {
                     let validated = id(&db).and_then(|db| {
                         timeout
                             .map(milliseconds)
@@ -196,10 +202,11 @@ fn submit(env: Env, command: Command) -> Result<Object<'static>> {
                             return;
                         }
                     };
-                    *admission_id = Some(r.begin_write_pending_labeled_async(
+                    *admission_id = Some(r.begin_write_with_priority_async(
                         db,
                         timeout,
                         label,
+                        priority,
                         completion(deferred, Output::Admission),
                     ));
                 }
@@ -317,13 +324,18 @@ pub fn close(env: Env, db: String) -> Result<Object<'static>> {
     submit(env, Command::Close(id(&db)?))
 }
 pub fn begin_write(env: Env, db: String, options: Option<BeginOptions>) -> Result<Object<'static>> {
+    let priority = match options.as_ref().and_then(|o| o.priority.as_deref()) {
+        None | Some("high") => hozon_sqlite::WritePriority::High,
+        Some("low") => hozon_sqlite::WritePriority::Low,
+        _ => return Err(invalid("priority must be high or low")),
+    };
     let timeout = options.and_then(|o| o.timeout_ms);
     // Capture at the JS boundary, before the worker starts waiting.
     let error: Function<(), Object> = env.get_global()?.get_named_property("Error")?;
     let label = error
         .call(())?
         .get_named_property::<Option<String>>("stack")?;
-    submit(env, Command::Begin(db, timeout, label))
+    submit(env, Command::Begin(db, timeout, label, priority))
 }
 pub fn abandon(env: Env, db: String, admission_id: String) -> Result<Object<'static>> {
     submit(env, Command::Abandon(id(&db)?, id(&admission_id)?))

@@ -1,4 +1,10 @@
-import type { Adapter, ColumnTypes, Functions, NativeTransactionRef } from '@hozon/adapter'
+import type {
+  Adapter,
+  ColumnTypes,
+  Functions,
+  NativeTransactionRef,
+  WritePriority,
+} from '@hozon/adapter'
 import { getLogger, type Logger } from '@sozai/log'
 import { Kysely, sql } from 'kysely'
 import { type Migration, Migrator } from 'kysely/migration'
@@ -22,6 +28,11 @@ import {
   settleSyncProvider,
 } from './sync.js'
 import { TablePrefixPlugin } from './table-prefix.js'
+
+export type TransactionOptions = {
+  /** Defaults to high. Running transactions are never preempted. */
+  priority?: WritePriority
+}
 
 export type MigrationContext = {
   tablePrefix: string
@@ -105,6 +116,7 @@ export type StoreProvider<Stores extends Record<string, unknown> = Record<string
    */
   withTransaction<NestedStores extends Record<string, unknown>, R>(
     fn: (tx: StoreProvider<NestedStores>) => Promise<R>,
+    options?: TransactionOptions,
   ): Promise<R>
   withScope?<NestedStores extends Record<string, unknown>, R>(
     fn: (scope: StoreProvider<NestedStores>) => Promise<R>,
@@ -148,6 +160,7 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
   #migrations = new Map<string, Record<string, Migration>>()
   #adapter: Adapter
   #db: Kysely<Record<string, unknown>>
+  #lowPriorityDB: Kysely<Record<string, unknown>>
   #storeDB: Kysely<Record<string, unknown>>
   #storePlugins = new Map<string, TablePrefixPlugin>()
   #logger: Logger
@@ -173,6 +186,15 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
           ? withTransactionalDDL(this.#adapter.dialect)
           : this.#adapter.dialect,
     })
+    const lowPriorityDialect = this.#adapter.transactionDialect?.('low')
+    this.#lowPriorityDB = lowPriorityDialect
+      ? new Kysely({
+          dialect:
+            this.#adapter.kind === 'sqlite'
+              ? withTransactionalDDL(lowPriorityDialect)
+              : lowPriorityDialect,
+        })
+      : this.#db
     this.#storeDB = this.#db.withPlugin(this.#defaultPlugin)
     this.#logger = params.logger ?? getLogger(['hozon', 'db'])
   }
@@ -265,8 +287,8 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
       ): Promise<R> => {
         return await nestedFn(provider as unknown as StoreProvider<NestedStores>)
       },
-      withTransaction: async (nestedFn) => {
-        return await this.#withTransaction(nestedFn, () => registry.clearAll())
+      withTransaction: async (nestedFn, options) => {
+        return await this.#withTransaction(nestedFn, () => registry.clearAll(), options)
       },
     }
     try {
@@ -288,8 +310,9 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
    */
   async withTransaction<Stores extends Record<string, unknown>, R>(
     fn: (tx: StoreProvider<Stores>) => Promise<R>,
+    options?: TransactionOptions,
   ): Promise<R> {
-    return await this.#withTransaction(fn)
+    return await this.#withTransaction(fn, undefined, options)
   }
 
   /** Dispatch pending loads, then discard cached values after a native write. */
@@ -307,6 +330,7 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
   async #withTransaction<Stores extends Record<string, unknown>, R>(
     fn: (tx: StoreProvider<Stores>) => Promise<R>,
     beforeHooks?: () => void,
+    options?: TransactionOptions,
   ): Promise<R> {
     const transactionContext = this.#adapter.transactionContext
     if (this.#adapter.kind === 'sqlite' && transactionContext?.active()) {
@@ -328,7 +352,8 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
     let savepointID = 0
     try {
       // The transaction runs on the unprefixed base so each store applies its own plugin.
-      result = await this.#db.transaction().execute(async (trx) => {
+      const database = options?.priority === 'low' ? this.#lowPriorityDB : this.#db
+      result = await database.transaction().execute(async (trx) => {
         const nativeTransaction = this.#adapter.nativeTransactionOf
           ? await trx.getExecutor().provideConnection(async (connection) => {
               return this.#adapter.nativeTransactionOf?.(connection) ?? null
@@ -568,6 +593,7 @@ export class HozonDB<Ext extends ContextExtension = {}> implements StoreProvider
       }
     }
     try {
+      if (this.#lowPriorityDB !== this.#db) await this.#lowPriorityDB.destroy()
       await this.#db.destroy()
     } finally {
       await this.#adapter.close?.()

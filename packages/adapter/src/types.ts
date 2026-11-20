@@ -10,6 +10,9 @@ import type {
 
 import type { NativeTransactionRef } from './native.js'
 
+/** FIFO within a priority. A waiting low gets a turn after eight consecutive high grants. */
+export type WritePriority = 'high' | 'low'
+
 export type OrderDirection = 'asc' | 'desc'
 export type ArrayPresenceMode = 'null' | 'nonNull' | 'empty' | 'nonEmpty' | 'nullOrEmpty'
 export type NullOrderingTerm = { kind: 'lead'; expression: Expression<number> } | { kind: 'native' }
@@ -99,5 +102,7 @@ export type AbstractAdapter<T extends AdapterTypes = AdapterTypes> = {
 
 export type Adapter<T extends AdapterTypes = AdapterTypes> = AbstractAdapter<T> & {
   dialect: Dialect
+  /** A dialect sharing the same database and admission queue. */
+  transactionDialect?(priority: WritePriority): Dialect
   nativeTransactionOf?(connection: DatabaseConnection): NativeTransactionRef | null
 }

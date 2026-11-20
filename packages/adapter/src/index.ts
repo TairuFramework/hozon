@@ -1,5 +1,6 @@
 export type {
   NativeAdmission,
+  NativeBeginOptions,
   NativeDBHandle,
   NativeOpenOptions,
   NativePendingAdmission,
@@ -28,4 +29,5 @@ export type {
   SearchQuery,
   TransactionContext,
   UpdatedAtColumn,
+  WritePriority,
 } from './types.js'

@@ -1,4 +1,4 @@
-import type { NativeDBHandle, NativeSQLite, TxID } from '@hozon/adapter'
+import type { NativeDBHandle, NativeSQLite, TxID, WritePriority } from '@hozon/adapter'
 import {
   type CompiledQuery,
   type DatabaseConnection,
@@ -20,6 +20,7 @@ export type NativeDialectParams = {
   sqlite: NativeSQLite
   database: Promise<NativeDBHandle>
   destroy: () => Promise<void>
+  priority?: WritePriority
   /** Optional JS wait bound. Pending and late native grants are abandoned. */
   admissionTimeoutMs?: number
 }
@@ -66,10 +67,10 @@ export class NativeDriver implements Driver {
     let expired = false
     let timer: ReturnType<typeof setTimeout> | undefined
     const database = await this.#params.database
-    const pending = this.#params.sqlite.beginWrite(
-      database,
-      timeoutMs === undefined ? undefined : { timeoutMs },
-    )
+    const pending = this.#params.sqlite.beginWrite(database, {
+      timeoutMs,
+      priority: this.#params.priority ?? 'high',
+    })
     const admission = pending.granted.then(async (grant) => {
       if (expired) {
         await this.#params.sqlite.abandon(await this.#params.database, grant.admissionID)

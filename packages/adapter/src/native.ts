@@ -1,3 +1,5 @@
+import type { WritePriority } from './types.js'
+
 /** Opaque native identifiers, passed explicitly on every call. */
 export type NativeDBHandle = string
 export type TxID = string
@@ -39,7 +41,7 @@ export type NativeOpenOptions = {
   expireAdmissions?: boolean
 }
 
-export type NativeBeginOptions = { timeoutMs?: number }
+export type NativeBeginOptions = { timeoutMs?: number; priority?: WritePriority }
 
 export type NativeSQLite = {
   open(path: string, options: NativeOpenOptions): Promise<NativeDBHandle>

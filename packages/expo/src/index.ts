@@ -1,8 +1,8 @@
-import { AbstractSQLiteAdapter } from '@hozon/adapter'
+import { AbstractSQLiteAdapter, type WritePriority } from '@hozon/adapter'
 import { openDatabaseSync, type SQLiteDatabase } from 'expo-sqlite'
 import type { Dialect } from 'kysely'
 
-import { ExpoDialect } from './driver.js'
+import { ConnectionMutex, ExpoDialect } from './driver.js'
 import { applyEncryptionKey } from './encryption.js'
 
 export type ExpoAdapterParams = {
@@ -21,6 +21,7 @@ export class ExpoAdapter extends AbstractSQLiteAdapter<{
   Timestamp: number
 }> {
   #database: SQLiteDatabase
+  #mutex = new ConnectionMutex()
   #dialect: Dialect
   #closing: Promise<void> | undefined
 
@@ -42,7 +43,11 @@ export class ExpoAdapter extends AbstractSQLiteAdapter<{
     }
     // The adapter owns the handle: Kysely destroying its driver and HozonDB closing the
     // adapter both route through the single idempotent close().
-    this.#dialect = new ExpoDialect({ database: this.#database, destroy: () => this.close() })
+    this.#dialect = new ExpoDialect({
+      database: this.#database,
+      destroy: () => this.close(),
+      mutex: this.#mutex,
+    })
   }
 
   get database(): SQLiteDatabase {
@@ -51,6 +56,15 @@ export class ExpoAdapter extends AbstractSQLiteAdapter<{
 
   get dialect(): Dialect {
     return this.#dialect
+  }
+
+  transactionDialect(priority: WritePriority): Dialect {
+    return new ExpoDialect({
+      database: this.#database,
+      destroy: async () => {},
+      mutex: this.#mutex,
+      priority,
+    })
   }
 
   close(): Promise<void> {
