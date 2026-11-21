@@ -65,6 +65,17 @@ pub fn execute(
 }
 #[cfg(feature = "addon")]
 #[napi]
+pub fn execute_read_sync(
+    env: Env,
+    db: String,
+    tx_id: Option<String>,
+    sql: String,
+    params: Vec<Unknown>,
+) -> Result<api::Resolved> {
+    boundary(|| api::execute_read_sync(env, db, tx_id, sql, params))
+}
+#[cfg(feature = "addon")]
+#[napi]
 pub fn sqlite_version() -> Result<String> {
     boundary(|| Ok(api::sqlite_version()))
 }

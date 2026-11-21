@@ -29,6 +29,8 @@ fn id(value: &str) -> Result<u64> {
 }
 fn engine_error(error: hozon_sqlite::Error) -> Error {
     let prefix = match &error {
+        hozon_sqlite::Error::SyncReadBusy => "HOZON_SYNC_READ_BUSY",
+        hozon_sqlite::Error::SyncReadTransaction => "HOZON_SYNC_READ_TRANSACTION",
         hozon_sqlite::Error::Closed => "HOZON_CLOSED",
         hozon_sqlite::Error::JobPanic => "HOZON_JOB_PANIC",
         hozon_sqlite::Error::JobEndedTransaction => "HOZON_JOB_ENDED_TRANSACTION",
@@ -359,7 +361,41 @@ pub fn execute(
         "write" => Mode::Write,
         _ => return Err(invalid("mode must be read or write")),
     };
-    let params = params
+    let params = bind_values(env, params)?;
+    submit(
+        env,
+        Command::Execute(
+            id(&db)?,
+            tx_id.as_deref().map(id).transpose()?,
+            sql,
+            params,
+            mode,
+        ),
+    )
+}
+
+/// Blocking read for background callers only. A transaction must stay async.
+pub fn execute_read_sync(
+    env: Env,
+    db: String,
+    tx_id: Option<String>,
+    sql: String,
+    params: Vec<Unknown>,
+) -> Result<Resolved> {
+    let params = bind_values(env, params)?;
+    registry()
+        .execute_read_sync(
+            id(&db)?,
+            tx_id.as_deref().map(id).transpose()?,
+            &sql,
+            &params,
+        )
+        .map(|result| Resolved(Output::Query(result)))
+        .map_err(engine_error)
+}
+
+fn bind_values(env: Env, params: Vec<Unknown>) -> Result<Vec<Value>> {
+    params
         .into_iter()
         .map(|value| {
             // SAFETY: each cast follows a runtime type check. Uint8Array's conversion
@@ -397,17 +433,7 @@ pub fn execute(
                 })
             }
         })
-        .collect::<Result<Vec<_>>>()?;
-    submit(
-        env,
-        Command::Execute(
-            id(&db)?,
-            tx_id.as_deref().map(id).transpose()?,
-            sql,
-            params,
-            mode,
-        ),
-    )
+        .collect::<Result<Vec<_>>>()
 }
 
 pub fn sqlite_version() -> String {
