@@ -1,5 +1,11 @@
 # @hozon/native
 
+## 0.1.4
+
+### Patch Changes
+
+- Expose optional calling-thread autocommit SQLite reads through executeReadSync. Use a dedicated query-only WAL reader with immediate async fallback on contention, transaction rejection, and close/interrupt draining.
+
 ## 0.1.3
 
 ### Patch Changes

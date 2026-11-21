@@ -26,6 +26,10 @@
   dir: packages/adapter
   intents:
     - write-priority
+"@hozon/adapter@0.3.4":
+  dir: packages/adapter
+  intents:
+    - calling-thread-sqlite-reads
 "@hozon/blob-backend@0.1.0":
   dir: packages/blob-backend
   intents:
@@ -181,6 +185,10 @@
   dir: packages/native
   intents:
     - write-priority
+"@hozon/native@0.1.4":
+  dir: packages/native
+  intents:
+    - calling-thread-sqlite-reads
 "@hozon/node-sqlite@0.1.0":
   dir: packages/node-sqlite
   intents:
