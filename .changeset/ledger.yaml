@@ -197,6 +197,10 @@
   dir: packages/node-sqlite
   intents:
     - node-sqlite-transaction-context
+"@hozon/node-sqlite@0.3.1":
+  dir: packages/node-sqlite
+  intents:
+    - node-sqlite-bigint-metadata
 "@hozon/otel@0.1.0":
   dir: packages/otel
   intents:
