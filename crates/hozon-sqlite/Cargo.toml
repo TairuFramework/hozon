@@ -11,3 +11,6 @@ test-util = []
 [dependencies]
 rusqlite = { workspace = true, features = ["limits"] }
 serde_json.workspace = true
+
+[dev-dependencies]
+rusqlite = { workspace = true, features = ["functions"] }

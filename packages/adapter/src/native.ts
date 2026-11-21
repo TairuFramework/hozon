@@ -50,6 +50,16 @@ export type NativeSQLite = {
   abandon(db: NativeDBHandle, admissionID: string): Promise<void>
   commit(db: NativeDBHandle, txID: TxID): Promise<void>
   rollback(db: NativeDBHandle, txID: TxID): Promise<void>
+  /** Background callers only. Throws HOZON_SYNC_READ_BUSY when leased (use async
+   * execute instead), or HOZON_SYNC_READ_TRANSACTION for a non-null txID.
+   * Hosts without calling-thread reads may omit this capability.
+   */
+  executeReadSync?(
+    db: NativeDBHandle,
+    txID: TxID | null,
+    sql: string,
+    params: Array<NativeValue>,
+  ): NativeResult
   execute(
     db: NativeDBHandle,
     txID: TxID | null,

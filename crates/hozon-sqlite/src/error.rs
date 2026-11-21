@@ -5,6 +5,8 @@ use std::fmt;
 pub enum Error {
     Closed,
     InvalidTransaction,
+    SyncReadTransaction,
+    SyncReadBusy,
     JobPanic,
     JobEndedTransaction,
     InvalidInput(String),
@@ -22,6 +24,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::SyncReadTransaction => write!(
+                f,
+                "calling-thread reads do not support transactions; use execute_async"
+            ),
+            Self::SyncReadBusy => write!(f, "calling-thread reader is leased; use execute_async"),
             Self::Closed => write!(f, "database is closed"),
             Self::JobPanic => write!(f, "transaction job panicked"),
             Self::JobEndedTransaction => write!(f, "job ended the active transaction"),

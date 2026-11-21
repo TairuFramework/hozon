@@ -279,3 +279,53 @@ test.each([true, false])(
     }
   },
 )
+
+test('calling-thread binding preserves values, errors and async transaction fallback', async () => {
+  const executeReadSync = sqlite.executeReadSync
+  if (!executeReadSync) throw new Error('Native binding must expose executeReadSync')
+  const db = await sqlite.open(':memory:', options)
+  try {
+    const params = [
+      null,
+      9223372036854775807n,
+      -9223372036854775808n,
+      1.5,
+      '日本語',
+      new Uint8Array([0, 255]),
+    ]
+    const sql = 'SELECT ?1, ?2, ?3, ?4, ?5, ?6'
+    const result = executeReadSync(db, null, sql, params)
+    expect(result).not.toBeInstanceOf(Promise)
+    expect(result).toEqual(await sqlite.execute(db, null, sql, params, 'read'))
+    expect(typeof result.changes).toBe('bigint')
+    expect(() => executeReadSync('bad', null, sql, params)).toThrow('HOZON_INVALID_INPUT')
+    expect(() => executeReadSync(db, null, 'SELEC bad', [])).toThrow('HOZON_SQLITE')
+    expect(() => executeReadSync(db, null, 'CREATE TABLE denied (x)', [])).toThrow(
+      'HOZON_INVALID_INPUT',
+    )
+    for (const value of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.MAX_SAFE_INTEGER + 1,
+      9223372036854775808n,
+    ]) {
+      expect(() => executeReadSync(db, null, 'SELECT ?', [value])).toThrow('HOZON_INVALID_INPUT')
+    }
+    expect(() => {
+      // @ts-expect-error Exercise invalid input at the native boundary.
+      executeReadSync(db, null, 'SELECT ?', [true])
+    }).toThrow('HOZON_INVALID_INPUT')
+    await sqlite.execute(db, null, 'CREATE TABLE items(value)', [], 'write')
+    const tx = (await sqlite.beginWrite(db).granted).txID
+    await sqlite.execute(db, tx, 'INSERT INTO items VALUES (42)', [], 'write')
+    expect(() => executeReadSync(db, tx, 'SELECT * FROM items', [])).toThrow(
+      'HOZON_SYNC_READ_TRANSACTION',
+    )
+    expect(executeReadSync(db, null, 'SELECT * FROM items', []).rows).toEqual([])
+    expect((await sqlite.execute(db, tx, 'SELECT * FROM items', [], 'read')).rows).toEqual([[42]])
+    await sqlite.rollback(db, tx)
+  } finally {
+    await sqlite.close(db)
+  }
+  expect(() => executeReadSync(db, null, 'SELECT 1', [])).toThrow('HOZON_CLOSED')
+})

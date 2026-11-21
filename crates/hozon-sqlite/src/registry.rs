@@ -279,6 +279,22 @@ impl Registry {
     ) -> Result<QueryResult> {
         wait(|cb| self.execute_async(db, tx_id, sql, params, mode, cb))
     }
+    /// Execute an autocommit read on this thread, without a worker queue or wait.
+    /// One dedicated connection per database supplements `OpenOptions::readers`.
+    /// Concurrent sync callers receive `Error::SyncReadBusy` immediately and may
+    /// fall back to `execute_async`. SQLite's configured busy timeout still applies.
+    /// Transaction reads must use the existing async path to see uncommitted writes;
+    /// every `Some(tx_id)` (including zero) returns `Error::SyncReadTransaction`.
+    /// Hosts must use a background thread: this method performs SQLite work inline.
+    pub fn execute_read_sync(
+        &self,
+        db: DBID,
+        tx_id: Option<TxID>,
+        sql: &str,
+        params: &[Value],
+    ) -> Result<QueryResult> {
+        self.engine(db)?.execute_read_sync(tx_id, sql, params)
+    }
     pub fn execute_async(
         &self,
         db: DBID,

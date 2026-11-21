@@ -251,6 +251,20 @@ impl Engine {
             );
         }
     }
+    pub fn execute_read_sync(
+        &self,
+        tx: Option<TxID>,
+        sql: &str,
+        params: &[Value],
+    ) -> Result<QueryResult> {
+        if self.shared.closed.load(Ordering::Acquire) {
+            return Err(terminal_error(&self.shared));
+        }
+        if tx.is_some() {
+            return Err(Error::SyncReadTransaction);
+        }
+        self.readers.execute_read_sync(sql, params)
+    }
     pub fn job(&self, tx: TxID, job: Box<dyn JobCommand>) {
         self.send(Command::Job { tx, job });
     }
