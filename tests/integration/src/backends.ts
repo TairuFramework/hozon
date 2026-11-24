@@ -27,6 +27,8 @@ export type Backend = {
   reopen(options?: OpenOptions): Promise<Adapter>
   /** File path or connection URL of the database created last. */
   location(): string
+  /** Closes adapters and clears the current database for the next conformance case. */
+  reset(): Promise<void>
   /** Closes every adapter opened through this backend and removes every database it created. */
   cleanup(): Promise<void>
 }
@@ -111,6 +113,9 @@ function createNodeSQLiteBackend(): Backend {
     location() {
       return current ?? fail('No database created yet')
     },
+    async reset() {
+      await this.cleanup()
+    },
     async cleanup() {
       await Promise.all(adapters.splice(0).map((adapter) => adapter.close()))
       await Promise.all(
@@ -126,6 +131,7 @@ function createPostgresBackend(serverURL: string): Backend {
   const adapters: Array<PostgresAdapter> = []
   let admin: postgres.Sql | undefined
   let current: string | undefined
+  let reusable = false
   const getAdmin = (): postgres.Sql => {
     admin ??= postgres(serverURL, { max: 1, onnotice: () => {} })
     return admin
@@ -143,6 +149,10 @@ function createPostgresBackend(serverURL: string): Backend {
     name: 'postgres',
     capabilities: { concurrentReaders: true },
     async createAdapter(options) {
+      if (reusable) {
+        reusable = false
+        return open(options)
+      }
       const name = `hozon_test_${randomUUID().replaceAll('-', '')}`
       await getAdmin().unsafe(`CREATE DATABASE "${name}"`)
       databases.push(name)
@@ -157,7 +167,22 @@ function createPostgresBackend(serverURL: string): Backend {
     location() {
       return current ?? fail('No database created yet')
     },
+    async reset() {
+      reusable = false
+      await Promise.all(adapters.splice(0).map((adapter) => adapter.close()))
+      if (current === undefined) return
+      const client = postgres(current, { max: 1, onnotice: () => {} })
+      try {
+        // Conformance uses the default schema. Keep a real database per backend,
+        // but remove all case state without copying a database template for every case.
+        await client.unsafe('DROP SCHEMA public CASCADE; CREATE SCHEMA public').simple()
+        reusable = true
+      } finally {
+        await client.end({ timeout: 5 })
+      }
+    },
     async cleanup() {
+      reusable = false
       await Promise.all(adapters.splice(0).map((adapter) => adapter.close()))
       for (const name of databases.splice(0)) {
         await getAdmin().unsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`)
