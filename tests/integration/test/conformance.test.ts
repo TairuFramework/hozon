@@ -10,7 +10,7 @@ describe.each(backends())('$name', (backend) => {
     const results = await runConformance({
       capabilities: backend.capabilities,
       createAdapter: () => backend.createAdapter(),
-      cleanup: () => backend.cleanup(),
+      cleanup: () => backend.reset(),
     })
     expect(results.filter((result) => !result.ok)).toEqual([])
     expect(summarize(results).ok).toBe(true)
