@@ -118,12 +118,13 @@ export async function withKeyLocks<R>(
   let lockIDs: Array<string>
   if (context.kind === 'postgres') {
     const ids: Array<bigint> = []
-    for (const identity of identities) {
-      const result = await sql<{
-        id: string
-      }>`SELECT (('x' || substr(md5(${identity}::text), 1, 16))::bit(64)::bigint)::text AS id`.execute(
-        context.db,
-      )
+    if (identities.length > 0) {
+      // One JSON parameter keeps admission independent of batch size and below
+      // the parameter budget, without changing PostgreSQL's hash derivation.
+      const result = await sql<{ id: string }>`
+        SELECT (('x' || substr(md5(identity), 1, 16))::bit(64)::bigint)::text AS id
+        FROM jsonb_array_elements_text(${JSON.stringify(identities)}::text::jsonb) AS keys(identity)
+      `.execute(context.db)
       for (const row of result.rows) ids.push(BigInt(row.id))
     }
     // Order and deduplicate the actual IDs: collisions only add contention.
@@ -145,9 +146,21 @@ export async function withKeyLocks<R>(
   const locked = context.derive()
   // biome-ignore lint/style/noNonNullAssertion: derive binds ownership before returning.
   const owned = ownership.get(locked)!
+  const pending: Array<string> = []
   const acquire = async (index: number): Promise<R> => {
     const id = lockIDs[index]
     if (id === undefined) {
+      if (context.kind === 'postgres' && pending.length > 0) {
+        // PostgreSQL >= 9.6 evaluates output expressions after ORDER BY when
+        // they are absent from DISTINCT/GROUP BY/ORDER BY. Sort the signed IDs,
+        // never the volatile lock expression, to acquire in deadlock-safe order.
+        // https://www.postgresql.org/docs/18/sql-select.html#SQL-SELECT-LIST
+        await sql`
+          SELECT pg_advisory_xact_lock(id::bigint)
+          FROM jsonb_array_elements_text(${JSON.stringify(pending)}::text::jsonb) AS locks(id)
+          ORDER BY id::bigint
+        `.execute(context.db)
+      }
       if (context.kind === 'sqlite' && lockIDs.length > 0) {
         // Even a zero-row DELETE reserves SQLite's writer before the callback reads.
         await sql`DELETE FROM ${sql.table(context.tableName(table))} WHERE 1 = 0`.execute(
@@ -166,7 +179,7 @@ export async function withKeyLocks<R>(
     return await withQueue(root, id, async () => {
       checkScope(id)
       if (context.kind === 'postgres') {
-        await sql`SELECT pg_advisory_xact_lock(${id}::bigint)`.execute(context.db)
+        pending.push(id)
       }
       for (const ancestor of ancestors) ancestor.keys.add(id)
       owned.set(id, acquired)
